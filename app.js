@@ -236,7 +236,6 @@ function updateFrance(indicateur, annee) {
       }
     });
   }
-  // Noms des départements depuis le GeoJSON
   window.__depGeo.features.forEach(function (f) {
     if (data[f.properties.code]) data[f.properties.code].nom = f.properties.nom;
   });
@@ -250,20 +249,27 @@ function updateFrance(indicateur, annee) {
 function fetchTabular(depCode, annee) {
   var geo = state.communesGeo[depCode];
   var codes = geo.features.map(function (f) { return f.properties.code; });
-  var first = TABULAR_URL + '?CODGEO_2026__in=' + encodeURIComponent(codes.join(',')) +
-              '&annee__exact=' + annee + '&page_size=200'; // max autorisé par l'API
-  var rows = [];
-  function getPage(url) {
-    return fetch(url).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+  // NB: on ne suit PAS links.next renvoyé par l'API : il pointe vers
+  // /api/resources/... qui n'existe pas derrière notre proxy Netlify
+  // /api/communes/*. On reconstruit chaque page à partir de la base du proxy.
+  var base = TABULAR_URL + '?CODGEO_2026__in=' + encodeURIComponent(codes.join(',')) +
+             '&annee__exact=' + annee + '&page_size=200'; // max autorisé par l'API
+  var rows = [], page = 1;
+  function getPage() {
+    return fetch(base + '&page=' + page).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' (page ' + page + ')');
       return res.json();
     }).then(function (j) {
       (j.data || []).forEach(function (r) { rows.push(r); });
-      if (j.links && j.links.next) return getPage(j.links.next.replace(/^https?:\/\/[^/]+/, ''));
+      var total = (j.meta && j.meta.total) ? j.meta.total : rows.length;
+      if ((j.data || []).length > 0 && rows.length < total) {
+        page++;
+        return getPage();
+      }
       return rows;
     });
   }
-  return getPage(first);
+  return getPage();
 }
 
 function loadCommunes(depCode, annee) {
