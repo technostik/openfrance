@@ -25,3 +25,11 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 .leaflet-container { background: #0f172a; }
 .leaflet-control-attribution { background: rgba(15,23,42,.8) !important; color: #94a3b8 !important; }
 .leaflet-control-attribution a { color: #93c5fd !important; }
+
+/* Bandeau d'erreur */
+#errorBanner { background: #7f1d1d; color: #fecaca; padding: 10px 18px; display: flex; align-items: center; gap: 12px; font-size: .85rem; flex-wrap: wrap; }
+#errorBanner button { background: #dc2626; color: white; border: none; border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+
+/* États du statut */
+#status.loading { color: #fbbf24; }
+#status.error { color: #f87171; }

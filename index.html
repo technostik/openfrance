@@ -13,6 +13,12 @@
   <p class="subtitle">Délinquance enregistrée par département — données ouvertes du Ministère de l'Intérieur (data.gouv.fr)</p>
 </header>
 
+<div id="errorBanner" style="display:none">
+  <strong>Erreur de chargement des données</strong>
+  <span id="errorText"></span>
+  <button type="button" onclick="location.reload()">Réessayer</button>
+</div>
+
 <section id="controls">
   <label>Indicateur
     <select id="indicatorSelect" disabled><option>Chargement…</option></select>
@@ -20,7 +26,7 @@
   <label>Année
     <select id="yearSelect" disabled><option>Chargement…</option></select>
   </label>
-  <span id="status">Chargement des données…</span>
+  <span id="status">⏳ Chargement des données…</span>
 </section>
 
 <main>
@@ -30,7 +36,7 @@
     <p id="legendTitle">Taux pour 1000 habitants</p>
     <div id="legend"></div>
     <h2>Top 10 départements</h2>
-    <div id="toplist"><p class="muted">Chargement…</p></div>
+    <div id="toplist"><p class="muted">⏳ Chargement…</p></div>
     <p class="source">Source : <a href="https://www.data.gouv.fr/fr/datasets/bases-statistiques-communale-departementale-et-regionale-de-la-delinquance-enregistree-par-la-police-et-la-gendarmerie-nationales/" target="_blank" rel="noopener">data.gouv.fr — Ministère de l'Intérieur</a></p>
   </aside>
 </main>

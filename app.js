@@ -1,11 +1,25 @@
 // OpenFrance — carte choroplèthe de la délinquance par département
-// Données : data.gouv.fr (Ministère de l'Intérieur) — chargées directement dans le navigateur.
+// Données : data.gouv.fr (Ministère de l'Intérieur), proxifiées via Netlify (même origine -> pas de CORS).
 
-var CSV_URL = 'https://static.data.gouv.fr/resources/bases-statistiques-communale-departementale-et-regionale-de-la-delinquance-enregistree-par-la-police-et-la-gendarmerie-nationales/20260709-120038/donnee-dep-data.gouv-2025-geographie2026-produit-le2026-06-25.csv';
-var GEO_URL = 'https://france-geojson.github.io/departements.geojson';
+var CSV_URL = '/data/delinquance-dep.csv';
+var GEO_URL = '/data/departements.json';
 
 var statusEl = document.getElementById('status');
-function setStatus(msg) { statusEl.textContent = msg; }
+function setStatus(msg, cls) {
+  statusEl.textContent = msg;
+  statusEl.className = cls || ''; // '', 'loading', 'error'
+}
+function showError(msg, detail) {
+  console.error('[OpenFrance]', msg, detail || '');
+  setStatus('❌ ' + msg, 'error');
+  var banner = document.getElementById('errorBanner');
+  banner.style.display = 'block';
+  document.getElementById('errorText').textContent = msg + (detail ? ' — ' + detail : '');
+  document.getElementById('toplist').innerHTML = '<p class="muted">Indisponible (erreur de chargement).</p>';
+}
+function hideError() {
+  document.getElementById('errorBanner').style.display = 'none';
+}
 
 // Échelle de couleurs vert -> jaune -> rouge
 function colorFor(t) { // t in [0,1]
@@ -23,6 +37,8 @@ function parseCSV(text) {
   var header = lines[0].split(sep).map(function (h) { return h.trim().replace(/^"|"$/g, ''); });
   var idx = {};
   header.forEach(function (h, i) { idx[h] = i; });
+  var missing = ['Code_departement', 'annee', 'indicateur', 'nombre', 'taux_pour_mille'].filter(function (c) { return idx[c] === undefined; });
+  if (missing.length) throw new Error('colonnes manquantes dans le CSV : ' + missing.join(', '));
   var rows = [];
   for (var r = 1; r < lines.length; r++) {
     var cols = lines[r].split(sep);
@@ -46,7 +62,7 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 var geoLayer = null;
 var allRows = [];
-var currentData = {}; // dep -> {taux, nombre, pop}
+var currentData = {};
 
 function fmt(n) { return n.toLocaleString('fr-FR'); }
 
@@ -64,7 +80,6 @@ function updateMap(indicateur, annee) {
   document.getElementById('legendTitle').textContent =
     'Taux pour 1 000 hab. — ' + indicateur + ' (' + annee + ')';
 
-  // Légende : 6 classes
   var legend = document.getElementById('legend');
   legend.innerHTML = '';
   for (var c = 0; c < 6; c++) {
@@ -103,7 +118,6 @@ function updateMap(indicateur, annee) {
     }
   }).addTo(map);
 
-  // Top 10
   var list = [];
   for (var dep in currentData) list.push(currentData[dep]);
   list.sort(function (a, b) { return b.taux - a.taux; });
@@ -142,16 +156,25 @@ function initUI() {
   refresh();
 }
 
+// Chargement avec états visibles : spinner -> données / bandeau d'erreur
+setStatus('⏳ Chargement des données…', 'loading');
 Promise.all([
-  fetch(CSV_URL).then(function (r) { return r.text(); }),
-  fetch(GEO_URL).then(function (r) { return r.json(); })
+  fetch(CSV_URL).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' sur ' + CSV_URL);
+    return res.text();
+  }),
+  fetch(GEO_URL).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' sur ' + GEO_URL);
+    return res.json();
+  })
 ]).then(function (res) {
   window.__depGeo = res[1];
   allRows = parseCSV(res[0]);
   if (!allRows.length) throw new Error('CSV vide ou format inattendu');
+  hideError();
   setStatus('Données chargées : ' + fmt(allRows.length) + ' lignes');
   initUI();
 }).catch(function (err) {
-  setStatus('Erreur de chargement : ' + err.message);
-  console.error(err);
+  console.error('[OpenFrance] Échec du chargement :', err);
+  showError('Impossible de charger les données (réseau ou proxy Netlify). Détails dans la console (F12).', err.message);
 });

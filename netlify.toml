@@ -1,0 +1,12 @@
+# Proxy des données distantes via Netlify (same-origin -> pas de CORS)
+[[redirects]]
+  from = "/data/delinquance-dep.csv"
+  to = "https://static.data.gouv.fr/resources/bases-statistiques-communale-departementale-et-regionale-de-la-delinquance-enregistree-par-la-police-et-la-gendarmerie-nationales/20260709-120038/donnee-dep-data.gouv-2025-geographie2026-produit-le2026-06-25.csv"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/data/departements.json"
+  to = "https://france-geojson.github.io/departements.geojson"
+  status = 200
+  force = true
