@@ -40,8 +40,8 @@ function parseCSV(text) {
 }
 
 var map = L.map('map', { attributionControl: true }).setView([46.6, 2.5], 6);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  attribution: '&copy; OpenStreetMap, &copy; CARTO', maxZoom: 10
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 10
 }).addTo(map);
 
 var geoLayer = null;

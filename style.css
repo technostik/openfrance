@@ -19,3 +19,9 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 .source { margin-top: 18px; font-size: .72rem; color: #64748b; }
 .source a { color: #93c5fd; }
 @media (max-width: 800px) { main { flex-direction: column; height: auto; } #map { height: 60vh; } #panel { width: 100%; } }
+
+/* Fond de carte : tuiles OpenStreetMap assombries (gratuit, sans clé API) */
+.leaflet-tile { filter: grayscale(1) brightness(0.45) contrast(1.1); }
+.leaflet-container { background: #0f172a; }
+.leaflet-control-attribution { background: rgba(15,23,42,.8) !important; color: #94a3b8 !important; }
+.leaflet-control-attribution a { color: #93c5fd !important; }
