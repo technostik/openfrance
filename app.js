@@ -7,22 +7,19 @@ var GEO_URL = '/data/departements.json';
 var statusEl = document.getElementById('status');
 function setStatus(msg, cls) {
   statusEl.textContent = msg;
-  statusEl.className = cls || ''; // '', 'loading', 'error'
+  statusEl.className = cls || '';
 }
 function showError(msg, detail) {
   console.error('[OpenFrance]', msg, detail || '');
   setStatus('❌ ' + msg, 'error');
-  var banner = document.getElementById('errorBanner');
-  banner.style.display = 'block';
+  document.getElementById('errorBanner').style.display = 'block';
   document.getElementById('errorText').textContent = msg + (detail ? ' — ' + detail : '');
   document.getElementById('toplist').innerHTML = '<p class="muted">Indisponible (erreur de chargement).</p>';
 }
-function hideError() {
-  document.getElementById('errorBanner').style.display = 'none';
-}
+function hideError() { document.getElementById('errorBanner').style.display = 'none'; }
 
 // Échelle de couleurs vert -> jaune -> rouge
-function colorFor(t) { // t in [0,1]
+function colorFor(t) {
   var stops = [[46,125,50],[124,179,66],[253,224,71],[244,121,32],[183,28,28]];
   var x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
   var i = Math.min(stops.length - 2, Math.floor(x));
@@ -31,27 +28,65 @@ function colorFor(t) { // t in [0,1]
   return 'rgb(' + c.join(',') + ')';
 }
 
+// Parser CSV robuste : gère les guillemets, les séparateurs ; ou , et le BOM.
+function splitCSVLine(line, sep) {
+  var cols = [], cur = '', inQ = false;
+  for (var i = 0; i < line.length; i++) {
+    var ch = line[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
+      } else cur += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === sep) { cols.push(cur); cur = ''; }
+      else cur += ch;
+    }
+  }
+  cols.push(cur);
+  return cols;
+}
+
 function parseCSV(text) {
+  text = text.replace(/^\uFEFF/, '');
   var lines = text.split(/\r?\n/).filter(function (l) { return l.trim().length > 0; });
-  var sep = lines[0].indexOf(';') >= 0 ? ';' : ',';
-  var header = lines[0].split(sep).map(function (h) { return h.trim().replace(/^"|"$/g, ''); });
+  if (!lines.length) throw new Error('fichier vide');
+  var sep = lines[0].split(';').length >= lines[0].split(',').length ? ';' : ',';
+  var header = splitCSVLine(lines[0], sep).map(function (h) { return h.trim().toLowerCase(); });
+  console.info('[OpenFrance] En-tête CSV détecté :', header.join(' | '));
+
+  // Correspondance insensible à la casse
   var idx = {};
-  header.forEach(function (h, i) { idx[h] = i; });
-  var missing = ['Code_departement', 'annee', 'indicateur', 'nombre', 'taux_pour_mille'].filter(function (c) { return idx[c] === undefined; });
+  ['code_departement', 'annee', 'indicateur', 'nombre', 'taux_pour_mille', 'insee_pop'].forEach(function (col) {
+    idx[col] = header.indexOf(col);
+  });
+  var missing = Object.keys(idx).filter(function (c) { return idx[c] === -1; });
   if (missing.length) throw new Error('colonnes manquantes dans le CSV : ' + missing.join(', '));
+
+  function num(v) {
+    v = (v || '').trim().replace(/^"|"$/g, '').replace(/\u00A0/g, '').replace(/ /g, '').replace(',', '.');
+    var n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
+  }
+  function intg(v) { return Math.round(num(v)); }
+
   var rows = [];
   for (var r = 1; r < lines.length; r++) {
-    var cols = lines[r].split(sep);
+    var cols = splitCSVLine(lines[r], sep);
     if (cols.length < header.length) continue;
+    var annee = intg(cols[idx.annee]);
+    if (!annee) continue; // ligne sans année valide -> ignorée
     rows.push({
-      dep: (cols[idx.Code_departement] || '').trim().replace(/^"|"$/g, ''),
-      annee: parseInt(cols[idx.annee], 10),
-      indicateur: (cols[idx.indicateur] || '').trim().replace(/^"|"$/g, ''),
-      nombre: parseInt(cols[idx.nombre], 10) || 0,
-      taux: parseFloat((cols[idx.taux_pour_mille] || '0').replace(',', '.')) || 0,
-      pop: parseInt(cols[idx.insee_pop], 10) || 0
+      dep: (cols[idx.code_departement] || '').trim(),
+      annee: annee,
+      indicateur: (cols[idx.indicateur] || '').trim(),
+      nombre: intg(cols[idx.nombre]),
+      taux: num(cols[idx.taux_pour_mille]),
+      pop: intg(cols[idx.insee_pop])
     });
   }
+  if (!rows.length) throw new Error('aucune ligne exploitable (annee illisible ?)');
   return rows;
 }
 
@@ -156,7 +191,6 @@ function initUI() {
   refresh();
 }
 
-// Chargement avec états visibles : spinner -> données / bandeau d'erreur
 setStatus('⏳ Chargement des données…', 'loading');
 Promise.all([
   fetch(CSV_URL).then(function (res) {
@@ -170,11 +204,10 @@ Promise.all([
 ]).then(function (res) {
   window.__depGeo = res[1];
   allRows = parseCSV(res[0]);
-  if (!allRows.length) throw new Error('CSV vide ou format inattendu');
   hideError();
   setStatus('Données chargées : ' + fmt(allRows.length) + ' lignes');
   initUI();
 }).catch(function (err) {
   console.error('[OpenFrance] Échec du chargement :', err);
-  showError('Impossible de charger les données (réseau ou proxy Netlify). Détails dans la console (F12).', err.message);
+  showError('Impossible de charger les données. Détails dans la console (F12).', err.message);
 });
