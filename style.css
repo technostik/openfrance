@@ -1,0 +1,21 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+header { padding: 18px 24px; background: linear-gradient(135deg, #1e3a8a, #7c2d92); text-align: center; }
+header h1 { font-size: 1.6rem; }
+.subtitle { opacity: .85; font-size: .9rem; margin-top: 4px; }
+#controls { display: flex; gap: 18px; align-items: center; padding: 12px 24px; background: #1e293b; flex-wrap: wrap; }
+#controls label { display: flex; flex-direction: column; font-size: .8rem; color: #94a3b8; gap: 4px; }
+select { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 8px 12px; font-size: .95rem; min-width: 260px; }
+#status { font-size: .85rem; color: #94a3b8; }
+main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
+#map { flex: 1; }
+#panel { width: 300px; background: #1e293b; padding: 16px; overflow-y: auto; }
+#panel h2 { font-size: .95rem; margin: 14px 0 8px; color: #93c5fd; }
+#legendTitle { font-size: .8rem; color: #94a3b8; }
+.legend-row { display: flex; align-items: center; gap: 8px; font-size: .8rem; margin: 3px 0; }
+.legend-color { width: 28px; height: 14px; border-radius: 3px; }
+.top-row { display: flex; justify-content: space-between; font-size: .82rem; margin: 4px 0; padding: 4px 6px; background: #334155; border-radius: 4px; }
+.muted { color: #64748b; font-size: .8rem; }
+.source { margin-top: 18px; font-size: .72rem; color: #64748b; }
+.source a { color: #93c5fd; }
+@media (max-width: 800px) { main { flex-direction: column; height: auto; } #map { height: 60vh; } #panel { width: 100%; } }
