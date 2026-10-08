@@ -11,7 +11,7 @@
   status = 200
   force = true
 
-# Proxy vers l'API tabulaire data.gouv (données communales) — les query strings sont préservés
+# Proxy vers l'API tabulaire data.gouv (données communales délinquance)
 [[redirects]]
   from = "/api/communes/*"
   to = "https://tabular-api.data.gouv.fr/api/resources/44ef4323-1097-48d5-8719-3c544b55d294/data/:splat"
@@ -22,5 +22,34 @@
 [[redirects]]
   from = "/geo/communes/*"
   to = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/:splat"
+  status = 200
+  force = true
+
+# --- Économie ---
+# Revenus Filosofi 2021 par commune (Geoptis)
+[[redirects]]
+  from = "/data/revenus.csv"
+  to = "https://static.data.gouv.fr/resources/revenu-des-francais-a-la-commune/20251210-134014/revenu-des-francais-a-la-commune-1765372688826.csv"
+  status = 200
+  force = true
+
+# Statistiques DVF (prix au m², période complète)
+[[redirects]]
+  from = "/data/dvf-stats.csv"
+  to = "https://data-pipeline-open.s3.sbg.io.cloud.ovh.net/dvf/stats_whole_period.csv"
+  status = 200
+  force = true
+
+# --- Politique ---
+# Présidentielle 2022, résultats par département
+[[redirects]]
+  from = "/data/pres2022-t1.txt"
+  to = "https://static.data.gouv.fr/resources/election-presidentielle-des-10-et-24-avril-2022-resultats-definitifs-du-1er-tour/20220414-152356/resultats-par-niveau-dpt-t1-france-entiere.txt"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/data/pres2022-t2.txt"
+  to = "https://static.data.gouv.fr/resources/election-presidentielle-des-10-et-24-avril-2022-resultats-definitifs-du-2nd-tour/20220428-142127/resultats-par-niveau-dpt-t2-france-entiere.txt"
   status = 200
   force = true
