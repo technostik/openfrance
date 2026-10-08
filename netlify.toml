@@ -7,6 +7,6 @@
 
 [[redirects]]
   from = "/data/departements.json"
-  to = "https://france-geojson.github.io/departements.geojson"
+  to = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements-version-simplifiee.geojson"
   status = 200
   force = true
