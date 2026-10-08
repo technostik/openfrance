@@ -10,3 +10,17 @@
   to = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements-version-simplifiee.geojson"
   status = 200
   force = true
+
+# Proxy vers l'API tabulaire data.gouv (données communales) — les query strings sont préservés
+[[redirects]]
+  from = "/api/communes/*"
+  to = "https://tabular-api.data.gouv.fr/api/resources/44ef4323-1097-48d5-8719-3c544b55d294/data/:splat"
+  status = 200
+  force = true
+
+# Contours des communes, par département (france-geojson, données IGN)
+[[redirects]]
+  from = "/geo/communes/*"
+  to = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/:splat"
+  status = 200
+  force = true

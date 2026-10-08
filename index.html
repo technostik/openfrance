@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenFrance — Carte de la délinquance par département</title>
+<title>OpenFrance — Carte de la délinquance</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
   <h1>🇫🇷 OpenFrance</h1>
-  <p class="subtitle">Délinquance enregistrée par département — données ouvertes du Ministère de l'Intérieur (data.gouv.fr)</p>
+  <p class="subtitle">Délinquance enregistrée — données ouvertes du Ministère de l'Intérieur (data.gouv.fr)</p>
 </header>
 
 <div id="errorBanner" style="display:none">
@@ -20,6 +20,7 @@
 </div>
 
 <section id="controls">
+  <button id="backBtn" type="button" title="Revenir à la carte de France" hidden>← France</button>
   <label>Indicateur
     <select id="indicatorSelect" disabled><option>Chargement…</option></select>
   </label>
@@ -32,11 +33,13 @@
 <main>
   <div id="map"></div>
   <aside id="panel">
+    <h2 id="levelTitle">France — par département</h2>
     <h2>Légende</h2>
     <p id="legendTitle">Taux pour 1000 habitants</p>
     <div id="legend"></div>
-    <h2>Top 10 départements</h2>
+    <h2 id="topTitle">Top 10 départements</h2>
     <div id="toplist"><p class="muted">⏳ Chargement…</p></div>
+    <p class="hint">💡 Cliquez sur un département pour voir ses communes.</p>
     <p class="source">Source : <a href="https://www.data.gouv.fr/fr/datasets/bases-statistiques-communale-departementale-et-regionale-de-la-delinquance-enregistree-par-la-police-et-la-gendarmerie-nationales/" target="_blank" rel="noopener">data.gouv.fr — Ministère de l'Intérieur</a></p>
   </aside>
 </main>
