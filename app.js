@@ -3,6 +3,7 @@
 
 var CSV_URL = '/data/delinquance-dep.csv';
 var GEO_URL = '/data/departements.json';
+var TOTAL_LABEL = 'Ensemble des faits constatés (tous indicateurs)';
 
 var statusEl = document.getElementById('status');
 function setStatus(msg, cls) {
@@ -56,7 +57,6 @@ function parseCSV(text) {
   var header = splitCSVLine(lines[0], sep).map(function (h) { return h.trim().toLowerCase(); });
   console.info('[OpenFrance] En-tête CSV détecté :', header.join(' | '));
 
-  // Correspondance insensible à la casse
   var idx = {};
   ['code_departement', 'annee', 'indicateur', 'nombre', 'taux_pour_mille', 'insee_pop'].forEach(function (col) {
     idx[col] = header.indexOf(col);
@@ -76,7 +76,7 @@ function parseCSV(text) {
     var cols = splitCSVLine(lines[r], sep);
     if (cols.length < header.length) continue;
     var annee = intg(cols[idx.annee]);
-    if (!annee) continue; // ligne sans année valide -> ignorée
+    if (!annee) continue;
     rows.push({
       dep: (cols[idx.code_departement] || '').trim(),
       annee: annee,
@@ -86,8 +86,28 @@ function parseCSV(text) {
       pop: intg(cols[idx.insee_pop])
     });
   }
-  if (!rows.length) throw new Error('aucune ligne exploitable (annee illisible ?)');
+  if (!rows.length) throw new Error('aucune ligne exploitable');
   return rows;
+}
+
+// Agrégation : somme de tous les indicateurs par département et par année,
+// avec taux recalculé sur la population INSEE.
+function buildAggregates(rows) {
+  var agg = {}; // "dep|annee" -> {dep, annee, nombre, pop}
+  rows.forEach(function (r) {
+    var key = r.dep + '|' + r.annee;
+    if (!agg[key]) agg[key] = { dep: r.dep, annee: r.annee, nombre: 0, pop: r.pop || 0 };
+    agg[key].nombre += r.nombre;
+    if (r.pop) agg[key].pop = r.pop;
+  });
+  var list = [];
+  for (var k in agg) {
+    var a = agg[k];
+    a.indicateur = TOTAL_LABEL;
+    a.taux = a.pop > 0 ? (a.nombre / a.pop) * 1000 : 0;
+    list.push(a);
+  }
+  return list;
 }
 
 var map = L.map('map', { attributionControl: true }).setView([46.6, 2.5], 6);
@@ -96,15 +116,17 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 var geoLayer = null;
-var allRows = [];
+var allRows = [];      // lignes détaillées
+var totalRows = [];    // lignes agrégées (tous indicateurs)
 var currentData = {};
 
 function fmt(n) { return n.toLocaleString('fr-FR'); }
 
 function updateMap(indicateur, annee) {
+  var source = indicateur === TOTAL_LABEL ? totalRows : allRows;
   currentData = {};
   var min = Infinity, max = -Infinity;
-  allRows.forEach(function (r) {
+  source.forEach(function (r) {
     if (r.indicateur === indicateur && r.annee === annee) {
       currentData[r.dep] = r;
       if (r.taux < min) min = r.taux;
@@ -173,6 +195,8 @@ function updateMap(indicateur, annee) {
 }
 
 function initUI() {
+  totalRows = buildAggregates(allRows);
+
   var indicateurs = [], annees = [], seenI = {}, seenA = {};
   allRows.forEach(function (r) {
     if (!seenI[r.indicateur]) { seenI[r.indicateur] = 1; indicateurs.push(r.indicateur); }
@@ -180,11 +204,14 @@ function initUI() {
   });
   indicateurs.sort();
   annees.sort(function (a, b) { return b - a; });
+
   var iSel = document.getElementById('indicatorSelect');
   var ySel = document.getElementById('yearSelect');
   iSel.disabled = false; ySel.disabled = false;
-  iSel.innerHTML = indicateurs.map(function (i) { return '<option>' + i + '</option>'; }).join('');
+  iSel.innerHTML = '<option>' + TOTAL_LABEL + '</option>' +
+    indicateurs.map(function (i) { return '<option>' + i + '</option>'; }).join('');
   ySel.innerHTML = annees.map(function (a) { return '<option>' + a + '</option>'; }).join('');
+
   function refresh() { updateMap(iSel.value, parseInt(ySel.value, 10)); }
   iSel.addEventListener('change', refresh);
   ySel.addEventListener('change', refresh);
