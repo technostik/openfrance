@@ -139,14 +139,12 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 var geoLayer = null;
-var allRows = [];       // lignes départementales détaillées
-var totalRows = [];     // lignes départementales agrégées
+var allRows = [];       // lignes départementales détaillées (champ .dep)
+var totalRows = [];     // lignes départementales agrégées (champ .zone)
 
 var state = {
   view: 'france',       // 'france' | 'dep'
   dep: null,            // {code, nom}
-  communesData: null,   // lignes communales détaillées du département courant
-  communesTotal: null,  // lignes communales agrégées
   communesCache: {},    // "code|annee" -> {rows, totals}
   communesGeo: {}       // code -> geojson communes (cache)
 };
@@ -224,12 +222,23 @@ function renderChoropleth(geo, data, unitLabel) {
 
 // ---------- Vue France (départements) ----------
 function updateFrance(indicateur, annee) {
-  var source = indicateur === TOTAL_LABEL ? totalRows : allRows;
   var data = {};
-  source.forEach(function (r) {
-    if (r.indicateur === indicateur && r.annee === annee) {
-      data[r.zone] = { taux: r.taux, nombre: r.nombre, pop: r.pop, nom: r.zone };
-    }
+  if (indicateur === TOTAL_LABEL) {
+    totalRows.forEach(function (r) {
+      if (r.annee === annee) {
+        data[r.zone] = { taux: r.taux, nombre: r.nombre, pop: r.pop, estim: r.estim, nom: r.zone };
+      }
+    });
+  } else {
+    allRows.forEach(function (r) {
+      if (r.indicateur === indicateur && r.annee === annee) {
+        data[r.dep] = { taux: r.taux, nombre: r.nombre, pop: r.pop, nom: r.dep };
+      }
+    });
+  }
+  // Noms des départements depuis le GeoJSON
+  window.__depGeo.features.forEach(function (f) {
+    if (data[f.properties.code]) data[f.properties.code].nom = f.properties.nom;
   });
   document.getElementById('legendTitle').textContent =
     'Taux pour 1 000 hab. — ' + indicateur + ' (' + annee + ')';
@@ -239,11 +248,10 @@ function updateFrance(indicateur, annee) {
 
 // ---------- Vue département (communes) ----------
 function fetchTabular(depCode, annee) {
-  // Récupère les codes des communes depuis le GeoJSON, puis une seule requête API (suivi pagination)
   var geo = state.communesGeo[depCode];
   var codes = geo.features.map(function (f) { return f.properties.code; });
   var first = TABULAR_URL + '?CODGEO_2026__in=' + encodeURIComponent(codes.join(',')) +
-              '&annee__exact=' + annee + '&page_size=5000';
+              '&annee__exact=' + annee + '&page_size=200'; // max autorisé par l'API
   var rows = [];
   function getPage(url) {
     return fetch(url).then(function (res) {
@@ -277,7 +285,6 @@ function loadCommunes(depCode, annee) {
       }).then(function (geo) { state.communesGeo[depCode] = geo; return geo; });
   }
   return geoPromise.then(function () { return fetchTabular(depCode, annee); }).then(function (raw) {
-    // Normalisation : nombre diffusé, sinon estimation (complement_info_nombre)
     var rows = raw.map(function (r) {
       var estim = r.est_diffuse !== 'diff' || r.nombre === null;
       return {
@@ -299,14 +306,20 @@ function loadCommunes(depCode, annee) {
 
 function updateCommunes(indicateur, annee) {
   var entry = state.communesCache[state.dep.code + '|' + annee];
-  var source = indicateur === TOTAL_LABEL ? entry.totals : entry.rows;
   var data = {};
-  source.forEach(function (r) {
-    if (r.indicateur === indicateur && r.annee === annee) {
-      data[r.zone] = { taux: r.taux, nombre: r.nombre, pop: r.pop, estim: r.estim, nom: r.zone };
-    }
-  });
-  // Noms des communes depuis le GeoJSON
+  if (indicateur === TOTAL_LABEL) {
+    entry.totals.forEach(function (r) {
+      if (r.annee === annee) {
+        data[r.zone] = { taux: r.taux, nombre: r.nombre, pop: r.pop, estim: r.estim, nom: r.zone };
+      }
+    });
+  } else {
+    entry.rows.forEach(function (r) {
+      if (r.indicateur === indicateur && r.annee === annee) {
+        data[r.zone] = { taux: r.taux, nombre: r.nombre, pop: r.pop, estim: r.estim, nom: r.zone };
+      }
+    });
+  }
   state.communesGeo[state.dep.code].features.forEach(function (f) {
     if (data[f.properties.code]) data[f.properties.code].nom = f.properties.nom;
   });
@@ -319,8 +332,7 @@ function updateCommunes(indicateur, annee) {
 function openDepartment(code, nom) {
   state.view = 'dep';
   state.dep = { code: code, nom: nom };
-  var backBtn = document.getElementById('backBtn');
-  backBtn.hidden = false;
+  document.getElementById('backBtn').hidden = false;
   document.getElementById('levelTitle').textContent = nom + ' (' + code + ') — par commune';
   var annee = parseInt(document.getElementById('yearSelect').value, 10);
   loadCommunes(code, annee).then(function () {
@@ -347,7 +359,6 @@ function refresh() {
   if (state.view === 'france') {
     updateFrance(indicateur, annee);
   } else {
-    // On s'assure d'avoir les données communales de la bonne année
     loadCommunes(state.dep.code, annee).then(function () {
       updateCommunes(indicateur, annee);
     }).catch(function (err) {
@@ -358,7 +369,7 @@ function refresh() {
 
 function initUI() {
   totalRows = buildAggregates(allRows.map(function (r) {
-    return { zone: r.dep, annee: r.annee, nombre: r.nombre, pop: r.pop, estim: false, taux: r.taux, indicateur: r.indicateur };
+    return { zone: r.dep, annee: r.annee, nombre: r.nombre, pop: r.pop, estim: false };
   }));
   var indicateurs = [], annees = [], seenI = {}, seenA = {};
   allRows.forEach(function (r) {
