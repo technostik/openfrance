@@ -2,7 +2,7 @@
 // Sources (toutes via proxy Netlify, même origine) :
 //  - Délinquance : Ministère de l'Intérieur (CSV départements + API tabulaire communale)
 //  - Économie : Filosofi 2021 par commune (Geoptis) + statistiques DVF (prix au m²)
-//  - Politique : Présidentielle 2022 par département (Ministère de l'Intérieur)
+//  - Politique : Présidentielle 2022, Législatives 2024 (nuances par circo), Européennes 2024
 
 var URLS = {
   delinquance: '/data/delinquance-dep.csv',
@@ -11,10 +11,12 @@ var URLS = {
   revenus: '/data/revenus.csv',
   dvf: '/data/dvf-stats.csv',
   presT1: '/data/pres2022-t1.txt',
-  presT2: '/data/pres2022-t2.txt'
+  presT2: '/data/pres2022-t2.txt',
+  legT1: '/data/leg2024-t1.csv',
+  legT2: '/data/leg2024-t2.csv',
+  euroDep: '/data/euro2024-dep.csv'
 };
 
-// Dossiers des contours communaux (france-geojson) : code -> dossier
 var DEP_FOLDERS = {
   '01':'01-ain','02':'02-aisne','03':'03-allier','04':'04-alpes-de-haute-provence','05':'05-hautes-alpes',
   '06':'06-alpes-maritimes','07':'07-ardeche','08':'08-ardennes','09':'09-ariege','10':'10-aube',
@@ -54,8 +56,7 @@ function hideError() { document.getElementById('errorBanner').style.display = 'n
 function fmt(n) { return (Math.round(n)).toLocaleString('fr-FR'); }
 function fmt1(n) { return n.toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
 
-// ---------- Couleurs ----------
-function colorFor(t) { // dégradé vert -> jaune -> rouge, t in [0,1]
+function colorFor(t) {
   var stops = [[46,125,50],[124,179,66],[253,224,71],[244,121,32],[183,28,28]];
   var x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
   var i = Math.min(stops.length - 2, Math.floor(x));
@@ -63,13 +64,12 @@ function colorFor(t) { // dégradé vert -> jaune -> rouge, t in [0,1]
   var c = stops[i].map(function (v, k) { return Math.round(v + f * (stops[i + 1][k] - v)); });
   return 'rgb(' + c.join(',') + ')';
 }
-function catColor(s) { // couleur stable par catégorie (nom de candidat)
+function catColor(s) {
   var h = 0;
   for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
   return 'hsl(' + (h % 360) + ', 60%, 45%)';
 }
 
-// ---------- CSV ----------
 function splitCSVLine(line, sep) {
   var cols = [], cur = '', inQ = false;
   for (var i = 0; i < line.length; i++) {
@@ -89,28 +89,30 @@ function splitCSVLine(line, sep) {
   return cols;
 }
 function num(v) {
-  v = (v || '').trim().replace(/^"|"$/g, '').replace(/\u00A0/g, '').replace(/ /g, '').replace(',', '.');
+  v = (v || '').trim().replace(/^"|"$/g, '').replace(/\u00A0/g, '').replace(/ /g, '').replace(',', '.').replace('%', '');
   var n = parseFloat(v);
   return isNaN(n) ? null : n;
 }
+function normDep(code) { // normalise un code département ('1' -> '01', '2A'/'2B' ok)
+  code = (code || '').trim().toUpperCase();
+  if (/^\d$/.test(code)) return '0' + code;
+  return code;
+}
 
-// ---------- Carte ----------
 var map = L.map('map').setView([46.6, 2.5], 6);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', maxZoom: 12
 }).addTo(map);
 var geoLayer = null;
 
-// ---------- État ----------
 var state = {
   view: 'france', dep: null,
   category: 'delinquance',
-  indicator: null,          // objet indicateur courant
+  indicator: null,
   annee: null,
   communesCache: {}, communesGeo: {}, geo: null
 };
 
-// Fetch avec déduplication en vol + cache mémoire
 var fetchCache = {}, inFlight = {};
 function fetchTextCached(url) {
   if (fetchCache[url]) return Promise.resolve(fetchCache[url]);
@@ -124,28 +126,39 @@ function fetchTextCached(url) {
 function fetchJSONCached(url) {
   return fetchTextCached(url).then(function (t) { return JSON.parse(t); });
 }
-
-// ============================================================
-// SOURCE 1 : Délinquance (existant)
-// ============================================================
-var DELINQ = { allRows: [], totalRows: [], loaded: false };
-
-function parseDelinquanceCSV(text) {
+function csvRows(text) { // -> { header (lowercase), rows: array de tableaux }
   text = text.replace(/^\uFEFF/, '');
   var lines = text.split(/\r?\n/).filter(function (l) { return l.trim().length > 0; });
   var sep = lines[0].split(';').length >= lines[0].split(',').length ? ';' : ',';
   var header = splitCSVLine(lines[0], sep).map(function (h) { return h.trim().toLowerCase(); });
-  console.info('[OpenFrance] En-tête CSV délinquance :', header.join(' | '));
-  var idx = {};
-  ['code_departement', 'annee', 'indicateur', 'nombre', 'taux_pour_mille', 'insee_pop'].forEach(function (c) { idx[c] = header.indexOf(c); });
-  var missing = Object.keys(idx).filter(function (c) { return idx[c] === -1; });
-  if (missing.length) throw new Error('colonnes manquantes : ' + missing.join(', '));
   var rows = [];
   for (var r = 1; r < lines.length; r++) {
     var cols = splitCSVLine(lines[r], sep);
-    if (cols.length < header.length) continue;
+    if (cols.length >= 2) rows.push(cols);
+  }
+  return { header: header, rows: rows, sep: sep };
+}
+function colIdx(header, re) {
+  for (var i = 0; i < header.length; i++) if (re.test(header[i])) return i;
+  return -1;
+}
+
+// ============================================================
+// DÉLINQUANCE (inchangé)
+// ============================================================
+var DELINQ = { allRows: [], totalRows: [], loaded: false };
+
+function parseDelinquanceCSV(text) {
+  var p = csvRows(text);
+  console.info('[OpenFrance] En-tête CSV délinquance :', p.header.join(' | '));
+  var idx = {};
+  ['code_departement', 'annee', 'indicateur', 'nombre', 'taux_pour_mille', 'insee_pop'].forEach(function (c) { idx[c] = p.header.indexOf(c); });
+  var missing = Object.keys(idx).filter(function (c) { return idx[c] === -1; });
+  if (missing.length) throw new Error('colonnes manquantes : ' + missing.join(', '));
+  var rows = [];
+  p.rows.forEach(function (cols) {
     var annee = Math.round(num(cols[idx.annee]) || 0);
-    if (!annee) continue;
+    if (!annee) return;
     rows.push({
       dep: (cols[idx.code_departement] || '').trim(),
       annee: annee,
@@ -154,7 +167,7 @@ function parseDelinquanceCSV(text) {
       taux: num(cols[idx.taux_pour_mille]) || 0,
       pop: Math.round(num(cols[idx.insee_pop]) || 0)
     });
-  }
+  });
   if (!rows.length) throw new Error('CSV délinquance vide');
   return rows;
 }
@@ -250,62 +263,43 @@ function loadCommunesDelinquance(depCode, annee) {
 function delinquanceCommunes(depCode, indicateur, annee) {
   var entry = state.communesCache[depCode + '|' + annee];
   var data = {};
-  if (indicateur === TOTAL_LABEL) {
-    entry.totals.forEach(function (r) {
-      if (r.annee === annee) data[r.zone] = { val: r.taux, lines: [fmt(r.nombre) + ' faits constatés', (r.estim ? '<i>(estimé)</i>' : ''), 'Population : ' + fmt(r.pop)].filter(Boolean) };
-    });
-  } else {
-    entry.rows.forEach(function (r) {
-      if (r.indicateur === indicateur && r.annee === annee) {
-        data[r.zone] = { val: r.taux, lines: [fmt(r.nombre) + ' faits constatés', (r.estim ? '<i>(estimé)</i>' : ''), 'Population : ' + fmt(r.pop)].filter(Boolean) };
-      }
-    });
+  function mk(r) {
+    return { val: r.taux, lines: [fmt(r.nombre) + ' faits constatés', (r.estim ? '<i>(estimé)</i>' : ''), 'Population : ' + fmt(r.pop)].filter(Boolean) };
   }
+  if (indicateur === TOTAL_LABEL) entry.totals.forEach(function (r) { if (r.annee === annee) data[r.zone] = mk(r); });
+  else entry.rows.forEach(function (r) { if (r.indicateur === indicateur && r.annee === annee) data[r.zone] = mk(r); });
   return data;
 }
 
 // ============================================================
-// SOURCE 2 : Économie — Revenus Filosofi 2021 (par commune)
+// ÉCONOMIE (inchangé)
 // ============================================================
 var REV = { com: {}, dept: {}, loaded: false };
 
 function loadRevenus() {
   if (REV.loaded) return Promise.resolve();
   return fetchTextCached(URLS.revenus).then(function (text) {
-    text = text.replace(/^\uFEFF/, '');
-    var lines = text.split(/\r?\n/).filter(function (l) { return l.trim().length > 0; });
-    var sep = lines[0].split(';').length >= lines[0].split(',').length ? ';' : ',';
-    var header = splitCSVLine(lines[0], sep);
-    console.info('[OpenFrance] En-tête CSV revenus :', header.join(' | '));
-    var low = header.map(function (h) { return h.toLowerCase(); });
-    function findCol(re) {
-      for (var i = 0; i < low.length; i++) if (re.test(low[i])) return i;
-      return -1;
-    }
-    var cCode = findCol(/code.*géo/);
-    var cDispMed = findCol(/^\[disp\].*médiane/);
-    var cDecMed = findCol(/^\[dec\].*médiane/);
-    var cMen = findCol(/^\[dec\].*ménages fiscaux/) !== -1 ? findCol(/^\[dec\].*ménages fiscaux/) : findCol(/ménages fiscaux/);
-    if (cCode === -1 || (cDispMed === -1 && cDecMed === -1)) {
-      throw new Error('colonnes revenus non trouvées (code=' + cCode + ', dispMed=' + cDispMed + ', decMed=' + cDecMed + ')');
-    }
+    var p = csvRows(text);
+    console.info('[OpenFrance] En-tête CSV revenus :', p.header.join(' | '));
+    var cCode = colIdx(p.header, /code.*géo/);
+    var cDispMed = colIdx(p.header, /^\[disp\].*médiane/);
+    var cDecMed = colIdx(p.header, /^\[dec\].*médiane/);
+    var cMen = colIdx(p.header, /^\[dec\].*ménages fiscaux/) !== -1 ? colIdx(p.header, /^\[dec\].*ménages fiscaux/) : colIdx(p.header, /ménages fiscaux/);
+    if (cCode === -1 || (cDispMed === -1 && cDecMed === -1)) throw new Error('colonnes revenus non trouvées');
     var depAgg = {};
-    for (var r = 1; r < lines.length; r++) {
-      var cols = splitCSVLine(lines[r], sep);
+    p.rows.forEach(function (cols) {
       var code = (cols[cCode] || '').trim();
-      if (!/^(\d|2A|2B)/.test(code)) continue;
+      if (!/^(\d|2A|2B)/.test(code)) return;
       var val = (cDispMed !== -1 && cols[cDispMed] && cols[cDispMed].trim() !== '') ? num(cols[cDispMed]) : num(cols[cDecMed]);
-      if (val === null) continue;
+      if (val === null) return;
       var w = (cMen !== -1 && cols[cMen]) ? (num(cols[cMen]) || 0) : 0;
       REV.com[code] = { val: val, w: w };
       var dep = code.slice(0, 2);
       if (/^97/.test(code)) dep = code.slice(0, 3);
       if (!depAgg[dep]) depAgg[dep] = { sum: 0, w: 0 };
       if (w > 0) { depAgg[dep].sum += val * w; depAgg[dep].w += w; }
-    }
-    for (var d in depAgg) {
-      if (depAgg[d].w > 0) REV.dept[d] = { val: depAgg[d].sum / depAgg[d].w, w: depAgg[d].w };
-    }
+    });
+    for (var d in depAgg) if (depAgg[d].w > 0) REV.dept[d] = { val: depAgg[d].sum / depAgg[d].w, w: depAgg[d].w };
     REV.loaded = true;
     console.info('[OpenFrance] Revenus chargés : ' + Object.keys(REV.com).length + ' communes');
   });
@@ -313,24 +307,18 @@ function loadRevenus() {
 
 function revenusFrance() {
   var data = {};
-  for (var d in REV.dept) {
-    data[d] = { val: REV.dept[d].val, lines: [fmt(REV.dept[d].w) + ' ménages fiscaux', '<i>moyenne pondérée des communes</i>'] };
-  }
+  for (var d in REV.dept) data[d] = { val: REV.dept[d].val, lines: [fmt(REV.dept[d].w) + ' ménages fiscaux', '<i>moyenne pondérée des communes</i>'] };
   return data;
 }
 function revenusCommunes(depCode) {
   var data = {};
   for (var c in REV.com) {
     var dep = c.slice(0, 2); if (/^97/.test(c)) dep = c.slice(0, 3);
-    if (dep !== depCode) continue;
-    data[c] = { val: REV.com[c].val, lines: [fmt(REV.com[c].w) + ' ménages fiscaux'] };
+    if (dep === depCode) data[c] = { val: REV.com[c].val, lines: [fmt(REV.com[c].w) + ' ménages fiscaux'] };
   }
   return data;
 }
 
-// ============================================================
-// SOURCE 3 : Économie — DVF prix au m² (départements + communes)
-// ============================================================
 var DVF = { dept: {}, com: {}, loaded: false };
 
 function loadDVF() {
@@ -352,14 +340,8 @@ function loadDVF() {
       var cols = lines[r].split(',');
       if (cols.length < header.length) continue;
       var ech = cols[iEch], code = cols[iCode];
-      if (ech === 'departement') DVF.dept[code] = {
-        apt: num(cols[iApt]), aptN: Math.round(num(cols[iAptN]) || 0),
-        mai: num(cols[iMai]), maiN: Math.round(num(cols[iMaiN]) || 0)
-      };
-      else if (ech === 'commune') DVF.com[code] = {
-        apt: num(cols[iApt]), aptN: Math.round(num(cols[iAptN]) || 0),
-        mai: num(cols[iMai]), maiN: Math.round(num(cols[iMaiN]) || 0)
-      };
+      if (ech === 'departement') DVF.dept[code] = { apt: num(cols[iApt]), aptN: Math.round(num(cols[iAptN]) || 0), mai: num(cols[iMai]), maiN: Math.round(num(cols[iMaiN]) || 0) };
+      else if (ech === 'commune') DVF.com[code] = { apt: num(cols[iApt]), aptN: Math.round(num(cols[iAptN]) || 0), mai: num(cols[iMai]), maiN: Math.round(num(cols[iMaiN]) || 0) };
     }
     DVF.loaded = true;
     console.info('[OpenFrance] DVF chargé : ' + Object.keys(DVF.dept).length + ' départements, ' + Object.keys(DVF.com).length + ' communes');
@@ -379,51 +361,38 @@ function dvfData(which, kind) {
 }
 
 // ============================================================
-// SOURCE 4 : Politique — Présidentielle 2022 par département
+// POLITIQUE — Présidentielle 2022 (départements)
 // ============================================================
 var PRES = { t1: null, t2: null };
 
-// Fichier ministériel : 1 ligne par (département × candidat), séparateur ';'
 function parseElections(text, label) {
-  text = text.replace(/^\uFEFF/, '');
-  var lines = text.split(/\r?\n/).filter(function (l) { return l.trim().length > 0; });
-  var sep = lines[0].split(';').length >= lines[0].split(',').length ? ';' : ',';
-  var header = splitCSVLine(lines[0], sep).map(function (h) { return h.trim().toLowerCase(); });
-  console.info('[OpenFrance] En-tête ' + label + ' :', header.join(' | '));
-  function find(re, not) {
-    for (var i = 0; i < header.length; i++) {
-      if (re.test(header[i]) && (!not || !not.test(header[i]))) return i;
-    }
-    return -1;
-  }
-  var iDep = find(/code.*d[eé]part/);
-  if (iDep === -1) iDep = 0;
-  var iIns = find(/inscrit/);
-  var iAbs = find(/abstention/);
-  var iExpr = find(/exprim/);
-  var iNom = find(/^nom$/);
-  var iVoix = find(/^voix$/);
-  if (iIns === -1 || iAbs === -1 || iVoix === -1 || iNom === -1) {
-    throw new Error('colonnes élections non trouvées (ins=' + iIns + ', abs=' + iAbs + ', nom=' + iNom + ', voix=' + iVoix + ')');
-  }
+  var p = csvRows(text);
+  console.info('[OpenFrance] En-tête ' + label + ' :', p.header.join(' | '));
+  var iDep = colIdx(p.header, /code.*d[eé]part/); if (iDep === -1) iDep = 0;
+  var iIns = colIdx(p.header, /inscrit/);
+  var iAbs = colIdx(p.header, /abstention/);
+  var iExpr = colIdx(p.header, /exprim/);
+  var iNom = colIdx(p.header, /^nom$/);
+  var iVoix = colIdx(p.header, /^voix$/);
+  var iNua = colIdx(p.header, /nuance/);
+  if (iIns === -1 || iAbs === -1 || iVoix === -1 || iNom === -1) throw new Error('colonnes élections non trouvées');
   var depts = {};
-  for (var r = 1; r < lines.length; r++) {
-    var cols = splitCSVLine(lines[r], sep);
-    if (cols.length < header.length) continue;
-    var code = (cols[iDep] || '').trim();
-    if (!/^(\d{2}|\d{3}|2A|2B)$/.test(code)) continue;
-    var ins = num(cols[iIns]), abs = num(cols[iAbs]), expr = num(cols[iExpr] !== -1 ? cols[iExpr] : null);
+  p.rows.forEach(function (cols) {
+    var code = normDep(cols[iDep]);
+    if (!/^(\d{2}|\d{3}|2A|2B)$/.test(code)) return;
+    var ins = num(cols[iIns]), abs = num(cols[iAbs]), expr = num(cols[iExpr] !== undefined ? cols[iExpr] : null);
     var voix = num(cols[iVoix]);
     var nom = (cols[iNom] || '').trim();
+    var nuance = iNua !== -1 ? (cols[iNua] || '').trim() : '';
     if (!depts[code]) depts[code] = { inscrits: ins, abstentions: abs, exprimes: expr || 0, candidats: [] };
     var pctExp = (expr && expr > 0) ? (voix / expr) * 100 : 0;
-    depts[code].candidats.push({ nom: nom, voix: voix || 0, pct: pctExp });
-  }
-  // Vainqueur par département
+    depts[code].candidats.push({ nom: nom, nuance: nuance, voix: voix || 0, pct: pctExp });
+  });
   for (var d in depts) {
     var cand = depts[d].candidats.slice().sort(function (a, b) { return b.voix - a.voix; });
     depts[d].winner = cand[0] ? cand[0].nom : null;
     depts[d].winnerPct = cand[0] ? cand[0].pct : 0;
+    depts[d].winnerNua = cand[0] ? cand[0].nuance : '';
     depts[d].abstPct = depts[d].inscrits > 0 ? (depts[d].abstentions / depts[d].inscrits) * 100 : 0;
   }
   if (!Object.keys(depts).length) throw new Error('aucun département parsé dans ' + label);
@@ -445,7 +414,7 @@ function electionsWinnerData(tour) {
     var e = src[d];
     data[d] = {
       key: e.winner, val: e.winnerPct,
-      lines: [fmt(e.winnerPct) + ' % des exprimés', fmt(e.inscrits) + ' inscrits']
+      lines: [fmt(e.winnerPct) + ' % des exprimés', (e.winnerNua ? 'Nuance : ' + e.winnerNua : ''), fmt(e.inscrits) + ' inscrits'].filter(Boolean)
     };
   }
   return data;
@@ -467,7 +436,7 @@ function electionsCandidateData(tour, nomCand) {
     var c = null;
     for (var i = 0; i < e.candidats.length; i++) if (e.candidats[i].nom === nomCand) c = e.candidats[i];
     if (!c) continue;
-    data[d] = { val: c.pct, lines: [fmt(c.voix) + ' voix', fmt(e.inscrits) + ' inscrits'] };
+    data[d] = { val: c.pct, lines: [fmt(c.voix) + ' voix', (c.nuance ? 'Nuance : ' + c.nuance : ''), fmt(e.inscrits) + ' inscrits'].filter(Boolean) };
   }
   return data;
 }
@@ -479,13 +448,262 @@ function electionsCandidates(tour) {
 }
 
 // ============================================================
+// POLITIQUE — Législatives 2024 (circonscriptions, nuances)
+// ============================================================
+var LEG = {
+  loaded: false,
+  circos: {},           // codCir -> { dep, inscrits, abstentions, exprimes }
+  seatsByDep: {},       // dep -> { nuanceCode: sièges }
+  seatsByNua: {},       // code -> sièges nationaux
+  nuaLabels: {},        // code -> libellé
+  votesByDepNua: {},    // dep -> { nuance: voix T1 }
+  exprByDep: {},        // dep -> exprimés T1
+  abstPctByDep: {}      // dep -> % abstention pondéré
+};
+
+function loadLegislatives() {
+  if (LEG.loaded) return Promise.resolve();
+  return Promise.all([fetchTextCached(URLS.legT1), fetchTextCached(URLS.legT2)]).then(function (res) {
+    // --- T1 : une ligne par candidat (format long) ---
+    var p1 = csvRows(res[0]);
+    console.info('[OpenFrance] En-tête législatives T1 :', p1.header.join(' | '));
+    var h = p1.header;
+    var iDep = colIdx(h, /^departement$/);
+    var iCir = colIdx(h, /^codcirelec$/);
+    var iIns = colIdx(h, /^inscrits$/);
+    var iAbs = colIdx(h, /^abstentions$/);
+    var iExp = colIdx(h, /^exprimes$/);
+    var iNuaC = colIdx(h, /^codnuacand$/);
+    var iNuaL = colIdx(h, /^libnuacand$/);
+    var iVoix = colIdx(h, /^nbvoix$/);
+    var iElu = colIdx(h, /^elu$/);
+    if (iDep === -1 || iCir === -1 || iVoix === -1) throw new Error('colonnes législatives T1 non trouvées');
+    p1.rows.forEach(function (cols) {
+      var dep = normDep(cols[iDep]);
+      var cir = (cols[iCir] || '').trim();
+      if (!/^(\d{2}|\d{3}|2A|2B)$/.test(dep)) return;
+      var code = dep + '|' + cir;
+      if (!LEG.circos[code]) {
+        LEG.circos[code] = {
+          dep: dep,
+          inscrits: num(cols[iIns]) || 0,
+          abstentions: num(cols[iAbs]) || 0,
+          exprimes: num(cols[iExp]) || 0
+        };
+      }
+      var nuaC = (cols[iNuaC] || '').trim();
+      if (nuaC && iNuaL !== -1) LEG.nuaLabels[nuaC] = (cols[iNuaL] || '').trim();
+      var voix = num(cols[iVoix]) || 0;
+      if (!LEG.votesByDepNua[dep]) LEG.votesByDepNua[dep] = {};
+      LEG.votesByDepNua[dep][nuaC] = (LEG.votesByDepNua[dep][nuaC] || 0) + voix;
+      // Élu dès le 1er tour
+      var elu = (cols[iElu] || '').trim().toLowerCase();
+      if (elu && elu !== 'non' && elu !== 'qualif t2') addSeat(dep, nuaC);
+    });
+    // Agrégats départements T1
+    for (var code in LEG.circos) {
+      var c = LEG.circos[code];
+      LEG.exprByDep[c.dep] = (LEG.exprByDep[c.dep] || 0) + c.exprimes;
+    }
+    // --- T2 : une ligne par circo, candidats en colonnes (format large) ---
+    var p2 = csvRows(res[1]);
+    console.info('[OpenFrance] En-tête législatives T2 :', p2.header.slice(0, 30).join(' | ') + '…');
+    var h2 = p2.header;
+    var iDep2 = colIdx(h2, /code.*d[eé]part/);
+    var iCir2 = colIdx(h2, /code.*circonscription/);
+    var iEluPrefix = [];
+    for (var n = 1; n <= 6; n++) {
+      var iNua = colIdx(h2, new RegExp('^nuance candidat ' + n + '$'));
+      var iEl = colIdx(h2, new RegExp('^elu ' + n + '$'));
+      if (iNua !== -1 && iEl !== -1) iEluPrefix.push({ nua: iNua, elu: iEl });
+    }
+    if (iDep2 === -1 || !iEluPrefix.length) throw new Error('colonnes législatives T2 non trouvées');
+    var seenCir = {};
+    p2.rows.forEach(function (cols) {
+      var dep = normDep(cols[iDep2]);
+      var cir = (cols[iCir2] || '').trim();
+      var key = dep + '|' + cir;
+      if (seenCir[key]) return; seenCir[key] = 1;
+      iEluPrefix.forEach(function (m) {
+        var elu = (cols[m.elu] || '').trim().toLowerCase();
+        if (elu.indexOf('élu') !== -1 && elu.indexOf('éliminé') === -1) {
+          addSeat(dep, (cols[m.nua] || '').trim());
+        }
+      });
+    });
+    function nuanceLabel(code) { return LEG.nuaLabels[code] || code; }
+    LEG.nuaLabel = nuanceLabel;
+    LEG.loaded = true;
+    console.info('[OpenFrance] Législatives : ' + countSeats() + ' sièges, ' + Object.keys(LEG.nuaLabels).length + ' nuances');
+  });
+
+  function addSeat(dep, nuaC) {
+    if (!nuaC) return;
+    if (!LEG.seatsByDep[dep]) LEG.seatsByDep[dep] = {};
+    LEG.seatsByDep[dep][nuaC] = (LEG.seatsByDep[dep][nuaC] || 0) + 1;
+    LEG.seatsByNua[nuaC] = (LEG.seatsByNua[nuaC] || 0) + 1;
+  }
+  function countSeats() {
+    var t = 0; for (var k in LEG.seatsByNua) t += LEG.seatsByNua[k];
+    return t;
+  }
+}
+
+function legSeatsWinnerData() {
+  var data = {};
+  for (var dep in LEG.seatsByDep) {
+    var best = null, total = 0, parts = [];
+    for (var nua in LEG.seatsByDep[dep]) {
+      var s = LEG.seatsByDep[dep][nua];
+      total += s;
+      parts.push({ nua: nua, s: s });
+      if (!best || s > best.s) best = { nua: nua, s: s };
+    }
+    parts.sort(function (a, b) { return b.s - a.s; });
+    var breakdown = parts.slice(0, 4).map(function (p) { return LEG.nuaLabel(p.nua) + ' : ' + p.s; }).join(' · ');
+    data[dep] = { key: LEG.nuaLabel(best.nua), val: best.s, catUnit: ' sièges', lines: [total + ' sièges au total', breakdown] };
+  }
+  return data;
+}
+
+function legSeatsNuaData(nuaCode) {
+  var label = LEG.nuaLabel(nuaCode);
+  var data = {};
+  for (var dep in LEG.seatsByDep) {
+    var s = LEG.seatsByDep[dep][nuaCode] || 0;
+    data[dep] = { val: s, lines: [label] };
+  }
+  return data;
+}
+
+function legAbstData() {
+  var data = {};
+  for (var code in LEG.circos) {
+    var c = LEG.circos[code];
+    var d = c.dep;
+    if (!data[d]) data[d] = { ins: 0, abs: 0 };
+    data[d].ins += c.inscrits;
+    data[d].abs += c.abstentions;
+  }
+  var out = {};
+  for (var dep in data) {
+    out[dep] = {
+      val: data[dep].ins > 0 ? (data[dep].abs / data[dep].ins) * 100 : 0,
+      lines: [fmt(data[dep].ins) + ' inscrits', fmt(data[dep].abs) + ' abstentions', '<i>T1, pondéré par circonscription</i>']
+    };
+  }
+  return out;
+}
+
+function legVotesNuaData(nuaCode) {
+  var label = LEG.nuaLabel(nuaCode);
+  var data = {};
+  for (var dep in LEG.votesByDepNua) {
+    var voix = LEG.votesByDepNua[dep][nuaCode] || 0;
+    var expr = LEG.exprByDep[dep] || 0;
+    if (expr <= 0) continue;
+    data[dep] = { val: (voix / expr) * 100, lines: [fmt(voix) + ' voix (T1)', label] };
+  }
+  return data;
+}
+
+function topNuances(max) {
+  var arr = Object.keys(LEG.seatsByNua).sort(function (a, b) { return LEG.seatsByNua[b] - LEG.seatsByNua[a]; });
+  return arr.slice(0, max || 8);
+}
+
+// ============================================================
+// POLITIQUE — Européennes 2024 (départements, toutes les listes)
+// ============================================================
+var EURO = { loaded: false, byDep: {}, lists: {} }; // lists: label -> voix nationales
+
+function loadEuropeennes() {
+  if (EURO.loaded) return Promise.resolve();
+  return fetchTextCached(URLS.euroDep).then(function (text) {
+    var p = csvRows(text);
+    console.info('[OpenFrance] En-tête européennes (extrait) :', p.header.slice(0, 25).join(' | ') + '…');
+    var h = p.header;
+    var iDep = colIdx(h, /code.*d[eé]part/);
+    var iIns = colIdx(h, /inscrit/);
+    var iAbs = colIdx(h, /abstention/);
+    if (iDep === -1) throw new Error('colonne département européennes non trouvée');
+    var lists = [];
+    for (var n = 1; n <= 38; n++) {
+      var iNua = colIdx(h, new RegExp('^nuance liste ' + n + '$'));
+      var iLab = colIdx(h, new RegExp('^libellé abrégé de liste ' + n + '$'));
+      var iVoix = colIdx(h, new RegExp('^voix ' + n + '$'));
+      var iPct = colIdx(h, new RegExp('% voix/exprimés ' + n + '$'));
+      if (iVoix !== -1) lists.push({ n: n, nua: iNua, lab: iLab, voix: iVoix, pct: iPct });
+    }
+    if (!lists.length) throw new Error('colonnes listes européennes non trouvées');
+    p.rows.forEach(function (cols) {
+      var dep = normDep(cols[iDep]);
+      if (!/^(\d{2}|\d{3}|2A|2B)$/.test(dep)) return;
+      var ins = num(cols[iIns]) || 0, abs = num(cols[iAbs]) || 0;
+      var entry = { inscrits: ins, abstentions: abs, lists: [] };
+      lists.forEach(function (L) {
+        var voix = num(cols[L.voix]);
+        if (voix === null || voix === 0) return;
+        var label = L.lab !== -1 ? (cols[L.lab] || '').trim() : ('Liste ' + L.n);
+        var nua = L.nua !== -1 ? (cols[L.nua] || '').trim() : '';
+        var pct = L.pct !== -1 ? num(cols[L.pct]) : null;
+        entry.lists.push({ label: label, nua: nua, voix: voix, pct: pct });
+        EURO.lists[label] = (EURO.lists[label] || 0) + voix;
+      });
+      entry.lists.sort(function (a, b) { return b.voix - a.voix; });
+      EURO.byDep[dep] = entry;
+    });
+    EURO.loaded = true;
+    console.info('[OpenFrance] Européennes : ' + Object.keys(EURO.byDep).length + ' départements, ' + Object.keys(EURO.lists).length + ' listes');
+  });
+}
+
+function euroWinnerData() {
+  var data = {};
+  for (var dep in EURO.byDep) {
+    var e = EURO.byDep[dep];
+    if (!e.lists.length) continue;
+    var top = e.lists[0];
+    data[dep] = {
+      key: top.label, val: top.pct !== null ? top.pct : 0, catUnit: ' % des exprimés',
+      lines: [fmt(top.voix) + ' voix', (top.nua ? 'Nuance : ' + top.nua : ''), fmt(e.inscrits) + ' inscrits'].filter(Boolean)
+    };
+  }
+  return data;
+}
+
+function euroListData(label) {
+  var data = {};
+  for (var dep in EURO.byDep) {
+    var e = EURO.byDep[dep];
+    var found = null;
+    e.lists.forEach(function (l) { if (l.label === label) found = l; });
+    if (!found) continue;
+    data[dep] = { val: found.pct !== null ? found.pct : 0, lines: [fmt(found.voix) + ' voix', (found.nua ? 'Nuance : ' + found.nua : '')].filter(Boolean) };
+  }
+  return data;
+}
+
+function euroAbstData() {
+  var data = {};
+  for (var dep in EURO.byDep) {
+    var e = EURO.byDep[dep];
+    data[dep] = {
+      val: e.inscrits > 0 ? (e.abstentions / e.inscrits) * 100 : 0,
+      lines: [fmt(e.inscrits) + ' inscrits', fmt(e.abstentions) + ' abstentions']
+    };
+  }
+  return data;
+}
+
+function topEuroLists(max) {
+  var arr = Object.keys(EURO.lists).sort(function (a, b) { return EURO.lists[b] - EURO.lists[a]; });
+  return arr.slice(0, max || 8);
+}
+
+// ============================================================
 // REGISTRE DES INDICATEURS
 // ============================================================
-// Chaque indicateur :
-//   { cat, label, unit, type: 'num'|'cat', hasYears, hasCommunes,
-//     ensure: Promise (charge ses sources),
-//     france(): {code -> {val, lines, key?}},
-//     communes(depCode): idem ou null }
 var REGISTRY = [];
 
 function registerDelinquanceIndicators() {
@@ -513,65 +731,107 @@ function registerEconomieIndicators() {
   REGISTRY.push({
     cat: 'economie', label: 'Niveau de vie médian (Filosofi, 2021)', unit: '€/an', type: 'num',
     hasYears: false, hasCommunes: true,
-    ensure: loadRevenus,
-    france: revenusFrance,
-    communes: revenusCommunes
+    ensure: loadRevenus, france: revenusFrance, communes: revenusCommunes
   });
-  REGISTRY.push({
-    cat: 'economie', label: 'Prix moyen au m² — appartements (DVF, 2015-2025)', unit: '€/m²', type: 'num',
-    hasYears: false, hasCommunes: true,
-    ensure: loadDVF,
-    france: function () { return dvfData('apt', 'dept'); },
-    communes: function (dep) {
-      var all = dvfData('apt', 'com'), out = {};
-      for (var c in all) {
-        var d = c.slice(0, 2); if (/^97/.test(c)) d = c.slice(0, 3);
-        if (d === dep) out[c] = all[c];
+  ['apt', 'mai'].forEach(function (which) {
+    var lab = which === 'apt' ? 'appartements' : 'maisons';
+    REGISTRY.push({
+      cat: 'economie', label: 'Prix moyen au m² — ' + lab + ' (DVF, 2015-2025)', unit: '€/m²', type: 'num',
+      hasYears: false, hasCommunes: true,
+      ensure: loadDVF,
+      france: function () { return dvfData(which, 'dept'); },
+      communes: function (dep) {
+        var all = dvfData(which, 'com'), out = {};
+        for (var c in all) {
+          var d = c.slice(0, 2); if (/^97/.test(c)) d = c.slice(0, 3);
+          if (d === dep) out[c] = all[c];
+        }
+        return out;
       }
-      return out;
-    }
-  });
-  REGISTRY.push({
-    cat: 'economie', label: 'Prix moyen au m² — maisons (DVF, 2015-2025)', unit: '€/m²', type: 'num',
-    hasYears: false, hasCommunes: true,
-    ensure: loadDVF,
-    france: function () { return dvfData('mai', 'dept'); },
-    communes: function (dep) {
-      var all = dvfData('mai', 'com'), out = {};
-      for (var c in all) {
-        var d = c.slice(0, 2); if (/^97/.test(c)) d = c.slice(0, 3);
-        if (d === dep) out[c] = all[c];
-      }
-      return out;
-    }
+    });
   });
 }
 
 function registerPolitiqueIndicators() {
-  function mk(label, dataFn) {
-    REGISTRY.push({
-      cat: 'politique', label: label, unit: '%', type: 'num',
-      hasYears: false, hasCommunes: false,
-      ensure: loadElections, france: dataFn, communes: null
-    });
-  }
+  // --- Présidentielle 2022 ---
   REGISTRY.push({
-    cat: 'politique', label: 'Candidat en tête — Présidentielle 2022 (T1)', unit: '%', type: 'cat',
+    cat: 'politique', label: 'Présidentielle 2022 — candidat en tête (T1)', unit: '%', type: 'cat',
     hasYears: false, hasCommunes: false,
     ensure: loadElections, france: function () { return electionsWinnerData(1); }, communes: null
   });
-  mk('Abstention — Présidentielle 2022 (T1)', function () { return electionsAbstData(1); });
+  REGISTRY.push({
+    cat: 'politique', label: 'Présidentielle 2022 — abstention (T1)', unit: '%', type: 'num',
+    hasYears: false, hasCommunes: false,
+    ensure: loadElections, france: function () { return electionsAbstData(1); }, communes: null
+  });
   electionsCandidates(1).forEach(function (nom) {
-    mk('Voix ' + nom + ' — T1 2022 (%)', function () { return electionsCandidateData(1, nom); });
+    REGISTRY.push({
+      cat: 'politique', label: 'Présidentielle 2022 — voix ' + nom + ' (T1, %)', unit: '%', type: 'num',
+      hasYears: false, hasCommunes: false,
+      ensure: loadElections, france: function () { return electionsCandidateData(1, nom); }, communes: null
+    });
   });
   REGISTRY.push({
-    cat: 'politique', label: 'Candidat en tête — Présidentielle 2022 (T2)', unit: '%', type: 'cat',
+    cat: 'politique', label: 'Présidentielle 2022 — candidat en tête (T2)', unit: '%', type: 'cat',
     hasYears: false, hasCommunes: false,
     ensure: loadElections, france: function () { return electionsWinnerData(2); }, communes: null
   });
-  mk('Abstention — Présidentielle 2022 (T2)', function () { return electionsAbstData(2); });
+  REGISTRY.push({
+    cat: 'politique', label: 'Présidentielle 2022 — abstention (T2)', unit: '%', type: 'num',
+    hasYears: false, hasCommunes: false,
+    ensure: loadElections, france: function () { return electionsAbstData(2); }, communes: null
+  });
   electionsCandidates(2).forEach(function (nom) {
-    mk('Voix ' + nom + ' — T2 2022 (%)', function () { return electionsCandidateData(2, nom); });
+    REGISTRY.push({
+      cat: 'politique', label: 'Présidentielle 2022 — voix ' + nom + ' (T2, %)', unit: '%', type: 'num',
+      hasYears: false, hasCommunes: false,
+      ensure: loadElections, france: function () { return electionsCandidateData(2, nom); }, communes: null
+    });
+  });
+
+  // --- Législatives 2024 ---
+  REGISTRY.push({
+    cat: 'politique', label: 'Législatives 2024 — nuance majoritaire (sièges)', unit: 'sièges', type: 'cat',
+    hasYears: false, hasCommunes: false,
+    ensure: loadLegislatives, france: legSeatsWinnerData, communes: null
+  });
+  topNuances(8).forEach(function (nua) {
+    REGISTRY.push({
+      cat: 'politique', label: 'Législatives 2024 — sièges ' + LEG.nuaLabel(nua), unit: 'sièges', type: 'num',
+      hasYears: false, hasCommunes: false,
+      ensure: loadLegislatives, france: function () { return legSeatsNuaData(nua); }, communes: null
+    });
+  });
+  REGISTRY.push({
+    cat: 'politique', label: 'Législatives 2024 — abstention (T1)', unit: '%', type: 'num',
+    hasYears: false, hasCommunes: false,
+    ensure: loadLegislatives, france: legAbstData, communes: null
+  });
+  topNuances(6).forEach(function (nua) {
+    REGISTRY.push({
+      cat: 'politique', label: 'Législatives 2024 — voix ' + LEG.nuaLabel(nua) + ' (T1, %)', unit: '%', type: 'num',
+      hasYears: false, hasCommunes: false,
+      ensure: loadLegislatives, france: function () { return legVotesNuaData(nua); }, communes: null
+    });
+  });
+
+  // --- Européennes 2024 ---
+  REGISTRY.push({
+    cat: 'politique', label: 'Européennes 2024 — liste en tête', unit: '%', type: 'cat',
+    hasYears: false, hasCommunes: false,
+    ensure: loadEuropeennes, france: euroWinnerData, communes: null
+  });
+  REGISTRY.push({
+    cat: 'politique', label: 'Européennes 2024 — abstention', unit: '%', type: 'num',
+    hasYears: false, hasCommunes: false,
+    ensure: loadEuropeennes, france: euroAbstData, communes: null
+  });
+  topEuroLists(6).forEach(function (label) {
+    REGISTRY.push({
+      cat: 'politique', label: 'Européennes 2024 — voix ' + label + ' (%)', unit: '%', type: 'num',
+      hasYears: false, hasCommunes: false,
+      ensure: loadEuropeennes, france: function () { return euroListData(label); }, communes: null
+    });
   });
 }
 
@@ -585,7 +845,6 @@ function renderChoropleth(geo, data, indicator, unitLabel) {
   legend.innerHTML = '';
 
   if (indicator.type === 'cat') {
-    // Légende catégorielle : une couleur par vainqueur
     var counts = {};
     values.forEach(function (d) { if (d.key) counts[d.key] = (counts[d.key] || 0) + 1; });
     var keys = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
@@ -646,7 +905,8 @@ function renderChoropleth(geo, data, indicator, unitLabel) {
       var txt = '<b>' + nom + (state.view === 'france' ? ' (' + code + ')' : '') + '</b>';
       if (d) {
         if (indicator.type === 'cat') {
-          txt += '<br>En tête : <b style="color:' + catColor(d.key) + '">' + d.key + '</b> — ' + fmt(d.val) + ' %';
+          txt += '<br>En tête : <b style="color:' + catColor(d.key) + '">' + d.key + '</b>' +
+                 '<br><b>' + fmt(d.val) + (d.catUnit || ' %') + '</b>';
         } else {
           txt += '<br><b>' + fmt(d.val) + '</b> ' + indicator.unit;
         }
@@ -659,7 +919,6 @@ function renderChoropleth(geo, data, indicator, unitLabel) {
     }
   }).addTo(map);
 
-  // Top 10 (numérique) ou classement (catégoriel)
   var top = document.getElementById('toplist');
   top.innerHTML = '';
   document.getElementById('topTitle').textContent = state.view === 'france' ? 'Top 10 départements' : 'Top 10 communes';
@@ -672,7 +931,7 @@ function renderChoropleth(geo, data, indicator, unitLabel) {
       var sp = document.createElement('span');
       sp.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + catColor(key) + '"></span> ' + key;
       var v = document.createElement('span');
-      v.innerHTML = '<b>' + counts2[key] + '</b> dept.';
+      v.innerHTML = '<b>' + counts2[key] + '</b>';
       row.appendChild(sp); row.appendChild(v);
       top.appendChild(row);
     });
@@ -694,12 +953,10 @@ function renderChoropleth(geo, data, indicator, unitLabel) {
   setStatus(values.length + ' ' + unitLabel + ' affiché(e)s');
 }
 
-// Complète les noms dans data depuis le geo
 function applyNames(data, geo) {
   geo.features.forEach(function (f) { if (data[f.properties.code]) data[f.properties.code].nom = f.properties.nom; });
 }
 
-// ---------- Vue France ----------
 function updateFrance() {
   var ind = state.indicator;
   if (!ind) return;
@@ -709,7 +966,6 @@ function updateFrance() {
   renderChoropleth(state.geo, data, ind, 'départements');
 }
 
-// ---------- Vue département ----------
 function openDepartment(code, nom) {
   state.view = 'dep';
   state.dep = { code: code, nom: nom };
@@ -734,13 +990,7 @@ function refresh() {
   if (state.view === 'france') {
     updateFrance();
   } else if (ind.hasCommunes) {
-    // Délinquance : communes via API ; Économie : communes déjà chargées
-    var prep;
-    if (ind.cat === 'delinquance') {
-      prep = loadCommunesDelinquance(state.dep.code, state.annee);
-    } else {
-      prep = Promise.resolve();
-    }
+    var prep = ind.cat === 'delinquance' ? loadCommunesDelinquance(state.dep.code, state.annee) : Promise.resolve();
     prep.then(function () {
       var geoPromise = state.communesGeo[state.dep.code] ? Promise.resolve(state.communesGeo[state.dep.code]) :
         fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[state.dep.code] + '/communes-' + DEP_FOLDERS[state.dep.code] + '.geojson')
@@ -758,12 +1008,10 @@ function refresh() {
     });
   } else {
     setStatus('ℹ️ Indicateur disponible uniquement au niveau départemental.');
-    var top = document.getElementById('toplist');
-    top.innerHTML = '<p class="muted">Non disponible au niveau communal.</p>';
+    document.getElementById('toplist').innerHTML = '<p class="muted">Non disponible au niveau communal.</p>';
   }
 }
 
-// ---------- UI ----------
 function catIndicators(cat) { return REGISTRY.filter(function (i) { return i.cat === cat; }); }
 
 function fillIndicatorSelect() {
@@ -807,23 +1055,16 @@ function selectIndicator(label, keepView) {
 }
 
 function initUI() {
-  // Enregistre délinquance puis construit l'UI ; éco et politique s'enregistrent au chargement de leurs sources
   registerDelinquanceIndicators();
   fillIndicatorSelect();
   selectIndicator(catIndicators('delinquance')[0].label, false);
 
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
-    if (state.category === 'economie' && catIndicators('economie').length === 0) {
-      registerEconomieIndicators();
-    }
-    if (state.category === 'politique' && catIndicators('politique').length === 0) {
-      registerPolitiqueIndicators();
-    }
+    if (state.category === 'economie' && catIndicators('economie').length === 0) registerEconomieIndicators();
+    if (state.category === 'politique' && catIndicators('politique').length === 0) registerPolitiqueIndicators();
     fillIndicatorSelect();
-    if (catIndicators(state.category).length) {
-      selectIndicator(catIndicators(state.category)[0].label, false);
-    }
+    if (catIndicators(state.category).length) selectIndicator(catIndicators(state.category)[0].label, false);
   });
   document.getElementById('indicatorSelect').addEventListener('change', function () {
     selectIndicator(this.value, true);
@@ -835,7 +1076,6 @@ function initUI() {
   document.getElementById('backBtn').addEventListener('click', backToFrance);
 }
 
-// ---------- Démarrage ----------
 setStatus('⏳ Chargement des données…', 'loading');
 Promise.all([
   fetchTextCached(URLS.delinquance),

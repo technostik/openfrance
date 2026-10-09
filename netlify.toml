@@ -40,8 +40,7 @@
   status = 200
   force = true
 
-# --- Politique ---
-# Présidentielle 2022, résultats par département
+# --- Politique : présidentielle 2022 (résultats par département) ---
 [[redirects]]
   from = "/data/pres2022-t1.txt"
   to = "https://static.data.gouv.fr/resources/election-presidentielle-des-10-et-24-avril-2022-resultats-definitifs-du-1er-tour/20220414-152356/resultats-par-niveau-dpt-t1-france-entiere.txt"
@@ -51,5 +50,25 @@
 [[redirects]]
   from = "/data/pres2022-t2.txt"
   to = "https://static.data.gouv.fr/resources/election-presidentielle-des-10-et-24-avril-2022-resultats-definitifs-du-2nd-tour/20220428-142127/resultats-par-niveau-dpt-t2-france-entiere.txt"
+  status = 200
+  force = true
+
+# --- Politique : législatives 2024 (par circonscription, avec nuances) ---
+[[redirects]]
+  from = "/data/leg2024-t1.csv"
+  to = "https://static.data.gouv.fr/resources/resultats-du-1er-tour-des-elections-legislatives-2024-par-circonscription/20240701-162320/lg2024-resultats-circonscriptions-une-ligne-par-candidat2.csv"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/data/leg2024-t2.csv"
+  to = "https://static.data.gouv.fr/resources/elections-legislatives-des-30-juin-et-7-juillet-2024-resultats-definitifs-du-2nd-tour/20240710-170728/resultats-definitifs-par-circonscription.csv"
+  status = 200
+  force = true
+
+# --- Politique : européennes 2024 (par département) ---
+[[redirects]]
+  from = "/data/euro2024-dep.csv"
+  to = "https://static.data.gouv.fr/resources/resultats-des-elections-europeennes-du-9-juin-2024/20240613-154909/resultats-definitifs-par-departement.csv"
   status = 200
   force = true
