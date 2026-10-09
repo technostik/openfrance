@@ -18,6 +18,14 @@
   status = 200
   force = true
 
+# Loyers d'annonce par commune (« Carte des loyers » 2025, MTE — API tabulaire data.gouv)
+# Filtre utilisé côté client : DEP__exact=31 (score31.js)
+[[redirects]]
+  from = "/api/loyers/*"
+  to = "https://tabular-api.data.gouv.fr/api/resources/55b34088-0964-415f-9df7-d87dd98a09be/data/:splat"
+  status = 200
+  force = true
+
 # Contours des communes, par département (france-geojson, données IGN)
 [[redirects]]
   from = "/geo/communes/*"
