@@ -27,6 +27,7 @@
       <option value="economie">Économie</option>
       <option value="politique">Politique</option>
       <option value="annuaire">Associations & entreprises</option>
+      <option value="score31">Score perso (31)</option>
     </select>
   </label>
   <label id="indicatorLabel">Indicateur
@@ -50,6 +51,23 @@
       <select id="annCat"><option value="">Toutes catégories</option></select>
     </label>
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
+  </div>
+  <div id="scoreControls" style="display:none">
+    <label>📍 Distance Toulouse
+      <input id="scDist" type="range" min="0" max="10" value="5"> <b id="scDistV">5</b>
+    </label>
+    <label>🛡 Sécurité
+      <input id="scSecu" type="range" min="0" max="10" value="5"> <b id="scSecuV">5</b>
+    </label>
+    <label>💰 Loyers (bas = mieux)
+      <input id="scLoyer" type="range" min="0" max="10" value="5"> <b id="scLoyerV">5</b>
+    </label>
+    <label>🥋 Clubs
+      <input id="scClubs" type="range" min="0" max="10" value="3"> <b id="scClubsV">3</b>
+    </label>
+    <label>Requête clubs
+      <input id="scQuery" type="text" value="mma + systema + ninjutsu" placeholder="ex. mma + systema + ninjutsu - boxe">
+    </label>
   </div>
   <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
   <span id="status">⏳ Chargement des données…</span>
@@ -93,6 +111,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 <script src="annuaire.js"></script>
+<script src="score31.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
