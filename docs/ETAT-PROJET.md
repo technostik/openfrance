@@ -48,7 +48,7 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - Normalisation P5–P95 avec saturation par critère (`scBounds`) ; score = Σ poids×part / Σ poids ; **donnée absente → part neutre 0,5** ; critère non chargé → neutre également.
 - **Temps réel** : `scDraw` recalcule puis `setStyle` en place (jamais de recréation de couche) ; les chargements de données sont paresseux, par critère, avec dédoublonnage (`SC.valCache[key].promise`).
 - Couleurs : `colorFor(1 − score)` (vert = bon score) ; **meilleure commune en bleu** (#2563eb, bordure blanche, 🏆 infobulle/légende/top 10) ; infobulle détaillée = valeur de chaque critère.
-- Au premier passage, critères par défaut = reproduction de l'ancien score perso (distance Toulouse, délinquance ensemble, loyers, assos « mma + systema + ninjutsu » ; poids 5/5/5/3).
+- Au premier passage, critères par défaut = reproduction de l'ancien score perso (distance Toulouse, délinquance ensemble, loyers, assos « "mma" + "systema" + ninjutsu » ; poids 5/5/5/3).
 - Mode isolé : retire `geoLayer`, couche propre `SC.layer`, ne remplace pas `refresh`, réutilise les caches existants (IndexedDB assos, `state.communesGeo`/`communesCache`, SW `/data/` et `/api/`).
 
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
