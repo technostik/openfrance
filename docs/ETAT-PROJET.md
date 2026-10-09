@@ -13,6 +13,7 @@ index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (rec
 style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*) et cache (.cache-*)
 app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI)
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
+score31.js      — Mode Score perso (31) : indice ad hoc pondérable des communes du 31 (branche de test `score31`)
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
 netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises
 ```
@@ -39,6 +40,14 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - **Marqueurs par différence** (`annSyncMarkers` + `ANN.markerIndex`) : à chaque frappe, seuls les nouveaux marqueurs sont créés, les disparus retirés — jamais de recréation complète (anti-scintillement). Clés : `a:<id RNA>` / `e:<siren>`.
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
 - `annEnter`/`annLeave` : **conservent le département courant** (pas de retour forcé à la France).
+
+### score31.js — mode « Score perso (31) » (branche de test `score31`)
+- Indice composite **ad hoc** des communes du 31 uniquement, **hors REGISTRY** : `scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` (app.js) via `typeof` guards (score31.js se charge après app.js).
+- 4 critères normalisés P5–P95 avec saturation (`scBounds`, même logique que `scaleBounds`) : **distance à Toulouse** (haversine centroïde→centroïde via `annCentroids`), **sécurité** (taux ‰ ensemble des faits, dernière année, `loadCommunesDelinquance`), **loyers** (€/m² prédit, Carte des loyers 2025), **clubs** (nb d'assos RNA du 31 matchant la requête `parseAnnQuery`/`annMatch`, défaut `mma + systema + ninjutsu`, 3 clubs = part max).
+- Score = Σ poids×part / Σ poids ; poids 0–10 via 4 sliders ; **donnée absente → part neutre 0,5** (pas de pénalité, ex. délinquance non diffusée des petites communes).
+- **Temps réel** : `scUpdateLive` recalcule (~600 communes, instantané) puis `setStyle` en place — jamais de recréation de couche.
+- Couleurs : `colorFor(1 − score)` (vert = bon score) ; **meilleure commune en bleu** (#2563eb, bordure blanche, 🏆 infobulle/légende/top 10).
+- Mode isolé : retire `geoLayer`, gère sa propre couche `SC.layer`, ne remplace pas `refresh`, ne touche pas aux caches existants (réutilise IndexedDB assos + RAM).
 
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
@@ -74,6 +83,10 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Associations : RNA agrégé national (Waldec) — voir architecture ci-dessus
 - Entreprises : API Recherche d'entreprises (DINUM) — gratuit, sans clé, résultats cachés IndexedDB pour économiser le quota
 
+### Score perso (31)
+- Loyers d'annonce prédits par commune : « Carte des loyers » 2025 (Ministère de la Transition écologique, dataset `693aa2feed1bf4da603faa49`), resource `55b34088-...` (colonnes `INSEE_C`, `loypredm2`) via `/api/loyers/`, filtre `DEP__exact=31` — une valeur par commune, même pour les petites (prédiction par maille).
+- Distance, sécurité et clubs réutilisent les sources existantes (france-geojson, délinquance communale, RNA) — aucune copie de données.
+
 ## 🐛 Bugs résolus (NE PAS RÉGRESSER)
 
 1. Parser CSV naïf → années NaN → maintenant regex robuste
@@ -93,6 +106,7 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
 - **Workflow** : travailler sur une branche dédiée (`work`), tester en local avec `netlify dev`, merger vers `main` seulement quand stable = 1 seul deploy
+- Branche de test **`score31`** (fork de `work`) : fonctionnalité « Score perso (31) ». Tester en local (`netlify dev`, les proxys `/api/loyers/` y sont actifs), merger vers `work`/`main` ou abandonner librement.
 - Migration Vercel envisagée (100 deploys/jour) : traduire `netlify.toml` → `vercel.json` (rewrites), rien d'autre à changer
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 
