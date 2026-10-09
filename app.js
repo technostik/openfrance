@@ -267,7 +267,11 @@ function delinquanceCommunes(depCode, indicateur, annee) {
   var entry = state.communesCache[depCode + '|' + annee];
   var data = {};
   function mk(r) {
-    return { val: r.taux, lines: [fmt(r.nombre) + ' faits constatés', (r.estim ? '<i>(estimé)</i>' : ''), 'Population : ' + fmt(r.pop)].filter(Boolean) };
+    var lines = [fmt(r.nombre) + ' faits constatés', (r.estim ? '<i>(estimé)</i>' : ''), 'Population : ' + fmt(r.pop)].filter(Boolean);
+    // Taux peu significatif sur très petite population (2 faits pour 3 habitants
+    // donnent 666 ‰) : on garde la valeur mais on prévient l'utilisateur.
+    if (r.pop && r.pop < 100) lines.push('<i>⚠️ taux peu significatif (petite population)</i>');
+    return { val: r.taux, lines: lines };
   }
   if (indicateur === TOTAL_LABEL) entry.totals.forEach(function (r) { if (r.annee === annee) data[r.zone] = mk(r); });
   else entry.rows.forEach(function (r) { if (r.indicateur === indicateur && r.annee === annee) data[r.zone] = mk(r); });
@@ -998,6 +1002,20 @@ function registerPolitiqueIndicators() {
 // ============================================================
 // RENDU
 // ============================================================
+// Bornes d'échelle robustes : percentiles P2/P98 au lieu du min/max brut.
+// Une commune de 3 habitants avec 2 faits (666 ‰) ne doit pas écraser
+// l'échelle de tous les autres territoires — les outliers saturent.
+function scaleBounds(values) {
+  var vals = values.filter(function (d) { return d.val !== null && d.val !== undefined; })
+    .map(function (d) { return d.val; }).sort(function (a, b) { return a - b; });
+  if (!vals.length) return { lo: 0, hi: 1 };
+  var lo = vals[Math.floor((vals.length - 1) * 0.05)];
+  var hi = vals[Math.floor((vals.length - 1) * 0.95)];
+  if (hi <= lo) { lo = vals[0]; hi = vals[vals.length - 1]; } // trop peu de valeurs → min/max
+  if (hi <= lo) hi = lo + 1;
+  return { lo: lo, hi: hi };
+}
+
 function renderChoropleth(geo, data, indicator, unitLabel) {
   var values = [];
   for (var k in data) if (data[k].val !== undefined) values.push(data[k]);
@@ -1020,34 +1038,41 @@ function renderChoropleth(geo, data, indicator, unitLabel) {
       legend.appendChild(row);
     });
   } else {
-    var min = Infinity, max = -Infinity;
-    values.forEach(function (d) {
-      if (d.val !== null && d.val < min) min = d.val;
-      if (d.val !== null && d.val > max) max = d.val;
-    });
-    if (!values.length) { min = 0; max = 1; }
-    var span = max - min || 1;
+    var b = scaleBounds(values);
+    var span = b.hi - b.lo;
     for (var c = 0; c < 6; c++) {
-      var lo = min + span * c / 6, hi = min + span * (c + 1) / 6;
+      var lo = b.lo + span * c / 6, hi = b.lo + span * (c + 1) / 6;
       var row = document.createElement('div');
       row.className = 'legend-row';
       var swatch = document.createElement('span');
       swatch.className = 'legend-color';
       swatch.style.background = colorFor((c + 0.5) / 6);
       var label = document.createElement('span');
-      label.textContent = (indicator.unit === '€/an' || indicator.unit === '€/m²' ? fmt(lo) + ' – ' + fmt(hi) : lo.toFixed(2) + ' – ' + hi.toFixed(2));
+      label.textContent = (indicator.unit === '€/an' || indicator.unit === '€/m²' ? fmt(lo) + ' – ' + fmt(hi)
+        : indicator.unit === '‰' ? fmt1(lo) + ' – ' + fmt1(hi)
+        : lo.toFixed(2) + ' – ' + hi.toFixed(2));
       row.appendChild(swatch); row.appendChild(label);
       legend.appendChild(row);
+    }
+    // mention quand l'échelle est écrêtée (outliers au-delà des bornes)
+    var below = 0, above = 0;
+    values.forEach(function (d) {
+      if (d.val === null || d.val === undefined) return;
+      if (d.val < b.lo) below++;
+      else if (d.val > b.hi) above++;
+    });
+    if (below || above) {
+      var note = document.createElement('p');
+      note.className = 'muted';
+      note.style.fontSize = '0.85em';
+      note.textContent = 'Échelle écrêtée (P5–P95)' + (above ? ' : ' + above + ' valeur(s) au-dessus saturées' : '') + (below ? ' : ' + below + ' en dessous' : '');
+      legend.appendChild(note);
     }
   }
 
   if (geoLayer) map.removeLayer(geoLayer);
-  var minV = Infinity, maxV = -Infinity, spanV = 1;
-  if (indicator.type === 'num') {
-    values.forEach(function (d) { if (d.val !== null && d.val < minV) minV = d.val; if (d.val !== null && d.val > maxV) maxV = d.val; });
-    if (!values.length) { minV = 0; maxV = 1; }
-    spanV = maxV - minV || 1;
-  }
+  var bounds = indicator.type === 'num' ? scaleBounds(values) : null;
+  var spanV = bounds ? (bounds.hi - bounds.lo) : 1;
 
   geoLayer = L.geoJSON(geo, {
     style: function (feature) {
@@ -1055,7 +1080,10 @@ function renderChoropleth(geo, data, indicator, unitLabel) {
       if (!d) return { weight: 1, color: '#0f172a', fillColor: '#334155', fillOpacity: 0.4 };
       var fill;
       if (indicator.type === 'cat') fill = d.key ? catColor(d.key) : '#334155';
-      else fill = colorFor((d.val - minV) / spanV);
+      else {
+        var t = Math.max(0, Math.min(1, (d.val - bounds.lo) / spanV)); // clamp : saturation aux bornes
+        fill = colorFor(t);
+      }
       return { weight: 1, color: '#0f172a', fillColor: fill, fillOpacity: 0.85 };
     },
     onEachFeature: function (feature, layer) {
