@@ -37,7 +37,7 @@
   </label>
   <div id="annControls" style="display:none">
     <label>Recherche
-      <input id="annSearch" type="text" placeholder="ex. ninjutsu + mma - boxe &quot;mma&quot;">
+      <input id="annSearch" type="text" placeholder="ex. systema + ninjutsu - boxe &quot;mma&quot;">
     </label>
     <label>Type
       <select id="annType">
@@ -54,7 +54,7 @@
   <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
   <span id="status">⏳ Chargement des données…</span>
 </section>
-<p id="annHint" class="muted" style="display:none">💡 Recherche : les mots simples sont tous requis (ET) · <b>+mot</b> = OU · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Les espaces autour des <b>+</b>/<b>-</b> sont acceptés. Les entreprises nécessitent un mot-clé.</p>
+<p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département).</p>
 <p id="annQueryExp" class="muted" style="display:none"></p>
 
 <main>
@@ -85,7 +85,7 @@
       <b>🗂 Gestion du cache local</b>
       <button id="annCacheClose" type="button" title="Fermer">✕</button>
     </div>
-    <p class="muted">Tous les caches du navigateur réunis : associations par département et nomenclature WALDEC (IndexedDB persistant), cache disque du service worker (données nationales, contours de communes, pages API) et mémoire vive. « Rafraîchir » purge puis recharge depuis la source ; « 🗑 » purge uniquement (retéléchargement à la prochaine utilisation).</p>
+    <p class="muted">Tous les caches du navigateur réunis : associations par département, nomenclature WALDEC et recherches entreprises (IndexedDB persistant), cache disque du service worker (données nationales, contours de communes, pages API) et mémoire vive. « Rafraîchir » purge puis recharge depuis la source ; « 🗑 » purge uniquement (retéléchargement à la prochaine utilisation).</p>
     <div id="annCacheList"><p class="muted">⏳ Lecture du cache…</p></div>
   </div>
 </div>

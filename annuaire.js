@@ -5,13 +5,14 @@
 //  - Associations : RNA agrégé national (Waldec) via l'API tabulaire data.gouv
 //    → chargement par département (communes INSEE du département), cache IndexedDB.
 //  - Thèmes : nomenclature WALDEC (objet social code → libellé, thème parent), cache IndexedDB (national)
-//  - Entreprises : API Recherche d'entreprises (DINUM) — recherche texte par département.
+//  - Entreprises : API Recherche d'entreprises (DINUM) — recherche texte par département
+//    → résultats mis en cache IndexedDB (une entrée par requête).
 //
 // Recherche multi-mots-clés (locale, sur les données du département en cache) :
-//   ninjutsu + mma - boxe "mma"
-//   → « ninjutsu » OU « mma », sans « boxe » ; "mma" entre guillemets = mot exact
-//   mots simples = tous requis (ET, correspondance de chaîne)
-//   +mot = OU (au moins un) · -mot = exclusion · "mot" = mot complet (frontières de mot)
+//   ninjutsu mma          → les deux requis (ET)
+//   ninjutsu + mma        → ninjutsu OU mma (dès qu'il y a un +, les mots deviennent des OU)
+//   ninjutsu + mma - boxe → ninjutsu OU mma, sans boxe
+//   "mma"                 → mot exact (frontières de mot, n'exclut pas HAMMAM... si, il l'exclut)
 //   Les espaces autour des + et - sont tolérés : « ninjutsu + mma - boxe » ≡ « ninjutsu +mma -boxe »
 
 var ANN = {
@@ -107,8 +108,8 @@ function annQueryExplain(q) {
   if (!q.req.length && !q.or.length && !q.neg.length) return '';
   var f = function (x) { return x.w ? '«&nbsp;' + esc(x.t) + '&nbsp;» (mot exact)' : '«&nbsp;' + esc(x.t) + '&nbsp;»'; };
   var parts = [];
-  if (q.req.length) parts.push('contient ' + q.req.map(f).join(' ET '));
-  if (q.or.length) parts.push('au moins un de ' + q.or.map(f).join(' / '));
+  if (q.or.length) parts.push('contient ' + q.req.concat(q.or).map(f).join(' OU '));
+  else if (q.req.length) parts.push('contient ' + q.req.map(f).join(' ET '));
   if (q.neg.length) parts.push('sans ' + q.neg.map(f).join(' ni '));
   return '🔎 ' + parts.join(' · ');
 }
@@ -126,18 +127,21 @@ function annHaystack(a) {
   if (!a._h) a._h = normTxt(a.t + ' ' + (a.o || '') + ' ' + (a.l || ''));
   return a._h;
 }
+// Sémantique : mots simples = ET · dès qu'il y a des +mots, req+or forment un OU
+// (au moins un doit matcher) · -mots = exclusion
 function annMatch(h, q) {
-  for (var i = 0; i < q.req.length; i++) if (!tokMatch(h, q.req[i])) return false;
   if (q.or.length) {
-    var ok = false;
-    for (var j = 0; j < q.or.length; j++) if (tokMatch(h, q.or[j])) { ok = true; break; }
+    var pool = q.req.concat(q.or), ok = false;
+    for (var i = 0; i < pool.length; i++) if (tokMatch(h, pool[i])) { ok = true; break; }
     if (!ok) return false;
+  } else {
+    for (var j = 0; j < q.req.length; j++) if (!tokMatch(h, q.req[j])) return false;
   }
   for (var k = 0; k < q.neg.length; k++) if (tokMatch(h, q.neg[k])) return false;
   return true;
 }
 
-// ---------- IndexedDB (cache persistant : assos par dept + nomenclature nationale) ----------
+// ---------- IndexedDB (cache persistant : assos par dept + nomenclature + recherches entreprises) ----------
 function idbOpen() {
   return new Promise(function (res, rej) {
     var rq = indexedDB.open('openfrance-annuaire', 1);
@@ -331,6 +335,9 @@ function annCentroids(code) {
 }
 
 // ---------- Entreprises (API Recherche d'entreprises, recherche texte) ----------
+// L'API ne permet pas de lister toutes les entreprises d'un département :
+// seule la recherche texte est disponible. Les résultats sont mis en cache
+// IndexedDB (une entrée par requête) pour ne pas re-consommer le quota.
 function fetchEntPages(base) {
   function page(p) {
     return fetch(base + '&page=' + p).then(function (r) {
@@ -353,37 +360,59 @@ function fetchEntPages(base) {
   });
 }
 
+// Copie sérialisable d'une requête (sans les regex compilées)
+function annPlainQuery(q) {
+  return {
+    req: q.req.map(function (x) { return { t: x.t, w: x.w }; }),
+    or: q.or.map(function (x) { return { t: x.t, w: x.w }; }),
+    neg: q.neg.map(function (x) { return { t: x.t, w: x.w }; })
+  };
+}
+
 function searchEntreprises(dep, q, section) {
   var terms = q.req.concat(q.or).map(function (x) { return x.t; })
     .filter(function (v, i, a) { return a.indexOf(v) === i; });
   if (!terms.length) return Promise.resolve([]);
   var key = dep + '|' + terms.join(' ') + '|' + (section || '');
   if (ANN.entCache[key]) return Promise.resolve(ANN.entCache[key]);
-  return Promise.all(terms.map(function (t) {
-    var u = ANN_URLS.entreprises + '?q=' + encodeURIComponent(t) +
-      '&departement=' + encodeURIComponent(dep) + '&est_association=false&per_page=25';
-    if (section) u += '&section_activite_principale=' + encodeURIComponent(section);
-    return fetchEntPages(u);
-  })).then(function (arrs) {
-    var bySiren = {}, counts = {};
-    arrs.forEach(function (arr) {
-      arr.forEach(function (e) {
-        if (!bySiren[e.siren]) bySiren[e.siren] = e;
-        counts[e.siren] = (counts[e.siren] || 0) + 1;
-      });
-    });
-    // Tous les termes requis doivent matcher (chaque terme = un appel séparé)
-    var out = [];
-    for (var s in bySiren) {
-      if (q.req.length > 1 && counts[s] < q.req.length) continue;
-      var e = bySiren[s];
-      var h = normTxt((e.nom_complet || '') + ' ' + ((e.siege && e.siege.adresse) || '') + ' ' + ((e.siege && e.siege.activite_principale) || ''));
-      var bad = false;
-      for (var k = 0; k < q.neg.length; k++) if (tokMatch(h, q.neg[k])) { bad = true; break; }
-      if (!bad) out.push(e);
+  // cache persistant IndexedDB (une entrée par recherche)
+  return idbGet('ent-' + key).then(function (cached) {
+    if (cached && cached.rows) {
+      ANN.entCache[key] = cached.rows;
+      return cached.rows;
     }
-    ANN.entCache[key] = out;
-    return out;
+    return Promise.all(terms.map(function (t) {
+      var u = ANN_URLS.entreprises + '?q=' + encodeURIComponent(t) +
+        '&departement=' + encodeURIComponent(dep) + '&est_association=false&per_page=25';
+      if (section) u += '&section_activite_principale=' + encodeURIComponent(section);
+      return fetchEntPages(u);
+    })).then(function (arrs) {
+      var bySiren = {}, counts = {};
+      arrs.forEach(function (arr) {
+        arr.forEach(function (e) {
+          if (!bySiren[e.siren]) bySiren[e.siren] = e;
+          counts[e.siren] = (counts[e.siren] || 0) + 1;
+        });
+      });
+      // Cas ET strict (plusieurs mots requis, aucun +mot) : tous les termes doivent matcher
+      // (chaque terme = un appel séparé → l'entreprise doit apparaître dans chaque liste)
+      // Cas OU (au moins un +mot) : l'union des listes suffit
+      var out = [];
+      for (var s in bySiren) {
+        if (!q.or.length && q.req.length > 1 && counts[s] < q.req.length) continue;
+        var e = bySiren[s];
+        var h = normTxt((e.nom_complet || '') + ' ' + ((e.siege && e.siege.adresse) || '') + ' ' + ((e.siege && e.siege.activite_principale) || ''));
+        var bad = false;
+        for (var k = 0; k < q.neg.length; k++) if (tokMatch(h, q.neg[k])) { bad = true; break; }
+        if (!bad) out.push(e);
+      }
+      ANN.entCache[key] = out;
+      idbSet('ent-' + key, {
+        v: 1, date: Date.now(), dep: dep, section: section || '',
+        terms: terms, q: annPlainQuery(q), rows: out
+      });
+      return out;
+    });
   });
 }
 
@@ -626,6 +655,7 @@ function annRefresh() {
 // PAGE DE GESTION GLOBALE DU CACHE (tous modes, tous départements)
 // Réunit en une seule liste :
 //  1. IndexedDB : associations par département + nomenclature WALDEC (national)
+//     + recherches entreprises (une entrée par requête)
 //  2. Cache disque du service worker (Cache API) : données nationales,
 //     contours de communes par département, pages API
 //  3. Mémoire vive (lecture seule, diagnostic)
@@ -749,22 +779,30 @@ function renderCachePage() {
     var html = '';
 
     // --- Section 1 : IndexedDB ---
-    html += '<h3 class="cache-h3">Associations & nomenclature (IndexedDB — persistant)</h3>';
+    html += '<h3 class="cache-h3">Associations, nomenclature & recherches entreprises (IndexedDB — persistant)</h3>';
     if (!idbEntries.length) {
-      html += '<p class="muted">Aucune donnée. Ouvrez un département en mode annuaire pour la charger.</p>';
+      html += '<p class="muted">Aucune donnée. Ouvrez un département en mode annuaire ou lancez une recherche d\'entreprises.</p>';
     } else {
       idbEntries.forEach(function (e) {
-        var isNomen = e.key === 'nomen';
         var label, detail;
-        if (isNomen) {
+        if (e.key === 'nomen') {
           label = 'Nomenclature WALDEC (national)';
           var n = e.v && e.v.child ? Object.keys(e.v.child).length : 0;
           detail = n.toLocaleString('fr-FR') + ' codes objets sociaux';
-        } else {
+        } else if (e.key.indexOf('assos-') === 0) {
           var dep = e.key.slice(6);
           var rows = e.v && e.v.rows ? e.v.rows.length : 0;
           label = 'Associations — département ' + dep + (state.dep && state.dep.code === dep ? ' <span class="muted">(courant)</span>' : '');
           detail = rows.toLocaleString('fr-FR') + ' associations';
+        } else if (e.key.indexOf('ent-') === 0) {
+          var c = e.v || {};
+          label = 'Recherche entreprises — ' + (c.dep || '?') +
+            ' · « ' + esc((c.terms || []).join(' ')) + ' »' +
+            (c.section ? ' · section NAF ' + esc(c.section) : '');
+          detail = ((c.rows || []).length).toLocaleString('fr-FR') + ' entreprise(s)';
+        } else {
+          label = e.key;
+          detail = '';
         }
         var d = e.v && e.v.date ? new Date(e.v.date).toLocaleString('fr-FR') : '?';
         var size = 0;
@@ -856,6 +894,24 @@ function annCacheButtonAction(btn) {
         } else {
           after('Nomenclature WALDEC supprimée du cache (rechargée à la prochaine utilisation)');
         }
+      });
+    } else if (id.indexOf('ent-') === 0) {
+      idbGet(id).then(function (v) {
+        var c = v || {};
+        var ramKey = id.slice(4); // ent-<dep|terms|section>
+        return idbDelete(id).then(function () {
+          if (ANN.entCache[ramKey]) delete ANN.entCache[ramKey];
+          if (act === 'reload' && c.dep && c.q) {
+            setStatus('⏳ Relance de la recherche entreprises…', 'loading');
+            return searchEntreprises(c.dep, c.q, c.section).then(function (rows) {
+              after('Recherche entreprises rechargée (' + rows.length.toLocaleString('fr-FR') + ' entreprise(s))');
+            }, function (err) {
+              showError('Impossible de relancer la recherche entreprises.', err.message);
+              renderCachePage();
+            });
+          }
+          after('Cache de la recherche entreprises supprimé (relancée à la prochaine saisie)');
+        });
       });
     }
   } else if (type === 'sw') {
