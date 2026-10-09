@@ -50,8 +50,8 @@
       <select id="annCat"><option value="">Toutes catégories</option></select>
     </label>
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
-    <button id="annCacheBtn" type="button" title="Voir et gérer le cache local">🗂 Cache</button>
   </div>
+  <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
   <span id="status">⏳ Chargement des données…</span>
 </section>
 <p id="annHint" class="muted" style="display:none">💡 Recherche : les mots simples sont tous requis (ET) · <b>+mot</b> = OU · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Les entreprises nécessitent un mot-clé.</p>
@@ -77,14 +77,14 @@
   </aside>
 </main>
 
-<!-- Page de gestion du cache (annuaire) -->
+<!-- Page de gestion globale du cache (tous modes) -->
 <div id="annCacheDlg" style="display:none">
   <div class="cache-card">
     <div class="cache-head">
-      <b>🗂 Cache local (IndexedDB)</b>
+      <b>🗂 Gestion du cache local</b>
       <button id="annCacheClose" type="button" title="Fermer">✕</button>
     </div>
-    <p class="muted">Jeux de données du mode annuaire stockés dans le navigateur. « Rafraîchir » purge l'entrée puis la recharge immédiatement depuis la source (data.gouv). La nomenclature WALDEC et les résultats entreprises sont en mémoire vive uniquement (non listés ici).</p>
+    <p class="muted">Tous les caches du navigateur réunis : associations par département et nomenclature WALDEC (IndexedDB persistant), cache disque du service worker (données nationales, contours de communes, pages API) et mémoire vive. « Rafraîchir » purge puis recharge depuis la source ; « 🗑 » purge uniquement (retéléchargement à la prochaine utilisation).</p>
     <div id="annCacheList"><p class="muted">⏳ Lecture du cache…</p></div>
   </div>
 </div>

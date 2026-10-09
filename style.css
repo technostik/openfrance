@@ -54,15 +54,17 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 
 /* --- Page de gestion du cache --- */
 #annCacheDlg { position: fixed; inset: 0; background: rgba(15,23,42,.7); display: flex; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
-.cache-card { background: #1e293b; border: 1px solid #475569; border-radius: 10px; max-width: 640px; width: 100%; max-height: 80vh; overflow-y: auto; padding: 18px; }
+.cache-card { background: #1e293b; border: 1px solid #475569; border-radius: 10px; max-width: 680px; width: 100%; max-height: 82vh; overflow-y: auto; padding: 18px; }
 .cache-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .cache-head b { font-size: 1rem; }
 #annCacheClose { background: #334155; color: #e2e8f0; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: .9rem; }
 #annCacheClose:hover { background: #475569; }
+.cache-h3 { font-size: .82rem; color: #93c5fd; margin: 16px 0 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .cache-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: #334155; border-radius: 6px; padding: 10px; margin: 8px 0; }
 .cache-info b { font-size: .85rem; }
 .cache-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.cache-btn { background: #1d4ed8; color: white; border: none; border-radius: 6px; padding: 7px 12px; font-size: .78rem; cursor: pointer; }
+.cache-btn { background: #1d4ed8; color: white; border: none; border-radius: 6px; padding: 7px 12px; font-size: .78rem; cursor: pointer; white-space: nowrap; }
 .cache-btn:hover { background: #2563eb; }
 .cache-btn.cache-purge { background: #7f1d1d; }
 .cache-btn.cache-purge:hover { background: #991b1b; }
+.cache-btn:disabled { opacity: .5; cursor: wait; }

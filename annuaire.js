@@ -1,9 +1,10 @@
 // OpenFrance — Annuaire : associations (RNA/Waldec) + entreprises (API Recherche d'entreprises)
+// + Page de gestion globale du cache (IndexedDB + service worker + RAM), tous modes.
 //
 // Sources (proxifiées via Netlify, même origine) :
 //  - Associations : RNA agrégé national (Waldec) via l'API tabulaire data.gouv
 //    → chargement par département (communes INSEE du département), cache IndexedDB.
-//  - Thèmes : nomenclature WALDEC (objet social code → libellé, thème parent)
+//  - Thèmes : nomenclature WALDEC (objet social code → libellé, thème parent), cache IndexedDB (national)
 //  - Entreprises : API Recherche d'entreprises (DINUM) — recherche texte par département.
 //
 // Recherche multi-mots-clés (locale, sur les données du département en cache) :
@@ -121,7 +122,7 @@ function annMatch(h, q) {
   return true;
 }
 
-// ---------- IndexedDB (cache persistant par département) ----------
+// ---------- IndexedDB (cache persistant : assos par dept + nomenclature nationale) ----------
 function idbOpen() {
   return new Promise(function (res, rej) {
     var rq = indexedDB.open('openfrance-annuaire', 1);
@@ -181,9 +182,8 @@ function idbKeys() {
   }).catch(function () { return []; });
 }
 
-// ---------- Nomenclature WALDEC (thèmes) ----------
-function loadNomen() {
-  if (ANN.nomen) return Promise.resolve();
+// ---------- Nomenclature WALDEC (thèmes) — cache IndexedDB, portée nationale ----------
+function fetchNomen() {
   return Promise.all([1, 2].map(function (p) {
     return fetch(ANN_URLS.nomen + '?page_size=200&page=' + p).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -202,7 +202,20 @@ function loadNomen() {
         }
       });
     });
-    ANN.nomen = { child: child };
+    return { child: child };
+  });
+}
+function loadNomen() {
+  if (ANN.nomen) return Promise.resolve();
+  return idbGet('nomen').then(function (cached) {
+    if (cached && cached.child && Object.keys(cached.child).length) {
+      ANN.nomen = { child: cached.child };
+      return;
+    }
+    return fetchNomen().then(function (nomen) {
+      ANN.nomen = nomen;
+      idbSet('nomen', { v: 1, date: Date.now(), child: nomen.child });
+    });
   });
 }
 // Thème d'une asso : objet_social1 (6 chiffres, ex. 011080 → 11080 → parent 11000)
@@ -274,6 +287,14 @@ function fetchAssosDept(code) {
     idbSet('assos-' + code, { v: 1, date: Date.now(), rows: rows });
     return rows;
   });
+}
+
+// Recharge un département depuis la source (utilisé par la page cache, même hors dept courant)
+function annReloadDept(dep) {
+  var geoPromise = state.communesGeo[dep] ? Promise.resolve(state.communesGeo[dep]) :
+    fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[dep] + '/communes-' + DEP_FOLDERS[dep] + '.geojson')
+      .then(function (g) { state.communesGeo[dep] = g; return g; });
+  return geoPromise.then(function () { return fetchAssosDept(dep); });
 }
 
 // Centroïdes des communes (bbox center) pour placer les marqueurs
@@ -571,8 +592,8 @@ function annRefresh() {
       if (xs.length) map.fitBounds([[Math.min.apply(null, ys), Math.min.apply(null, xs)], [Math.max.apply(null, ys), Math.max.apply(null, xs)]], { padding: [30, 30] });
       var cached = ANN.assos[code] && ANN.assos[code].length;
       setStatus(cached.toLocaleString('fr-FR') + ' associations dans ' + state.dep.nom + ' (en cache)');
-      // si le dialog cache est ouvert, le rafraîchir
-      if (document.getElementById('annCacheDlg').style.display !== 'none') annRenderCache();
+      // si la page cache est ouverte, la rafraîchir
+      if (document.getElementById('annCacheDlg').style.display !== 'none') renderCachePage();
     });
   }).catch(function (err) {
     console.error('[OpenFrance] Annuaire :', err);
@@ -580,35 +601,189 @@ function annRefresh() {
   });
 }
 
-// ---------- Gestion du cache (page de diagnostic) ----------
-function annRenderCache() {
-  var box = document.getElementById('annCacheList');
-  return idbKeys().then(function (keys) {
-    keys = keys.filter(function (k) { return String(k).indexOf('assos-') === 0; }).sort();
-    return Promise.all(keys.map(function (k) {
-      return idbGet(k).then(function (v) { return { key: String(k), v: v }; });
-    }));
-  }).then(function (entries) {
-    if (!entries.length) {
-      box.innerHTML = '<p class="muted">Aucun jeu de données en cache pour l\'instant. Ouvrez un département pour le charger.</p>';
-      return;
-    }
-    var html = '';
-    entries.forEach(function (e) {
-      var dep = e.key.slice(6);
-      var n = e.v && e.v.rows ? e.v.rows.length : 0;
-      var d = e.v && e.v.date ? new Date(e.v.date).toLocaleString('fr-FR') : '?';
-      var size = e.v ? JSON.stringify(e.v).length : 0;
-      var cur = state.dep && state.dep.code === dep;
-      html += '<div class="cache-row" data-dep="' + esc(dep) + '">' +
-        '<div class="cache-info"><b>' + esc(dep) + (cur ? ' <span class="muted">(département courant)</span>' : '') + '</b>' +
-        '<br><span class="muted">' + n.toLocaleString('fr-FR') + ' associations · ' + fmtSize(size) + ' · mis en cache le ' + esc(d) + '</span></div>' +
-        '<div class="cache-actions">' +
-        (cur ? '<button class="cache-btn cache-refresh" type="button" title="Purger et recharger depuis la source">🔄 Rafraîchir</button>' : '') +
-        '<button class="cache-btn cache-purge" type="button" title="Supprimer du cache">🗑</button>' +
-        '</div></div>';
+// ============================================================
+// PAGE DE GESTION GLOBALE DU CACHE (tous modes, tous départements)
+// Réunit en une seule liste :
+//  1. IndexedDB : associations par département + nomenclature WALDEC (national)
+//  2. Cache disque du service worker (Cache API) : données nationales,
+//     contours de communes par département, pages API
+//  3. Mémoire vive (lecture seule, diagnostic)
+// ============================================================
+
+// ---- Inventaire du cache disque (service worker), groupé ----
+var SW_FILE_LABELS = {
+  'delinquance-dep.csv': 'Délinquance — CSV national',
+  'departements.json': 'Contours des départements',
+  'revenus.csv': 'Revenus Filosofi — CSV national',
+  'dvf-stats.csv': 'Prix immobilier DVF — CSV national',
+  'pres2022-t1.txt': 'Présidentielle 2022 T1 — national',
+  'pres2022-t2.txt': 'Présidentielle 2022 T2 — national',
+  'leg2024-t1.csv': 'Législatives 2024 T1 — national',
+  'leg2024-t2.csv': 'Législatives 2024 T2 — national',
+  'euro2024-dep.csv': 'Européennes 2024 — national'
+};
+var SW_API_LABELS = {
+  '/api/communes': 'Délinquance communale — pages API',
+  '/api/elect-gen': 'Élections — inscrits/abstentions, pages API',
+  '/api/elect-cand': 'Élections — voix, pages API',
+  '/api/assos': 'Annuaire — associations, pages API',
+  '/api/nomen': 'Nomenclature WALDEC — pages API'
+};
+
+function swCacheGroups() {
+  if (!window.caches) return Promise.resolve([]);
+  return caches.open('openfrance-v1').then(function (cache) {
+    return cache.keys().then(function (reqs) {
+      var groups = {};
+      reqs.forEach(function (req) {
+        var p = new URL(req.url).pathname;
+        var id, label, kind;
+        if (p.indexOf('/data/') === 0) {
+          var file = p.split('/').pop();
+          id = 'data:' + file;
+          label = SW_FILE_LABELS[file] || file;
+          kind = 'data';
+        } else if (p.indexOf('/geo/communes/departements/') === 0) {
+          var folder = (p.split('/')[4] || '?');
+          var dep = folder.split('-')[0];
+          id = 'geo:' + dep;
+          label = 'Contours des communes — ' + dep;
+          kind = 'geo';
+        } else {
+          var found = null;
+          for (var k in SW_API_LABELS) if (p.indexOf(k) === 0) found = k;
+          id = 'api:' + (found || p);
+          label = SW_API_LABELS[found] || p;
+          kind = 'api';
+        }
+        if (!groups[id]) groups[id] = { id: id, label: label, kind: kind, reqs: [] };
+        groups[id].reqs.push(req);
+      });
+      // taille réelle (somme des réponses)
+      return Promise.all(Object.keys(groups).map(function (id) {
+        var g = groups[id];
+        return Promise.all(g.reqs.map(function (req) {
+          return cache.match(req).then(function (res) {
+            if (!res) return 0;
+            return res.blob().then(function (b) { return b.size; }, function () { return 0; });
+          });
+        })).then(function (sizes) {
+          var total = 0; sizes.forEach(function (s) { total += s; });
+          g.count = g.reqs.length;
+          g.size = total;
+          return g;
+        });
+      }));
     });
+  }).catch(function () { return []; });
+}
+
+function swPurge(group) {
+  return caches.open('openfrance-v1').then(function (c) {
+    return Promise.all(group.reqs.map(function (req) { return c.delete(req); }));
+  });
+}
+// purge puis re-téléchargement en tâche de fond (le SW re-remplit son cache)
+function swRefresh(group) {
+  return swPurge(group).then(function () {
+    group.reqs.forEach(function (req) { fetch(req.url).catch(function () {}); });
+  });
+}
+// purge mémoire des textes déjà décodés (fetchCache de app.js)
+function swPurgeMemory(urls) {
+  urls.forEach(function (u) { delete fetchCache[u]; });
+}
+
+function memCacheStats() {
+  var stats = {
+    'Fichiers nationaux décodés (RAM)': Object.keys(fetchCache || {}).length + ' ressource(s)',
+    'Contours communes en mémoire': Object.keys((state && state.communesGeo) || {}).length + ' département(s)',
+    'Délinquance communale en mémoire': Object.keys((state && state.communesCache) || {}).length + ' dept/année(s)',
+    'Élections communales en mémoire': Object.keys((typeof ELECAGR !== 'undefined' && ELECAGR.byDepElection) || {}).length + ' dept/élection(s)',
+    'Recherches entreprises en mémoire': Object.keys(ANN.entCache).length + ' requête(s)'
+  };
+  return Object.keys(stats).map(function (k) { return k + ' : ' + stats[k]; });
+}
+
+function renderCachePage() {
+  var box = document.getElementById('annCacheList');
+  box.innerHTML = '<p class="muted">⏳ Lecture des caches…</p>';
+  return Promise.all([
+    // 1. IndexedDB
+    idbKeys().then(function (keys) {
+      return Promise.all(keys.map(function (k) { return idbGet(k).then(function (v) { return { key: String(k), v: v }; }); }));
+    }),
+    // 2. Cache disque SW
+    swCacheGroups(),
+    // 3. RAM (instantané)
+    Promise.resolve(memCacheStats())
+  ]).then(function (res) {
+    var idbEntries = res[0].sort(function (a, b) { return a.key < b.key ? -1 : 1; });
+    var groups = res[1].sort(function (a, b) {
+      var order = { data: 0, geo: 1, api: 2 };
+      if (order[a.kind] !== order[b.kind]) return order[a.kind] - order[b.kind];
+      return a.label < b.label ? -1 : 1;
+    });
+    var mem = res[2];
+    var html = '';
+
+    // --- Section 1 : IndexedDB ---
+    html += '<h3 class="cache-h3">Associations & nomenclature (IndexedDB — persistant)</h3>';
+    if (!idbEntries.length) {
+      html += '<p class="muted">Aucune donnée. Ouvrez un département en mode annuaire pour la charger.</p>';
+    } else {
+      idbEntries.forEach(function (e) {
+        var isNomen = e.key === 'nomen';
+        var label, detail;
+        if (isNomen) {
+          label = 'Nomenclature WALDEC (national)';
+          var n = e.v && e.v.child ? Object.keys(e.v.child).length : 0;
+          detail = n.toLocaleString('fr-FR') + ' codes objets sociaux';
+        } else {
+          var dep = e.key.slice(6);
+          var rows = e.v && e.v.rows ? e.v.rows.length : 0;
+          label = 'Associations — département ' + dep + (state.dep && state.dep.code === dep ? ' <span class="muted">(courant)</span>' : '');
+          detail = rows.toLocaleString('fr-FR') + ' associations';
+        }
+        var d = e.v && e.v.date ? new Date(e.v.date).toLocaleString('fr-FR') : '?';
+        var size = 0;
+        try { size = e.v ? JSON.stringify(e.v).length : 0; } catch (er) { size = 0; }
+        html += '<div class="cache-row">' +
+          '<div class="cache-info"><b>' + label + '</b>' +
+          '<br><span class="muted">' + detail + ' · ' + fmtSize(size) + ' · ' + esc(d) + '</span></div>' +
+          '<div class="cache-actions">' +
+          '<button class="cache-btn" type="button" data-type="idb" data-id="' + esc(e.key) + '" data-act="reload">🔄 Rafraîchir</button>' +
+          '<button class="cache-btn cache-purge" type="button" data-type="idb" data-id="' + esc(e.key) + '" data-act="purge">🗑</button>' +
+          '</div></div>';
+      });
+    }
+
+    // --- Section 2 : cache disque service worker ---
+    html += '<h3 class="cache-h3">Cache disque (service worker)' +
+      (groups.length ? ' <button class="cache-btn cache-purge" type="button" data-type="swall" data-act="purge">Tout purger</button>' : '') +
+      '</h3>';
+    if (!groups.length) {
+      html += '<p class="muted">' + (window.caches ? 'Cache disque vide — il se remplit à la navigation.' : 'Cache API indisponible (contexte non sécurisé ou navigateur ancien).') + '</p>';
+    } else {
+      groups.forEach(function (g) {
+        var canRefresh = g.kind === 'data'; // un seul fichier national : purge + re-téléchargement immédiat
+        html += '<div class="cache-row">' +
+          '<div class="cache-info"><b>' + esc(g.label) + '</b>' +
+          '<br><span class="muted">' + g.count + ' entrée(s) · ' + fmtSize(g.size) + '</span></div>' +
+          '<div class="cache-actions">' +
+          (canRefresh ? '<button class="cache-btn" type="button" data-type="sw" data-id="' + esc(g.id) + '" data-act="refresh">🔄 Rafraîchir</button>' : '') +
+          '<button class="cache-btn cache-purge" type="button" data-type="sw" data-id="' + esc(g.id) + '" data-act="purge">🗑</button>' +
+          '</div></div>';
+      });
+    }
+
+    // --- Section 3 : mémoire vive ---
+    html += '<h3 class="cache-h3">Mémoire vive (session en cours, non persistant)</h3>';
+    html += '<p class="muted">' + mem.map(esc).join('<br>') + '</p>';
+
     box.innerHTML = html;
+  }).catch(function (err) {
+    box.innerHTML = '<p class="ann-warn">⚠️ Erreur de lecture du cache : ' + esc(err.message || String(err)) + '</p>';
   });
 }
 
@@ -616,22 +791,77 @@ function annToggleCache(show) {
   var dlg = document.getElementById('annCacheDlg');
   var visible = show === undefined ? dlg.style.display === 'none' : show;
   dlg.style.display = visible ? 'flex' : 'none';
-  if (visible) annRenderCache();
+  if (visible) renderCachePage();
 }
 
-function annCacheAction(dep, action) {
-  var key = 'assos-' + dep;
-  var isCur = state.dep && state.dep.code === dep;
-  idbDelete(key).then(function () {
-    delete ANN.assos[dep];
-    if (action === 'refresh' && isCur) {
-      // purge + rechargement immédiat depuis la source
-      annRefresh();
-    } else {
-      annRenderCache();
-      if (isCur) annApplySearch();
+// Action centrale de la page cache (déléguée aux boutons)
+function annCacheButtonAction(btn) {
+  var act = btn.dataset.act, type = btn.dataset.type, id = btn.dataset.id;
+  var after = function (msg) {
+    setStatus(msg || 'Cache mis à jour');
+    renderCachePage();
+  };
+  if (type === 'idb') {
+    if (id.indexOf('assos-') === 0) {
+      var dep = id.slice(6);
+      idbDelete(id).then(function () {
+        delete ANN.assos[dep];
+        if (act === 'reload') {
+          setStatus('⏳ Rechargement des associations du ' + dep + '…', 'loading');
+          annReloadDept(dep).then(function () {
+            after('Associations du ' + dep + ' rechargées (' + (ANN.assos[dep] || []).length.toLocaleString('fr-FR') + ')');
+            if (ANN.active && state.dep && state.dep.code === dep) annApplySearch();
+          }).catch(function (err) {
+            showError('Impossible de recharger les associations du ' + dep + '.', err.message);
+            renderCachePage();
+          });
+        } else {
+          after('Cache des associations du ' + dep + ' supprimé (rechargé à la prochaine ouverture)');
+          if (ANN.active && state.dep && state.dep.code === dep) annApplySearch();
+        }
+      });
+    } else if (id === 'nomen') {
+      idbDelete('nomen').then(function () {
+        ANN.nomen = null;
+        if (act === 'reload') {
+          setStatus('⏳ Rechargement de la nomenclature WALDEC…', 'loading');
+          loadNomen().then(function () {
+            after('Nomenclature WALDEC rechargée');
+            if (ANN.active && state.dep) annRebuildCat();
+          }).catch(function (err) {
+            showError('Impossible de recharger la nomenclature WALDEC.', err.message);
+            renderCachePage();
+          });
+        } else {
+          after('Nomenclature WALDEC supprimée du cache (rechargée à la prochaine utilisation)');
+        }
+      });
     }
-  });
+  } else if (type === 'sw') {
+    swCacheGroups().then(function (groups) {
+      var g = null;
+      for (var i = 0; i < groups.length; i++) if (groups[i].id === id) g = groups[i];
+      if (!g) { renderCachePage(); return; }
+      var urls = g.reqs.map(function (r) { return r.url; });
+      // purge aussi la mémoire des fichiers déjà décodés pour forcer le re-téléchargement
+      var p = swPurge(g).then(function () { swPurgeMemory(urls); });
+      if (act === 'refresh') {
+        setStatus('⏳ Re-téléchargement de « ' + g.label + ' »…', 'loading');
+        p = p.then(function () {
+          g.reqs.forEach(function (req) { fetch(req.url).catch(function () {}); });
+        });
+      }
+      p.then(function () { after('« ' + g.label + ' » : cache disque ' + (act === 'refresh' ? 'rafraîchi' : 'purge') + ' (retéléchargé à la prochaine utilisation)'); });
+    });
+  } else if (type === 'swall') {
+    setStatus('⏳ Purge du cache disque…', 'loading');
+    caches.keys().then(function (names) {
+      return Promise.all(names.map(function (n) { return caches.delete(n); }));
+    }).then(function () {
+      for (var k in fetchCache) delete fetchCache[k];
+      after('Cache disque entièrement vidé — les données seront retéléchargées à la prochaine utilisation');
+    });
+  }
 }
 
 // ---------- Entrée / sortie du mode annuaire ----------
@@ -657,7 +887,6 @@ function annLeave() {
   if (ANN.prevRefresh) refresh = ANN.prevRefresh;
   clearAnnMarkers();
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
-  annToggleCache(false);
   document.getElementById('annControls').style.display = 'none';
   document.getElementById('annHint').style.display = 'none';
   document.getElementById('indicatorLabel').style.display = '';
@@ -690,19 +919,16 @@ function annInitUI() {
   });
   document.getElementById('annCat').addEventListener('change', annApplySearch);
 
-  // Page cache
+  // Page de gestion du cache (globale, disponible dans tous les modes)
   document.getElementById('annCacheBtn').addEventListener('click', function () { annToggleCache(); });
   document.getElementById('annCacheClose').addEventListener('click', function () { annToggleCache(false); });
   document.getElementById('annCacheDlg').addEventListener('click', function (e) {
     if (e.target === this) annToggleCache(false); // clic sur le fond
   });
   document.getElementById('annCacheList').addEventListener('click', function (e) {
-    var btn = e.target.closest ? e.target.closest('button') : null;
+    var btn = e.target.closest ? e.target.closest('button[data-act]') : null;
     if (!btn) return;
-    var row = btn.closest('.cache-row');
-    if (!row) return;
-    if (btn.classList.contains('cache-purge')) annCacheAction(row.dataset.dep, 'purge');
-    else if (btn.classList.contains('cache-refresh')) annCacheAction(row.dataset.dep, 'refresh');
+    annCacheButtonAction(btn);
   });
 }
 if (document.readyState === 'loading') {
