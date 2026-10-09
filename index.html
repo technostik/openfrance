@@ -28,6 +28,7 @@
       <option value="politique">Politique</option>
       <option value="annuaire">Associations & entreprises</option>
       <option value="score31">Composeur de critères</option>
+      <option value="corp">Composeur d'entreprises</option>
     </select>
   </label>
   <label id="indicatorLabel">Indicateur
@@ -66,11 +67,64 @@
     </label>
     <button id="scAddBtn" type="button" title="Ajouter le critère sélectionné">＋ Ajouter</button>
   </div>
+  <div id="coControls" style="display:none">
+    <label>Département
+      <select id="coDep"></select>
+    </label>
+    <label id="coTargetWrap">Ville
+      <input id="coTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="coTargetDrop" class="sc-drop"></div>
+    </label>
+    <label>Zone
+      <select id="coRadius" title="Périmètre de recherche : département, commune ou rayon autour de la ville">
+        <option value="-1">Tout le département</option>
+        <option value="0">La commune seulement</option>
+        <option value="2">Rayon 2 km</option>
+        <option value="5">Rayon 5 km</option>
+        <option value="10">Rayon 10 km</option>
+        <option value="20">Rayon 20 km</option>
+        <option value="30">Rayon 30 km</option>
+        <option value="50">Rayon 50 km</option>
+      </select>
+    </label>
+    <label>Texte (nom/activité)
+      <input id="coQ" type="text" placeholder="optionnel — ex. boulangerie">
+    </label>
+    <label>Secteur (NAF)
+      <select id="coSection"></select>
+    </label>
+    <label>Codes NAF
+      <input id="coNaf" type="text" placeholder="ex. 62.01Z, 62.02A">
+    </label>
+    <label>Salariés (min)
+      <select id="coTrMin"></select>
+    </label>
+    <label>Salariés (max)
+      <select id="coTrMax"></select>
+    </label>
+    <label>Catégorie
+      <select id="coCat"></select>
+    </label>
+    <label>Forme juridique
+      <select id="coNat"></select>
+    </label>
+    <label>CA min (€)
+      <input id="coCaMin" type="number" min="0" step="1000" placeholder="ex. 500000">
+    </label>
+    <label>CA max (€)
+      <input id="coCaMax" type="number" min="0" step="1000" placeholder="ex. 50000000">
+    </label>
+    <label class="co-check" title="Ne garder que les entreprises en activité">
+      <input type="checkbox" id="coActive" checked> Actives uniquement
+    </label>
+    <div id="coLabels"></div>
+  </div>
   <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
   <span id="status">⏳ Chargement des données…</span>
 </section>
 <p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département).</p>
 <p id="annQueryExp" class="muted" style="display:none"></p>
+<p id="coModeHint" class="muted" style="display:none"></p>
 
 <main>
   <div id="map"></div>
@@ -87,6 +141,12 @@
       <h2>Résultats</h2>
       <p id="annStatus" class="muted"></p>
       <div id="annResults"></div>
+    </div>
+    <div id="coPanel" style="display:none">
+      <h2>Entreprises</h2>
+      <p id="coStatus" class="muted"></p>
+      <div id="coResults"></div>
+      <button id="coMore" type="button" hidden>＋ Charger plus</button>
     </div>
     <p class="hint">💡 Cliquez sur un département pour voir ses communes (sauf sièges de députés, au niveau circonscription).</p>
     <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF, RNA (associations), API Recherche d'entreprises (DINUM)</p>
@@ -105,10 +165,22 @@
   </div>
 </div>
 
+<!-- Fiche entreprise (composeur d'entreprises) -->
+<div id="coFicheDlg" style="display:none">
+  <div class="co-fiche">
+    <div class="cache-head">
+      <b id="coFicheTitle"></b>
+      <button id="coFicheClose" type="button" title="Fermer">✕</button>
+    </div>
+    <div id="coFicheBody"></div>
+  </div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 <script src="annuaire.js"></script>
 <script src="score31.js"></script>
+<script src="corp.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {

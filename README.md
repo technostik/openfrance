@@ -16,13 +16,19 @@ Application web de visualisation des données ouvertes françaises (data.gouv.fr
 - Recherche multi-mots-clés locale : `ninjutsu + mma - boxe` → contient « ninjutsu » OU « mma » mais pas « boxe » ; mots simples = tous requis (ET), `+mot` = OU, `-mot` = exclusion, `"expression entre guillemets"` supportée.
 - Marqueurs sur la carte (centroïde de la commune pour les assos, coordonnées du siège pour les entreprises) + liste de résultats cliquables.
 
+**Composeur d'entreprises** (catégorie « Composeur d'entreprises ») :
+- [API Recherche d'entreprises](https://recherche-entreprises.api.gouv.fr/) (DINUM) en mode **recherche multicritère** : activité (code NAF exact ou section), tranche d'effectifs (min/max), catégorie (PME/ETI/GE), nature juridique, chiffre d'affaires (min/max), labels (ESS, Qualiopi, RGE, bio, spectacle, organisme de formation…), état administratif, recherche texte optionnelle.
+- **Ciblage géographique** : rayon configurable autour d'une ville (recherche géographique avec cercle sur la carte) ou, à rayon nul, toutes les entreprises de la commune ; sans ville, tout un département.
+- Cercle de rayon sur la carte, marqueurs par établissement dans la zone, pagination par lots (« Charger plus »).
+- **Fiche détaillée** au clic sur une entreprise : identité, siège, dirigeants, état/labels, établissements présents dans la zone (cliquables → zoom carte), lien vers la fiche officielle [annuaire-entreprises.data.gouv.fr](https://annuaire-entreprises.data.gouv.fr).
+
 ## Stack
 
 Site statique sans build : HTML + CSS + JS, [Leaflet](https://leafletjs.com) + fond de carte OSM/CARTO. Les données sont chargées directement dans le navigateur depuis data.gouv.fr (proxy Netlify, aucun serveur requis). Service worker pour le cache disque persistant (stale-while-revalidate).
 
 ## Développement local
 
-`netlify dev` sert le site avec les redirections `/api/*` actives (nécessaire pour l'annuaire : associations, nomenclature, entreprises).
+`netlify dev` sert le site avec les redirections `/api/*` actives (nécessaire pour l'annuaire : associations, nomenclature, entreprises — et pour le composeur d'entreprises : `/api/ent`).
 
 ## Déploiement
 

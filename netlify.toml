@@ -135,3 +135,11 @@
   to = "https://recherche-entreprises.api.gouv.fr/search/:splat"
   status = 200
   force = true
+
+# --- Composeur d'entreprises (corp.js) : tous les endpoints de l'API Recherche d'entreprises ---
+# /api/ent/search?... et /api/ent/near_point?lat=..&long=..&radius=.. (query strings transmis par Netlify)
+[[redirects]]
+  from = "/api/ent/*"
+  to = "https://recherche-entreprises.api.gouv.fr/:splat"
+  status = 200
+  force = true

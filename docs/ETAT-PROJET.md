@@ -9,13 +9,14 @@ Application web **100 % statique** (pas de backend) affichant des cartes choropl
 ## 🗂️ Structure du repo
 
 ```
-index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (recherche/type/catégorie), page cache globale, bandeau d'erreur, bouton retour
-style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*) et cache (.cache-*)
+index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (recherche/type/catégorie), composeur d'entreprises (ciblage + critères), page cache globale, bandeau d'erreur, bouton retour
+style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*), composeur d'entreprises (.co-*) et cache (.cache-*)
 app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI)
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
 score31.js      — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (branche de test `score31`)
+corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
-netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises
+netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises, /api/ent
 ```
 
 ## 🏗️ Architecture
@@ -30,16 +31,17 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 6. Erreurs : bandeau rouge (`showError`) + détails console F12 ; erreurs de parsing nomment la colonne manquante
 
 ### Rendu choroplèthe — échelle robuste
-`scaleBounds(values)` : bornes **P5→P95** (percentiles), pas min/max brut. Une commune de 3 habitants avec 2 faits (666 ‰) ne doit pas écraser la palette — les outliers **saturent** (clamp `min(1, max(0, t))`) et la légende affiche « Échelle écrêtée (P5–P95) ». Communes < 100 hab : infobulle « ⚠️ taux peu significatif ». Le taux reste faits/habitants (méthode officielle Intérieur, pas de pondération par gravité — n'existe pas officiellement).
+`scaleBounds(values)` : bornes **P5→P95** (percentiles), pas min/max brut. Une commune de 3 habitants avec 2 faits (666 ‰) ne doit pas écraser la palette — les outliers **saturent** (clamp `min(1, max(0, t))`) et la légende affiche « Échelle écrétée (P5–P95) ». Communes < 100 hab : infobulle « ⚠️ taux peu significatif ». Le taux reste faits/habitants (méthode officielle Intérieur, pas de pondération par gravité — n'existe pas officiellement).
 
 ### annuaire.js — mode Annuaire
 - **Associations** : RNA agrégé national (Waldec, resource `91fd139b-...`) via `/api/assos/`, filtres `date_disso__exact=-infinity` + `adrs_codeinsee__in=<codes INSEE du dept>`, pagination par lots de 10 pages de 200. Chargement par département → filtrage **local**.
 - **Thèmes** : nomenclature WALDEC (resource `2b618348-...`, 297 codes, 2 pages) via `/api/nomen/` → facette catégorie.
-- **Entreprises** : API Recherche d'entreprises (DINUM) via `/api/entreprises/` (`q`, `departement`, `est_association=false`, `per_page` max 25, total_pages plafonné à 4). **L'API ne permet PAS de lister tout un département** : recherche texte obligatoire.
+- **Entreprises** : API Recherche d'entreprises (DINUM) via `/api/entreprises/` (`q`, `departement`, `est_association=false`, `per_page` max 25, total_pages plafonné à 4). Recherche texte obligatoire ici — pour une recherche par critères sans mot-clé, voir le **Composeur d'entreprises** (corp.js).
 - **Recherche multi-opérateurs** (`parseAnnQuery`) : mots simples = ET · `+mot` = OU (dès qu'il y a un `+`, req+or forment un OU : `a + b` = a OU b) · `-mot` = exclusion · `"mot"` = mot exact (frontières de mot, regex `(^|[^a-z0-9])mot($|[^a-z0-9])`) · espaces autour des `+`/`-` tolérés (token orphelin → `pendingSign`). Interprétation en direct sous le champ (`annQueryExplain`, `#annQueryExp`).
 - **Marqueurs par différence** (`annSyncMarkers` + `ANN.markerIndex`) : à chaque frappe, seuls les nouveaux marqueurs sont créés, les disparus retirés — jamais de recréation complète (anti-scintillement). Clés : `a:<id RNA>` / `e:<siren>`.
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
 - `annEnter`/`annLeave` : **conservent le département courant** (pas de retour forcé à la France).
+- Le SW_API_LABELS de la page cache mentionne `/api/ent` (composeur d'entreprises) et le compteur RAM inclut les résultats du composeur.
 
 ### score31.js — mode « Composeur de critères » (branche de test `score31`)
 - **Généralisation de l'ancien « Score perso (31) »** : indice composite **personnalisable** des communes de **n'importe quel département**, **hors REGISTRY** (`scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` de app.js via `typeof` guards).
@@ -50,6 +52,19 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - Couleurs : `colorFor(1 − score)` (vert = bon score) ; **meilleure commune en bleu** (#2563eb, bordure blanche, 🏆 infobulle/légende/top 10) ; infobulle détaillée = valeur de chaque critère.
 - Au premier passage, critères par défaut = reproduction de l'ancien score perso (distance Toulouse, délinquance ensemble, loyers, assos « "mma" + "systema" + ninjutsu » ; poids 5/5/5/3).
 - Mode isolé : retire `geoLayer`, couche propre `SC.layer`, ne remplace pas `refresh`, réutilise les caches existants (IndexedDB assos, `state.communesGeo`/`communesCache`, SW `/data/` et `/api/`).
+
+### corp.js — mode « Composeur d'entreprises » (branche de test `corp_search`)
+- **Recherche multicritère d'entreprises** via l'API Recherche d'entreprises (DINUM) `/api/ent/` (proxy vers `recherche-entreprises.api.gouv.fr`), auto-câblé comme annuaire.js (listener propre sur `#categorySelect` → `coEnter`/`coLeave`, **aucune modification d'app.js**).
+- **3 modes de ciblage** automatiques :
+  - `near` : ville cible + rayon > 0 km → `/near_point` (lat/long du centroïde de la commune, rayon max 50 km) ; cercle dessiné sur la carte ;
+  - `commune` : ville cible + rayon 0 → `/search?code_commune=` (toutes les entreprises domiciliées dans la commune) ;
+  - `dep` : sans ville → `/search?departement=` (tout le département).
+- **Critères serveur** (`/search`) : `activite_principale` (codes NAF **exacts** séparés par virgules, pas de joker) ou `section_activite_principale`, `tranche_effectif_salarie` (liste de tranches, min/max traduits en ensemble), `categorie_entreprise` (PME/ETI/GE, valeur unique), `nature_juridique` (**valeur unique** seulement), `ca_min`/`ca_max`, `resultat_net_min`/`max`, `est_ess`, `est_bio`, `est_qualiopi`, `est_rge`, `est_spectacle`, `est_mission`, `est_siae`, `est_organisme_formation`, `etat_administratif`, `q` (texte optionnel — **`/search` fonctionne sans `q` dès qu'un filtre est présent**).
+- **Contraintes API vérifiées empiriquement** : `per_page` max **25** (100 → 0 résultat silencieux) ; `total_results` plafonné à 10 000 ; pagination > 4 pages fonctionne ; `minimal=true` réduit la charge. Sur **`/near_point`**, `q` est **interdit** (« terms not allowed ») et **seuls les filtres d'activité passent côté serveur** — tranche/catégorie/CA/labels/état sont **ignorés silencieusement** : en mode `near`, ces critères sont donc **filtrés localement** sur les pages chargées (q et CA désactivés dans l'UI pour ce mode, indice de mode affiché `#coModeHint`).
+- **Pagination** : 25 résultats/page, lots de 4 pages (« Charger plus », max 20 pages = 500 résultats) ; liste plafonnée à 300, marqueurs à 600. Le cache disque SW couvre automatiquement `/api/ent/` (TTL `/api/` 7 j) — pas d'IndexedDB dédié.
+- **Ville cible** : autocomplete sur les centroïdes GeoJSON des communes (`annCentroids` d'annuaire.js), dropdown custom, Entrée = 1er résultat ; rayon 0–50 km.
+- **Carte** : cercle du rayon (mode near), marqueurs par **établissement dans la zone** (`matching_etablissements`, fallback siège hors mode near), popup avec lien « Fiche détaillée » (`coOpenFiche`).
+- **Fiche détaillée** (modal `#coFicheDlg`) : identité (SIREN, NAF, création, catégorie, effectifs), siège (adresse + coordonnées cliquables → zoom), état administratif + labels en chips, dirigeants, établissements dans la zone (cliquables), lien officiel `annuaire-entreprises.data.gouv.fr/entreprise/<siren>`.
 
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
@@ -89,7 +104,10 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Loyers d'annonce prédits par commune : « Carte des loyers » 2025 (Ministère de la Transition écologique, dataset `693aa2feed1bf4da603faa49`), resource `55b34088-...` (colonnes `INSEE_C`, `loypredm2`) via `/api/loyers/`, filtre `DEP__exact=<dept>` (généralisé à tout département) — une valeur par commune, même pour les petites (prédiction par maille).
 - Tous les autres critères réutilisent les sources existantes (france-geojson, délinquance communale, Filosofi, DVF, élections agrégées, RNA) — aucune copie de données.
 
-## 🐛 Bugs résolus (NE PAS RÉGRESSER)
+### Composeur d'entreprises
+- API Recherche d'entreprises (DINUM) : `https://recherche-entreprises.api.gouv.fr` via le proxy `/api/ent/*` (redirect `netlify.toml`). Deux endpoints : `/search` (filtres complets côté serveur, fonctionne sans `q`) et `/near_point` (lat/long/rayon km, seuls les filtres d'activité y passent — le reste filtré localement, voir architecture). Gratuit, sans clé ; cache disque SW `/api/` 7 j. Sources officielles : registre SIRENE + RNE (dirigeants).
+
+## 🐛 Bugs résolus / pièges connus (NE PAS RÉGRESSER)
 
 1. Parser CSV naïf → années NaN → maintenant regex robuste
 2. `page_size` > 200 sur l'API tabulaire → HTTP 400 → **max 200**
@@ -103,12 +121,14 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 10. Changement de catégorie : retour forcé à la vue France → `selectIndicator(label, keepDep)` conserve le département ; `annEnter`/`annLeave` aussi
 11. Échelle choroplèthe écrasée par les outliers (commune de 3 hab à 666 ‰) → bornes **P5–P95** avec saturation + mention dans la légende
 12. Connector GitHub : `get_file_contents` exige `ref: "refs/heads/work"` (PAS `branch`) ; `read_file` retourne un objet `{content, was_truncated…}` — **toujours** vérifier `was_truncated === false` avant un push (sinon fichier corrompu, incident réparé en 471da2d)
+13. **Pièges API Recherche d'entreprises** (vérifiés empiriquement) : `per_page` max 25 (100 → 0 résultat silencieux) ; `activite_principale` n'accepte **pas** de jokers (`62*` invalide) ; `nature_juridique` = valeur unique ; sur `/near_point` : `q` interdit + filtres non-activité ignorés silencieusement → d'où le filtrage local de corp.js en mode near.
 
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
 - **Workflow** : travailler sur une branche dédiée (`work`), tester en local avec `netlify dev`, merger vers `main` seulement quand stable = 1 seul deploy
 - Branche de test **`score31`** (fork de `work`) : fonctionnalité « Composeur de critères » (généralisation du score perso). Tester en local (`netlify dev`, les proxys `/api/loyers/` y sont actifs), merger vers `work`/`main` ou abandonner librement.
+- Branche de test **`corp_search`** (fork de `work`) : fonctionnalité « Composeur d'entreprises » (corp.js). Tester en local (`netlify dev`, le proxy `/api/ent/` y est actif), merger vers `work`/`main` ou abandonner librement.
 - Migration Vercel envisagée (100 deploys/jour) : traduire `netlify.toml` → `vercel.json` (rewrites), rien d'autre à changer
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 
@@ -119,3 +139,4 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Cache partagé côté serveur (Netlify Blobs, ~1 Go gratuit)
 - Sélecteur de département déroulant dans l'annuaire (au lieu du clic carte)
 - Autres jeux de données data.gouv
+- **Enrichissement contact entreprises** : récupérer/compléter site web + email (recherche web type Tavily) sur la fiche détaillée du composeur d'entreprises — l'utilisateur a une clé API, fonctionnalité volontairement différée

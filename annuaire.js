@@ -613,7 +613,7 @@ function annApplySearch() {
 
   var entCount = 0;
   (entPromise || Promise.resolve(null)).then(function (res) {
-    if (token !== ANN.seq) return; // une recherche plus récente a pris le dessus
+    if (token !== ANN.seq) return; // une recherche plus récente a pris la dessus
     var ents = res && res.ents, entErr = res && res.err;
     if (ents && ents.length) {
       entCount = ents.length;
@@ -707,7 +707,9 @@ var SW_API_LABELS = {
   '/api/elect-gen': 'Élections — inscrits/abstentions, pages API',
   '/api/elect-cand': 'Élections — voix, pages API',
   '/api/assos': 'Annuaire — associations, pages API',
-  '/api/nomen': 'Nomenclature WALDEC — pages API'
+  '/api/nomen': 'Nomenclature WALDEC — pages API',
+  '/api/ent': 'Composeur d\'entreprises — pages API',
+  '/api/entreprises': 'Annuaire — entreprises, pages API'
 };
 
 function swCacheGroups() {
@@ -780,7 +782,8 @@ function memCacheStats() {
     'Contours communes en mémoire': Object.keys((state && state.communesGeo) || {}).length + ' département(s)',
     'Délinquance communale en mémoire': Object.keys((state && state.communesCache) || {}).length + ' dept/année(s)',
     'Élections communales en mémoire': Object.keys((typeof ELECAGR !== 'undefined' && ELECAGR.byDepElection) || {}).length + ' dept/élection(s)',
-    'Recherches entreprises en mémoire': Object.keys(ANN.entCache).length + ' requête(s)'
+    'Recherches entreprises en mémoire': Object.keys(ANN.entCache).length + ' requête(s)',
+    'Résultats composeur d\'entreprises (RAM)': ((typeof CO !== 'undefined' && CO.rows) ? CO.rows.length : 0) + ' entreprise(s) chargée(s)'
   };
   return Object.keys(stats).map(function (k) { return k + ' : ' + stats[k]; });
 }
