@@ -12,6 +12,7 @@
 //   → « ninjutsu » OU « mma », sans « boxe » ; "mma" entre guillemets = mot exact
 //   mots simples = tous requis (ET, correspondance de chaîne)
 //   +mot = OU (au moins un) · -mot = exclusion · "mot" = mot complet (frontières de mot)
+//   Les espaces autour des + et - sont tolérés : « ninjutsu + mma - boxe » ≡ « ninjutsu +mma -boxe »
 
 var ANN = {
   active: false,
@@ -76,16 +77,19 @@ function fmtSize(n) {
   return n + ' o';
 }
 
-// Analyse d'une requête « a b +c -d "mot exact" »
+// Analyse d'une requête « a b +c -d "mot exact" » (espaces tolérés autour de + et -)
 // Chaque token : { t: terme normalisé, w: true si « mot complet » (guillemets) }
 function parseAnnQuery(str) {
   var req = [], or = [], neg = [];
-  var tokens = String(str || '').match(/"[^"]*"|\S+/g) || [];
+  var tokens = String(str || '').match(/"[^"]*"|[^\s"]+/g) || [];
+  var pendingSign = ''; // +/- orphelin : s'applique au token suivant
   tokens.forEach(function (raw) {
-    var sign = '';
+    var sign = pendingSign; pendingSign = '';
     var tok = raw;
-    if (tok.charAt(0) === '-') { sign = 'neg'; tok = tok.slice(1); }
-    else if (tok.charAt(0) === '+') { sign = 'or'; tok = tok.slice(1); }
+    if (tok === '+') { pendingSign = 'or'; return; }
+    if (tok === '-') { pendingSign = 'neg'; return; }
+    if (tok.charAt(0) === '+') { sign = sign || 'or'; tok = tok.slice(1); }
+    else if (tok.charAt(0) === '-') { sign = sign || 'neg'; tok = tok.slice(1); }
     var w = false;
     if (/^"[^"]*"$/.test(tok)) { w = true; tok = tok.slice(1, -1); }
     tok = normTxt(tok);
@@ -96,6 +100,17 @@ function parseAnnQuery(str) {
     if (!already) bucket.push(item);
   });
   return { req: req, or: or, neg: neg };
+}
+
+// Explication humaine de la requête (affichée sous la recherche)
+function annQueryExplain(q) {
+  if (!q.req.length && !q.or.length && !q.neg.length) return '';
+  var f = function (x) { return x.w ? '«&nbsp;' + esc(x.t) + '&nbsp;» (mot exact)' : '«&nbsp;' + esc(x.t) + '&nbsp;»'; };
+  var parts = [];
+  if (q.req.length) parts.push('contient ' + q.req.map(f).join(' ET '));
+  if (q.or.length) parts.push('au moins un de ' + q.or.map(f).join(' / '));
+  if (q.neg.length) parts.push('sans ' + q.neg.map(f).join(' ni '));
+  return '🔎 ' + parts.join(' · ');
 }
 
 // Teste un token contre un haystack normalisé
@@ -494,6 +509,12 @@ function annApplySearch() {
   if (!ANN.active || state.view !== 'dep' || !state.dep) return;
   var token = ++ANN.seq;
   var q = parseAnnQuery(document.getElementById('annSearch').value);
+
+  // interprétation en direct de la requête (feedback des opérateurs)
+  var expEl = document.getElementById('annQueryExp');
+  expEl.innerHTML = annQueryExplain(q);
+  expEl.style.display = expEl.innerHTML ? '' : 'none';
+
   var type = document.getElementById('annType').value;
   var cat = document.getElementById('annCat').value;
   var code = state.dep.code;
@@ -889,6 +910,8 @@ function annLeave() {
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   document.getElementById('annControls').style.display = 'none';
   document.getElementById('annHint').style.display = 'none';
+  var expEl2 = document.getElementById('annQueryExp');
+  expEl2.innerHTML = ''; expEl2.style.display = 'none';
   document.getElementById('indicatorLabel').style.display = '';
   document.getElementById('legendBlock').style.display = '';
   document.getElementById('annPanel').style.display = 'none';
