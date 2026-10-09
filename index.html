@@ -46,12 +46,23 @@
     <div id="legend"></div>
     <h2 id="topTitle">Top 10 départements</h2>
     <div id="toplist"><p class="muted">⏳ Chargement…</p></div>
-    <p class="hint">💡 Cliquez sur un département pour voir ses communes (délinquance et économie).</p>
+    <p class="hint">💡 Cliquez sur un département pour voir ses communes (sauf sièges de députés, au niveau circonscription).</p>
     <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF</p>
   </aside>
 </main>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js').then(function () {
+      console.info('[OpenFrance] Service Worker enregistré (cache disque actif)');
+    }).catch(function (err) {
+      console.warn('[OpenFrance] Service Worker non enregistré :', err);
+    });
+  });
+}
+</script>
 </body>
 </html>
