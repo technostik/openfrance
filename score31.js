@@ -1,35 +1,49 @@
-// OpenFrance — Score perso : indice ad hoc des communes de la Haute-Garonne (31)
-// Indice composite pondérable en temps réel (sliders) :
-//   📍 proximité de Toulouse — distance haversine entre centroïdes (bbox, comme l'annuaire)
-//   🛡 sécurité — taux de délinquance pour 1 000 hab (ensemble des faits, dernière année dispo)
-//   💰 loyers — loyer d'annonce prédit €/m² appartements (« Carte des loyers », MTE, millésime 2025)
-//   🥋 clubs — associations RNA du 31 correspondant à la requête (défaut : « mma + systema + ninjutsu »)
-// Dépend de app.js (state, DELINQ, loadCommunesDelinquance, colorFor, setStatus, showError,
-// hideError, fmt, fmt1, map, geoLayer) et annuaire.js (ANN, loadAssosDept, annCentroids,
-// parseAnnQuery, annMatch, annHaystack, esc). Source loyers via proxy /api/loyers/ (netlify.toml).
+// OpenFrance — Composeur de critères : indice ad hoc généralisé
+// (généralisation de l'ancien « Score perso (31) »)
+//
+// Principe : l'utilisateur choisit un département, une ville cible (autocomplete sur
+// les communes du département), puis compose librement son indice : ajout/retrait de
+// critères (les filtres existants de l'app + distance à la ville cible), sens de
+// chaque critère (⬆ plus = mieux / ⬇ moins = mieux) et pondération 0–10.
+// Recalcul en temps réel, dégradé vert→rouge, meilleure commune en bleu.
+//
+// Types de critères (tous au niveau commune) :
+//   📍 dist      — distance à la ville cible (haversine centroïde→centroïde)
+//   🛡 delinq    — taux de délinquance ‰ (indicateur au choix, dernière année dispo)
+//   💰 loyers    — loyer d'annonce prédit €/m² (« Carte des loyers » 2025, MTE)
+//   💶 revenus   — niveau de vie médian (Filosofi 2021, Geoptis)
+//   🏠 dvf       — prix moyen au m² (DVF 2015-2025, appartements ou maisons)
+//   🥋 annuaire  — nombre d'associations RNA correspondant à une requête
+//                  multi-opérateurs (ex. « mma + systema + ninjutsu »)
+//   🗳 politiq   — indicateur politique numérique par commune (abstention, voix d'un
+//                  candidat/nuance/liste : Présidentielle 22, Législatives 24,
+//                  Européennes 24) via le REGISTRY de app.js
+//
+// Dépend de app.js (state, DELINQ, REGISTRY, TOTAL_LABEL, DEP_FOLDERS, loadDelinquance,
+// loadCommunesDelinquance, delinquanceCommunes, loadRevenus, revenusCommunes, loadDVF,
+// dvfData, loadElectCommunes, fetchJSONCached, colorFor, setStatus, showError, hideError,
+// fmt, fmt1, map, geoLayer) et annuaire.js (ANN, loadAssosDept, annCentroids, parseAnnQuery,
+// annMatch, annHaystack, normTxt, esc).
 
 var SC = {
   active: false,
-  DEP: '31',
-  TLOU: '31555',        // code INSEE de Toulouse
-  geo: null,
-  centroids: null,
-  tlse: null,           // [lat, lng] centroïde de Toulouse
-  annee: null,          // année délinquance utilisée
-  taux: {},             // code commune -> taux ‰ (ensemble des faits)
-  loyers: {},           // code commune -> €/m² prédit
-  clubCounts: {},       // code commune -> nb d'associations matchant la requête clubs
-  data: {},             // code commune -> { nom, dist, taux, loyer, clubs, parts, score }
-  best: null,           // code de la meilleure commune (affichée en bleu)
-  layer: null,
-  loaded: false
+  dep: '31',
+  target: null,          // { code, nom } — ville cible (critère distance)
+  annee: null,           // année délinquance utilisée
+  geo: null, geoDep: null, centroids: null, cities: [],
+  valCache: {},          // dep|typeKey -> { ready, vals: {code -> nombre}, promise }
+  crits: [], nextId: 1,
+  data: {}, best: null, layer: null,
+  loyersByDep: {},        // dep -> { code -> €/m² }
+  seeded: false, uiReady: false,
+  pending: 0, errors: []
 };
 
 var SC_BLUE = '#2563eb';
 
 function scoreIsActive() { return SC.active; }
 
-// ---------- Normalisation robuste (P5–P95 avec saturation, comme scaleBounds) ----------
+// ---------- Utilitaires ----------
 function scBounds(vals) {
   var v = vals.filter(function (x) { return x !== null && x !== undefined; }).sort(function (a, b) { return a - b; });
   if (!v.length) return { lo: 0, hi: 1 };
@@ -39,10 +53,10 @@ function scBounds(vals) {
   if (hi <= lo) hi = lo + 1;
   return { lo: lo, hi: hi };
 }
-function scPart(v, b, lowerBetter) {
+function scPart(v, b, dir) { // dir 'max' : plus haut = mieux · 'min' : plus bas = mieux
   if (v === null || v === undefined) return null;
   var t = Math.max(0, Math.min(1, (v - b.lo) / (b.hi - b.lo)));
-  return lowerBetter ? 1 - t : t;
+  return dir === 'min' ? 1 - t : t;
 }
 function scDistKm(a, b) { // haversine, a/b = [lat, lng]
   var R = 6371;
@@ -51,10 +65,43 @@ function scDistKm(a, b) { // haversine, a/b = [lat, lng]
     Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
   return 2 * R * Math.asin(Math.sqrt(s));
 }
+function scMapVals(d) { // { code -> { val } } -> { code -> nombre }
+  var out = {};
+  for (var c in d) if (d[c] && d[c].val !== null && d[c].val !== undefined) out[c] = d[c].val;
+  return out;
+}
+function scDepLabel(dep) {
+  var f = DEP_FOLDERS[dep] || dep;
+  return f.replace(/^\d+A?-?/, '').replace(/-/g, ' ');
+}
+function scLatestYear() {
+  var y = 0;
+  DELINQ.allRows.forEach(function (r) { if (r.annee > y) y = r.annee; });
+  return y || null;
+}
 
-// ---------- Chargement des données ----------
-function scLoadLoyers() {
-  var base = '/api/loyers/?DEP__exact=31&page_size=200';
+// ---------- Chargements ----------
+function scEnsureGeo() {
+  if (SC.geo && SC.dep === SC.geoDep) return Promise.resolve();
+  var dep = SC.dep;
+  var g = state.communesGeo[dep];
+  var p = g ? Promise.resolve(g) :
+    fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[dep] + '/communes-' + DEP_FOLDERS[dep] + '.geojson')
+      .then(function (geo) { state.communesGeo[dep] = geo; return geo; });
+  return p.then(function (geo) {
+    if (SC.dep !== dep) return; // département changé entre-temps
+    SC.geo = geo; SC.geoDep = dep;
+    SC.centroids = annCentroids(dep);
+    SC.cities = (geo.features || []).map(function (f) {
+      return { code: f.properties.code, nom: f.properties.nom, n: normTxt(f.properties.nom) };
+    });
+  });
+}
+
+function scEnsureLoyers() {
+  var dep = SC.dep;
+  if (SC.loyersByDep[dep]) return Promise.resolve();
+  var base = '/api/loyers/?DEP__exact=' + encodeURIComponent(dep) + '&page_size=200';
   function page(p) {
     return fetch(base + '&page=' + p).then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status + ' (loyers, page ' + p + ')');
@@ -69,101 +116,239 @@ function scLoadLoyers() {
     for (var p = 2; p <= npages; p++) rest.push(p); // pagination manuelle, jamais links.next
     return Promise.all(rest.map(page)).then(function (js) {
       js.forEach(function (j2) { (j2.data || []).forEach(function (r) { rows.push(r); }); });
+      var map = {};
       rows.forEach(function (r) {
         var code = String(r.INSEE_C || '').trim();
         var v = parseFloat(r.loypredm2);
-        if (code && !isNaN(v)) SC.loyers[code] = v;
+        if (code && !isNaN(v)) map[code] = v;
       });
+      SC.loyersByDep[dep] = map;
     });
   });
 }
 
-function scEnsure() {
-  if (SC.loaded) return Promise.resolve();
-  var annee = 0;
-  DELINQ.allRows.forEach(function (r) { if (r.annee > annee) annee = r.annee; });
-  SC.annee = annee;
-  setStatus('⏳ Score perso : contours + délinquance ' + annee + '…', 'loading');
-  // loadCommunesDelinquance charge aussi state.communesGeo['31'] (requis par loadAssosDept)
-  return loadCommunesDelinquance(SC.DEP, annee).then(function (entry) {
-    SC.geo = state.communesGeo[SC.DEP];
-    SC.centroids = annCentroids(SC.DEP);
-    SC.tlse = SC.centroids[SC.TLOU];
-    if (!SC.tlse) throw new Error('Toulouse (' + SC.TLOU + ') introuvable dans les contours du 31');
-    entry.totals.forEach(function (r) { if (r.annee === annee) SC.taux[r.zone] = r.taux; });
-    setStatus('⏳ Score perso : loyers (Carte des loyers 2025)…', 'loading');
-    return scLoadLoyers();
-  }).then(function () {
-    setStatus('⏳ Score perso : associations du 31 (RNA)…', 'loading');
-    return loadAssosDept(SC.DEP);
-  }).then(function () {
-    scComputeClubs();
-    SC.loaded = true;
-  });
+function scEnsureAssos() {
+  return scEnsureGeo().then(function () { return loadAssosDept(SC.dep); });
 }
 
-// Comptage des « clubs » : associations RNA du 31 matchant la requête multi-opérateurs
-function scComputeClubs() {
-  var q = parseAnnQuery(document.getElementById('scQuery').value);
+function scAnnCounts(q) { // requête RNA -> { code commune -> nb d'assos }
+  var parsed = parseAnnQuery(q);
   var counts = {};
-  (ANN.assos[SC.DEP] || []).forEach(function (a) {
-    if (!annMatch(annHaystack(a), q)) return;
+  (ANN.assos[SC.dep] || []).forEach(function (a) {
+    if (!annMatch(annHaystack(a), parsed)) return;
     var c = String(a.n || '').trim();
     if (c) counts[c] = (counts[c] || 0) + 1;
   });
-  SC.clubCounts = counts;
+  return counts;
+}
+
+function scPolEntries() { // indicateurs politique numériques par commune (REGISTRY)
+  return REGISTRY.filter(function (e) {
+    return e.cat === 'politique' && e.type === 'num' && e.hasCommunes && e.electId;
+  });
+}
+
+// ---------- Types de critères ----------
+var SC_TYPES = {
+  dist: {
+    icon: '📍', label: 'Distance à la ville cible', dir: 'min', cfg: 'target',
+    key: function () { return 'dist|' + (SC.target ? SC.target.code : 'none'); },
+    describe: function () { return SC.target ? ('Distance à ' + SC.target.nom) : 'Distance (ville cible ?)'; },
+    ensure: function () { return scEnsureGeo(); },
+    vals: function () {
+      var out = {};
+      if (!SC.target) return out;
+      var t = SC.centroids[SC.target.code];
+      if (!t) return out;
+      for (var c in SC.centroids) out[c] = scDistKm(SC.centroids[c], t);
+      return out;
+    },
+    fmt: function (v) { return fmt1(v) + ' km'; }
+  },
+  delinq: {
+    icon: '🛡', label: 'Délinquance', dir: 'min', cfg: 'select', field: 'ind',
+    defCfg: function () { return { ind: TOTAL_LABEL }; },
+    key: function (cfg) { return 'delinq|' + cfg.ind; },
+    cfgOptions: function () {
+      var seen = {}, opts = [{ v: TOTAL_LABEL, l: 'Ensemble des faits' }];
+      DELINQ.allRows.forEach(function (r) { if (!seen[r.indicateur]) { seen[r.indicateur] = 1; opts.push({ v: r.indicateur, l: r.indicateur }); } });
+      return opts;
+    },
+    describe: function (cfg) { return 'Délinquance — ' + (cfg.ind === TOTAL_LABEL ? 'ensemble' : cfg.ind); },
+    ensure: function () { return scEnsureGeo().then(function () { return loadCommunesDelinquance(SC.dep, SC.annee); }); },
+    vals: function (cfg) { return scMapVals(delinquanceCommunes(SC.dep, cfg.ind, SC.annee)); },
+    fmt: function (v) { return fmt1(v) + ' ‰'; }
+  },
+  loyers: {
+    icon: '💰', label: 'Loyers d\'annonce (€/m²)', dir: 'min', cfg: 'none',
+    key: function () { return 'loyers'; },
+    describe: function () { return 'Loyers d\'annonce €/m²'; },
+    ensure: function () { return scEnsureLoyers(); },
+    vals: function () { return SC.loyersByDep[SC.dep] || {}; },
+    fmt: function (v) { return fmt1(v) + ' €/m²'; }
+  },
+  revenus: {
+    icon: '💶', label: 'Niveau de vie médian', dir: 'max', cfg: 'none',
+    key: function () { return 'revenus'; },
+    describe: function () { return 'Niveau de vie médian (Filosofi)'; },
+    ensure: function () { return loadRevenus(); },
+    vals: function () { return scMapVals(revenusCommunes(SC.dep)); },
+    fmt: function (v) { return fmt(v) + ' €/an'; }
+  },
+  dvf: {
+    icon: '🏠', label: 'Prix au m² (DVF)', dir: 'min', cfg: 'select', field: 'which',
+    defCfg: function () { return { which: 'apt' }; },
+    key: function (cfg) { return 'dvf|' + cfg.which; },
+    cfgOptions: function () { return [{ v: 'apt', l: 'Appartements' }, { v: 'mai', l: 'Maisons' }]; },
+    describe: function (cfg) { return 'Prix m² ' + (cfg.which === 'apt' ? 'appartements' : 'maisons') + ' (DVF)'; },
+    ensure: function () { return loadDVF(); },
+    vals: function (cfg) {
+      var all = dvfData(cfg.which, 'com'), out = {};
+      for (var c in all) {
+        var d = c.slice(0, 2); if (/^97/.test(c)) d = c.slice(0, 3);
+        if (d === SC.dep) out[c] = all[c].val;
+      }
+      return out;
+    },
+    fmt: function (v) { return fmt(v) + ' €/m²'; }
+  },
+  ann: {
+    icon: '🥋', label: 'Associations (requête RNA)', dir: 'max', cfg: 'text',
+    defCfg: function () { return { q: 'mma + systema + ninjutsu' }; },
+    key: function (cfg) { return 'ann|' + cfg.q; },
+    describe: function (cfg) { return 'Assos « ' + cfg.q + ' »'; },
+    ensure: function () { return scEnsureAssos(); },
+    vals: function (cfg) { return scAnnCounts(cfg.q); },
+    fmt: function (v) { return fmt(v) + ' asso(s)'; }
+  },
+  pol: {
+    icon: '🗳', label: 'Politique (par commune)', dir: 'max', cfg: 'select', field: 'idx',
+    defCfg: function () { return { idx: 0 }; },
+    key: function (cfg) { return 'pol|' + cfg.idx; },
+    cfgOptions: function () { return scPolEntries().map(function (e, i) { return { v: i, l: e.label }; }); },
+    describe: function (cfg) {
+      var l = scPolEntries()[cfg.idx];
+      return l ? l.label : 'Politique';
+    },
+    defDir: function (cfg) {
+      var l = scPolEntries()[cfg.idx];
+      return l && /abstention/i.test(l.label) ? 'min' : 'max';
+    },
+    ensure: function (cfg) {
+      var e = scPolEntries()[cfg.idx];
+      if (!e) return Promise.reject(new Error('indicateur politique inconnu'));
+      return scEnsureGeo().then(function () { return loadElectCommunes(SC.dep, e.electId); });
+    },
+    vals: function (cfg) {
+      var e = scPolEntries()[cfg.idx];
+      return e ? scMapVals(e.communes(SC.dep)) : {};
+    },
+    fmt: function (v) { return fmt1(v) + ' %'; }
+  }
+};
+
+// ---------- Cycle de vie d'un critère ----------
+function scCacheKey(crit) { return SC.dep + '|' + SC_TYPES[crit.type].key(crit.cfg); }
+
+function scEnsureCrit(crit) {
+  var key = scCacheKey(crit);
+  var T = SC_TYPES[crit.type];
+  var existing = SC.valCache[key];
+  if (existing && existing.promise) return existing.promise; // déjà en cours/terminé
+  var entry = { ready: false, vals: {}, promise: null };
+  SC.valCache[key] = entry;
+  SC.pending++;
+  setStatus('⏳ Composeur : chargement « ' + T.describe(crit.cfg) + ' »…', 'loading');
+  entry.promise = Promise.resolve().then(function () { return T.ensure(crit.cfg); }).then(function () {
+    entry.vals = T.vals(crit.cfg);
+    entry.ready = true;
+  }).catch(function (err) {
+    delete SC.valCache[key];
+    console.warn('[OpenFrance] Composeur, critère « ' + T.label + ' » :', err);
+    SC.errors.push(T.label + ' : ' + err.message);
+  }).then(function () {
+    SC.pending--;
+    if (SC.active) {
+      if (!SC.pending) {
+        if (SC.errors.length) { setStatus('⚠️ Critères en échec : ' + SC.errors.join(' · '), 'error'); SC.errors = []; }
+        else setStatus(Object.keys(SC.data).length + ' communes scorées — composez !');
+      }
+      scDraw();
+    }
+  });
+  return entry.promise;
+}
+
+function scEnsureAll() {
+  return Promise.all(SC.crits.map(function (crit) { return scEnsureCrit(crit); }));
+}
+
+function scAddCrit(type, cfg, w, dir, silent) {
+  var T = SC_TYPES[type];
+  var c = cfg || (T.defCfg ? T.defCfg() : null);
+  var crit = {
+    id: SC.nextId++, type: type, cfg: c,
+    w: (w === undefined ? 5 : w),
+    dir: dir || (T.defDir ? T.defDir(c) : T.dir)
+  };
+  SC.crits.push(crit);
+  scRenderCrits();
+  if (!silent) scEnsureCrit(crit);
+  return crit;
+}
+
+function scRemoveCrit(id) {
+  SC.crits = SC.crits.filter(function (c) { return c.id !== id; });
+  scRenderCrits();
+  scDraw();
+}
+
+function scCritChanged(crit) { // config modifiée : invalide le cache et recharge
+  delete SC.valCache[scCacheKey(crit)];
+  scRenderCrits();
+  scEnsureCrit(crit);
 }
 
 // ---------- Score ----------
-function scWeights() {
-  return {
-    dist: parseFloat(document.getElementById('scDist').value) || 0,
-    secu: parseFloat(document.getElementById('scSecu').value) || 0,
-    loyer: parseFloat(document.getElementById('scLoyer').value) || 0,
-    clubs: parseFloat(document.getElementById('scClubs').value) || 0
-  };
-}
-function scWeightsSummary() {
-  var w = scWeights();
-  return '📍' + w.dist + ' · 🛡' + w.secu + ' · 💰' + w.loyer + ' · 🥋' + w.clubs;
-}
-
 function scCompute() {
-  var w = scWeights();
-  var dists = [], tauxs = [], loyers = [];
-  var data = {};
-  (SC.geo.features || []).forEach(function (f) {
-    var code = f.properties.code;
-    var c = SC.centroids[code];
-    var d = (c && SC.tlse) ? scDistKm(c, SC.tlse) : null;
-    var t = Object.prototype.hasOwnProperty.call(SC.taux, code) ? SC.taux[code] : null;
-    var l = Object.prototype.hasOwnProperty.call(SC.loyers, code) ? SC.loyers[code] : null;
-    var cl = SC.clubCounts[code] || 0;
-    if (d !== null) dists.push(d);
-    if (t !== null) tauxs.push(t);
-    if (l !== null) loyers.push(l);
-    data[code] = { nom: f.properties.nom, dist: d, taux: t, loyer: l, clubs: cl };
+  var feats = SC.geo.features || [];
+  var items = [];
+  SC.crits.forEach(function (crit) {
+    if (crit.w <= 0) return;
+    var T = SC_TYPES[crit.type];
+    var entry = SC.valCache[scCacheKey(crit)];
+    var bounds = null;
+    if (entry && entry.ready) {
+      var vals = [];
+      feats.forEach(function (f) {
+        var v = entry.vals[f.properties.code];
+        if (v !== undefined) vals.push(v);
+      });
+      bounds = scBounds(vals);
+    }
+    items.push({ crit: crit, T: T, entry: entry, bounds: bounds });
   });
-  var bD = scBounds(dists), bT = scBounds(tauxs), bL = scBounds(loyers);
-  var best = null;
-  for (var code in data) {
-    var e = data[code];
-    var pD = scPart(e.dist, bD, true);   // plus près = mieux
-    var pT = scPart(e.taux, bT, true);   // moins de délinquance = mieux
-    var pL = scPart(e.loyer, bL, true);  // loyer plus bas = mieux
-    var pC = Math.min(1, e.clubs / 3);   // 3 clubs ou plus = score max
-    e.parts = { dist: pD, secu: pT, loyer: pL, clubs: pC };
-    var pairs = [[pD, w.dist], [pT, w.secu], [pL, w.loyer], [pC, w.clubs]];
+
+  var data = {}, best = null;
+  feats.forEach(function (f) {
+    var code = f.properties.code;
+    var e = { nom: f.properties.nom, vals: {}, score: 0 };
     var sum = 0, wsum = 0;
-    pairs.forEach(function (pair) {
-      if (pair[1] <= 0) return;
-      var p = pair[0] === null ? 0.5 : pair[0]; // donnée absente → neutre (pas de pénalité)
-      sum += pair[1] * p;
-      wsum += pair[1];
+    items.forEach(function (it) {
+      var v, part;
+      if (it.entry && it.entry.ready) v = it.entry.vals[code];
+      if (v === undefined) part = 0.5; // donnée absente → neutre, pas de pénalité
+      else {
+        e.vals[it.crit.id] = v;
+        part = scPart(v, it.bounds, it.crit.dir);
+      }
+      sum += it.crit.w * part;
+      wsum += it.crit.w;
     });
     e.score = wsum > 0 ? sum / wsum : 0;
+    data[code] = e;
     if (!best || e.score > data[best].score) best = code;
-  }
+  });
   SC.data = data;
   SC.best = best;
 }
@@ -180,15 +365,23 @@ function scTooltip(code) {
   if (!e) return '<b>' + esc(code) + '</b><br><i>Pas de données</i>';
   var txt = '<b>' + esc(e.nom) + '</b>' + (code === SC.best ? ' 🏆' : '');
   txt += '<br>Score : <b>' + Math.round(e.score * 100) + ' / 100</b>';
-  txt += '<br>📍 ' + (e.dist === null ? 'n.d.' : fmt1(e.dist) + ' km de Toulouse');
-  txt += '<br>🛡 ' + (e.taux === null ? 'n.d. (non diffusé)' : fmt1(e.taux) + ' ‰ (délinquance ' + SC.annee + ')');
-  txt += '<br>💰 ' + (e.loyer === null ? 'n.d.' : fmt(e.loyer) + ' €/m² (loyer prédit)');
-  txt += '<br>🥋 ' + e.clubs + ' club(s) trouvé(s)';
+  SC.crits.forEach(function (crit) {
+    if (crit.w <= 0) return;
+    var T = SC_TYPES[crit.type];
+    var v = e.vals[crit.id];
+    txt += '<br>' + T.icon + ' ' + esc(T.describe(crit.cfg)) + ' : <b>' + (v === undefined ? 'n.d.' : T.fmt(v)) + '</b>';
+  });
   return txt;
 }
-
 function scSidepanel() {
-  document.getElementById('legendTitle').textContent = 'Score perso (0–100) — ' + scWeightsSummary();
+  var wsum = 0;
+  SC.crits.forEach(function (c) { if (c.w > 0) wsum += c.w; });
+  var readyN = SC.crits.filter(function (c) {
+    var e = SC.valCache[scCacheKey(c)];
+    return e && e.ready;
+  }).length;
+  document.getElementById('legendTitle').textContent =
+    'Score composite (' + readyN + '/' + SC.crits.length + ' critères chargés, poids total ' + wsum + ')';
   var legend = document.getElementById('legend');
   legend.innerHTML = '';
   for (var c = 0; c < 6; c++) {
@@ -196,7 +389,7 @@ function scSidepanel() {
     row.className = 'legend-row';
     var swatch = document.createElement('span');
     swatch.className = 'legend-color';
-    swatch.style.background = colorFor((c + 0.5) / 6); // vert (bon score) → rouge (mauvais)
+    swatch.style.background = colorFor((c + 0.5) / 6);
     var label = document.createElement('span');
     label.textContent = c === 0 ? 'Score élevé' : (c === 5 ? 'Score faible' : '');
     row.appendChild(swatch); row.appendChild(label);
@@ -224,35 +417,233 @@ function scSidepanel() {
     top.appendChild(row2);
   });
 }
-
-function scRender() {
-  if (SC.layer) { map.removeLayer(SC.layer); SC.layer = null; }
+function scDraw() {
+  if (!SC.geo || !SC.active) return;
   scCompute();
-  SC.layer = L.geoJSON(SC.geo, {
-    style: function (f) { return scStyleFor(f.properties.code); },
-    onEachFeature: function (f, l) {
-      l.bindTooltip(function () { return scTooltip(f.properties.code); }, { sticky: true });
-    }
-  }).addTo(map);
-  map.fitBounds(SC.layer.getBounds(), { padding: [30, 30] });
+  if (!SC.layer) {
+    SC.layer = L.geoJSON(SC.geo, {
+      style: function (f) { return scStyleFor(f.properties.code); },
+      onEachFeature: function (f, l) {
+        l.bindTooltip(function () { return scTooltip(f.properties.code); }, { sticky: true });
+      }
+    }).addTo(map);
+    map.fitBounds(SC.layer.getBounds(), { padding: [30, 30] });
+  } else {
+    SC.layer.eachLayer(function (l) {
+      if (l.feature) l.setStyle(scStyleFor(l.feature.properties.code));
+    });
+  }
   scSidepanel();
-  setStatus(Object.keys(SC.data).length + ' communes du 31 scorées — bougez les curseurs !');
 }
 
-// Mise à jour temps réel : recalcul (rapide, ~600 communes) puis re-style en place,
-// sans recréer la couche Leaflet.
-function scUpdateLive() {
-  if (!SC.layer) return;
-  scCompute();
-  SC.layer.eachLayer(function (l) {
-    if (l.feature) l.setStyle(scStyleFor(l.feature.properties.code));
+// ---------- Département / ville cible ----------
+function scSetDep(dep) {
+  SC.dep = dep;
+  SC.geo = null; SC.data = {}; SC.best = null;
+  if (SC.layer) { map.removeLayer(SC.layer); SC.layer = null; }
+  SC.target = null;
+  document.getElementById('scTarget').value = '';
+  document.getElementById('levelTitle').textContent = 'Composeur — ' + scDepLabel(dep) + ' (' + dep + ')';
+  var delinqP = DELINQ.loaded ? Promise.resolve() : loadDelinquance();
+  delinqP.then(function () {
+    SC.annee = scLatestYear();
+    return scEnsureGeo();
+  }).then(function () {
+    if (dep === '31') scSetTarget('31555', 'Toulouse'); // continuité avec l'ancien score perso
+    scRenderCrits();
+    return scEnsureAll();
+  }).then(function () { scDraw(); }).catch(function (err) {
+    console.error('[OpenFrance] Composeur :', err);
+    showError('Composeur : impossible de charger le département.', err.message);
   });
-  scSidepanel();
+}
+
+function scSetTarget(code, nom) {
+  SC.target = { code: code, nom: nom };
+  document.getElementById('scTarget').value = nom;
+  var prefix = SC.dep + '|dist|'; // invalide les distances du département courant
+  for (var k in SC.valCache) if (k.indexOf(prefix) === 0) delete SC.valCache[k];
+  SC.crits.forEach(function (crit) {
+    if (crit.type === 'dist') scEnsureCrit(crit);
+  });
+  scRenderCrits();
+}
+
+// ---------- Autocomplete ville cible ----------
+function scTargetSearch(q) {
+  q = normTxt(q);
+  if (!q) return [];
+  var out = [];
+  for (var i = 0; i < SC.cities.length && out.length < 10; i++) {
+    var c = SC.cities[i];
+    if (c.n.indexOf(q) !== -1) out.push(c);
+  }
+  return out;
+}
+function scTargetDrop(show) {
+  var d = document.getElementById('scTargetDrop');
+  d.style.display = show ? 'block' : 'none';
+  if (!show) d.innerHTML = '';
+}
+function scTargetRender(matches) {
+  var d = document.getElementById('scTargetDrop');
+  d.innerHTML = '';
+  matches.forEach(function (m) {
+    var row = document.createElement('div');
+    row.innerHTML = esc(m.nom) + ' <span class="muted">(' + m.code + ')</span>';
+    row.addEventListener('mousedown', function (ev) { // mousedown : avant le blur
+      ev.preventDefault();
+      scSetTarget(m.code, m.nom);
+      scTargetDrop(false);
+    });
+    d.appendChild(row);
+  });
+  d.style.display = matches.length ? 'block' : 'none';
+}
+
+// ---------- UI des critères ----------
+function scRenderCrits() {
+  var box = document.getElementById('scCrits');
+  if (!box) return;
+  box.innerHTML = '';
+  SC.crits.forEach(function (crit) { box.appendChild(scCritRow(crit)); });
+}
+
+function scCritRow(crit) {
+  var T = SC_TYPES[crit.type];
+  var row = document.createElement('div');
+  row.className = 'sc-crit';
+
+  var ico = document.createElement('span');
+  ico.className = 'sc-ico';
+  ico.textContent = T.icon;
+  row.appendChild(ico);
+
+  if (T.cfg === 'select') {
+    var sel = document.createElement('select');
+    T.cfgOptions().forEach(function (o) {
+      var opt = document.createElement('option');
+      opt.value = o.v; opt.textContent = o.l;
+      sel.appendChild(opt);
+    });
+    sel.value = crit.cfg[T.field];
+    sel.addEventListener('change', function () {
+      crit.cfg[T.field] = T.field === 'idx' ? parseInt(sel.value, 10) : sel.value;
+      if (T.defDir) crit.dir = T.defDir(crit.cfg); // ex. abstention → moins = mieux
+      scCritChanged(crit);
+    });
+    row.appendChild(sel);
+  } else if (T.cfg === 'text') {
+    var inp = document.createElement('input');
+    inp.type = 'text';
+    inp.value = crit.cfg.q;
+    inp.className = 'sc-q';
+    var deb = null;
+    inp.addEventListener('input', function () {
+      clearTimeout(deb);
+      deb = setTimeout(function () {
+        crit.cfg.q = inp.value;
+        scCritChanged(crit);
+      }, 400);
+    });
+    row.appendChild(inp);
+  } else {
+    var lab = document.createElement('span');
+    lab.className = 'sc-lab';
+    lab.textContent = T.describe(crit.cfg);
+    row.appendChild(lab);
+  }
+
+  // Sens : ⬆ plus = mieux · ⬇ moins = mieux
+  var dir = document.createElement('button');
+  dir.className = 'sc-dir';
+  dir.type = 'button';
+  function paintDir() {
+    dir.textContent = crit.dir === 'min' ? '⬇' : '⬆';
+    dir.title = crit.dir === 'min' ? 'Moins c\'est mieux (cliquer pour inverser)' : 'Plus c\'est mieux (cliquer pour inverser)';
+  }
+  paintDir();
+  dir.addEventListener('click', function () {
+    crit.dir = crit.dir === 'min' ? 'max' : 'min';
+    paintDir();
+    scDraw();
+  });
+  row.appendChild(dir);
+
+  // Pondération 0-10
+  var w = document.createElement('input');
+  w.type = 'range'; w.min = '0'; w.max = '10'; w.value = crit.w;
+  w.title = 'Pondération';
+  var wv = document.createElement('b');
+  wv.textContent = crit.w;
+  w.addEventListener('input', function () {
+    crit.w = parseInt(w.value, 10);
+    wv.textContent = crit.w;
+    scDraw();
+  });
+  row.appendChild(w);
+  row.appendChild(wv);
+
+  var del = document.createElement('button');
+  del.className = 'sc-del';
+  del.type = 'button';
+  del.textContent = '✕';
+  del.title = 'Retirer ce critère';
+  del.addEventListener('click', function () { scRemoveCrit(crit.id); });
+  row.appendChild(del);
+
+  return row;
+}
+
+function scInitUI() {
+  if (SC.uiReady) return;
+  SC.uiReady = true;
+
+  var depSel = document.getElementById('scDep');
+  Object.keys(DEP_FOLDERS).sort().forEach(function (d) {
+    var o = document.createElement('option');
+    o.value = d;
+    o.textContent = d + ' — ' + scDepLabel(d);
+    depSel.appendChild(o);
+  });
+  depSel.value = SC.dep;
+  depSel.addEventListener('change', function () { scSetDep(depSel.value); });
+
+  var addSel = document.getElementById('scAddType');
+  Object.keys(SC_TYPES).forEach(function (k) {
+    var o = document.createElement('option');
+    o.value = k;
+    o.textContent = SC_TYPES[k].icon + ' ' + SC_TYPES[k].label;
+    addSel.appendChild(o);
+  });
+  document.getElementById('scAddBtn').addEventListener('click', function () {
+    scAddCrit(addSel.value);
+  });
+
+  var tin = document.getElementById('scTarget');
+  var deb = null;
+  tin.addEventListener('input', function () {
+    clearTimeout(deb);
+    if (!tin.value.trim()) { scTargetDrop(false); return; }
+    deb = setTimeout(function () { scTargetRender(scTargetSearch(tin.value)); }, 120);
+  });
+  tin.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var m = scTargetSearch(tin.value);
+      if (m.length) { scSetTarget(m[0].code, m[0].nom); scTargetDrop(false); }
+    } else if (e.key === 'Escape') scTargetDrop(false);
+  });
+  tin.addEventListener('blur', function () { setTimeout(function () { scTargetDrop(false); }, 150); });
+  tin.addEventListener('focus', function () {
+    if (tin.value.trim()) scTargetRender(scTargetSearch(tin.value));
+  });
 }
 
 // ---------- Entrée / sortie du mode ----------
 function scoreEnter() {
   SC.active = true;
+  scInitUI();
   document.getElementById('indicatorLabel').style.display = 'none';
   document.getElementById('yearLabel').style.display = 'none';
   document.getElementById('annControls').style.display = 'none';
@@ -261,23 +652,25 @@ function scoreEnter() {
   document.getElementById('scoreControls').style.display = 'flex';
   document.getElementById('legendBlock').style.display = '';
   document.getElementById('backBtn').hidden = true;
-  document.getElementById('levelTitle').textContent = 'Score perso — Haute-Garonne (31)';
   state.view = 'france'; state.dep = null;
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   hideError();
-  scEnsure().then(function () {
-    scRender();
-  }).catch(function (err) {
-    console.error('[OpenFrance] Score perso :', err);
-    showError('Impossible de charger les données du score perso.', err.message);
-  });
+  if (!SC.seeded) {
+    // Critères par défaut : reproduction de l'ancien « Score perso (31) »
+    SC.seeded = true;
+    scAddCrit('dist', null, 5, null, true);
+    scAddCrit('delinq', null, 5, null, true);
+    scAddCrit('loyers', null, 5, null, true);
+    scAddCrit('ann', null, 3, null, true);
+  }
+  scSetDep(SC.dep);
 }
 
 function scoreLeave() {
   SC.active = false;
+  scTargetDrop(false);
   if (SC.layer) { map.removeLayer(SC.layer); SC.layer = null; }
   document.getElementById('scoreControls').style.display = 'none';
-  // Si l'annuaire reprend la main, c'est lui qui gère l'UI partagée.
   if (state.category !== 'annuaire') {
     document.getElementById('indicatorLabel').style.display = '';
     document.getElementById('legendBlock').style.display = '';
@@ -289,19 +682,3 @@ function scoreLeave() {
     }
   }
 }
-
-// ---------- Branchement UI ----------
-(function () {
-  ['scDist', 'scSecu', 'scLoyer', 'scClubs'].forEach(function (id) {
-    var el = document.getElementById(id);
-    el.addEventListener('input', function () {
-      document.getElementById(id + 'V').textContent = el.value;
-      scUpdateLive();
-    });
-  });
-  var q = document.getElementById('scQuery');
-  var deb = null;
-  function applyQuery() { scComputeClubs(); scUpdateLive(); }
-  q.addEventListener('input', function () { clearTimeout(deb); deb = setTimeout(applyQuery, 300); });
-  q.addEventListener('keydown', function (e) { if (e.key === 'Enter') { clearTimeout(deb); applyQuery(); } });
-})();
