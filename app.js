@@ -1223,6 +1223,9 @@ function initUI() {
 
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
+    // Conserve le département sélectionné si on est en vue département :
+    // on change d'indicateur mais on reste sur le même territoire.
+    var keepDep = (state.view === 'dep' && state.dep);
     if (state.category === 'economie' && catIndicators('economie').length === 0) registerEconomieIndicators();
     if (state.category === 'politique' && catIndicators('politique').length === 0) {
       // Les indicateurs politiques dépendent des données chargées (listes de
@@ -1231,7 +1234,7 @@ function initUI() {
       Promise.all([loadElections(), loadLegislatives(), loadEuropeennes()]).then(function () {
         registerPolitiqueIndicators();
         fillIndicatorSelect();
-        if (catIndicators(state.category).length) selectIndicator(catIndicators(state.category)[0].label, false);
+        if (catIndicators(state.category).length) selectIndicator(catIndicators(state.category)[0].label, keepDep);
       }).catch(function (err) {
         console.error('[OpenFrance] Échec politique :', err);
         showError('Impossible de charger les données politiques.', err.message);
@@ -1239,7 +1242,7 @@ function initUI() {
       return;
     }
     fillIndicatorSelect();
-    if (catIndicators(state.category).length) selectIndicator(catIndicators(state.category)[0].label, false);
+    if (catIndicators(state.category).length) selectIndicator(catIndicators(state.category)[0].label, keepDep);
   });
   document.getElementById('indicatorSelect').addEventListener('change', function () {
     selectIndicator(this.value, true);

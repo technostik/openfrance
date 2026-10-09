@@ -23,6 +23,7 @@ var ANN = {
   centroids: {},      // dep -> { codeCommune -> [lat, lng] }
   entCache: {},       // "dep|q|section" -> rows
   markers: null,      // featureGroup des marqueurs courants
+  markerIndex: {},    // clé marqueur ('a:<id>' / 'e:<siren>') -> marker Leaflet (mise à jour par différence)
   showing: [],        // résultats affichés (assos + entreprises)
   seq: 0              // jeton anti-course pour les recherches asynchrones
 };
@@ -420,6 +421,7 @@ function searchEntreprises(dep, q, section) {
 function clearAnnMarkers() {
   if (ANN.markers) { map.removeLayer(ANN.markers); ANN.markers = null; }
   ANN.showing = [];
+  ANN.markerIndex = {};
 }
 function assoPopup(a, th) {
   var html = '<b>' + esc(a.t) + '</b>';
@@ -443,37 +445,60 @@ function entColor(e) {
   return catColor(s.charAt(0)); // couleur par section NAF
 }
 
-function addAssoMarkers(list, centroids, cap) {
-  var max = cap || 2000;
-  var shown = list.slice(0, max);
-  shown.forEach(function (a) {
+// Met à jour les marqueurs PAR DIFFÉRENCE : à chaque recherche, seuls les
+// marqueurs nouveaux sont créés et les disparus retirés — les marqueurs
+// conservés ne sont pas recréés (pas de scintillement de la carte).
+function annEnsureLayer() {
+  if (!ANN.markers) ANN.markers = L.featureGroup().addTo(map);
+  return ANN.markers;
+}
+function annSyncMarkers(entries) {
+  var group = annEnsureLayer();
+  var wanted = {};
+  entries.forEach(function (en) { wanted[en.key] = en; });
+  // 1. retire les marqueurs qui ne sont plus dans les résultats
+  for (var k in ANN.markerIndex) {
+    if (!wanted[k]) { group.removeLayer(ANN.markerIndex[k]); delete ANN.markerIndex[k]; }
+  }
+  // 2. crée uniquement les marqueurs manquants
+  entries.forEach(function (en) {
+    if (ANN.markerIndex[en.key]) { en.rec._marker = ANN.markerIndex[en.key]; return; }
+    var m = L.circleMarker(en.latlng, {
+      radius: 5, weight: 1, color: '#0f172a', fillColor: en.color, fillOpacity: 0.85
+    });
+    m.bindPopup(en.popup);
+    m.addTo(group);
+    ANN.markerIndex[en.key] = m;
+    en.rec._marker = m;
+  });
+}
+// Construit les entrées marqueur des associations (cap 2000)
+function assoEntries(list, centroids, cap) {
+  var out = [];
+  list.slice(0, cap || 2000).forEach(function (a) {
     var c = centroids[a.n];
     if (!c) return; // pas de code INSEE → non localisable
     var th = annTheme(a);
-    var m = L.circleMarker(c, {
-      radius: 5, weight: 1, color: '#0f172a',
-      fillColor: th && th.p ? catColor(th.p) : '#60a5fa', fillOpacity: 0.85
+    out.push({
+      key: 'a:' + a.i, rec: a, latlng: c,
+      color: th && th.p ? catColor(th.p) : '#60a5fa',
+      popup: assoPopup(a, th)
     });
-    m.bindPopup(assoPopup(a, th));
-    m.addTo(ANN.markers);
-    a._marker = m;
   });
-  return shown;
+  return out;
 }
-function addEntMarkers(list) {
-  list.forEach(function (e) {
+// Construit les entrées marqueur des entreprises (cap 2000)
+function entEntries(list, cap) {
+  var out = [];
+  list.slice(0, cap || 2000).forEach(function (e) {
     var co = e.siege && e.siege.coordonnees;
     if (!co) return;
     var parts = String(co).split(',');
     var lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
     if (isNaN(lat) || isNaN(lon)) return;
-    var m = L.circleMarker([lat, lon], {
-      radius: 5, weight: 1, color: '#0f172a', fillColor: entColor(e), fillOpacity: 0.85
-    });
-    m.bindPopup(entPopup(e));
-    m.addTo(ANN.markers);
-    e._marker = m;
+    out.push({ key: 'e:' + e.siren, rec: e, latlng: [lat, lon], color: entColor(e), popup: entPopup(e) });
   });
+  return out;
 }
 
 // ---------- Rendu liste de résultats ----------
@@ -548,9 +573,10 @@ function annApplySearch() {
   var cat = document.getElementById('annCat').value;
   var code = state.dep.code;
 
-  clearAnnMarkers();
-  ANN.markers = L.featureGroup().addTo(map);
+  // PAS de clearAnnMarkers ici : les marqueurs sont mis à jour par différence
+  // (annSyncMarkers) pour éviter le scintillement de la carte à chaque frappe.
   ANN.showing = [];
+  var entries = [];
   var assoCount = 0;
 
   // --- Associations : filtrage local (données en cache) ---
@@ -564,8 +590,8 @@ function annApplySearch() {
       return annMatch(annHaystack(a), q);
     });
     assoCount = list.length;
-    var capped = addAssoMarkers(list, centroids, 2000);
-    capped.forEach(function (a) { ANN.showing.push({ kind: 'asso', a: a }); });
+    list.slice(0, 2000).forEach(function (a) { ANN.showing.push({ kind: 'asso', a: a }); });
+    entries = entries.concat(assoEntries(list, centroids, 2000));
   }
 
   // --- Entreprises : recherche texte via l'API (uniquement si requête) ---
@@ -591,9 +617,10 @@ function annApplySearch() {
     var ents = res && res.ents, entErr = res && res.err;
     if (ents && ents.length) {
       entCount = ents.length;
-      addEntMarkers(ents);
-      ents.forEach(function (e) { ANN.showing.push({ kind: 'ent', e: e }); });
+      ents.slice(0, 2000).forEach(function (e) { ANN.showing.push({ kind: 'ent', e: e }); });
+      entries = entries.concat(entEntries(ents, 2000));
     }
+    annSyncMarkers(entries);
     renderAnnList();
     var parts = [];
     if (type !== 'ent' && assoCount) parts.push(assoCount.toLocaleString('fr-FR') + ' association(s)');
@@ -619,6 +646,7 @@ function annRenderFrance() {
   }).addTo(map);
   document.getElementById('annStatus').textContent = 'Sélectionnez un département sur la carte.';
   document.getElementById('annResults').innerHTML = '';
+  document.getElementById('levelTitle').textContent = 'Annuaire — France';
   setStatus('Annuaire — cliquez sur un département');
 }
 
@@ -628,6 +656,7 @@ function annRefresh() {
   clearAnnMarkers();
   if (state.view === 'france' || !state.dep) { annRenderFrance(); return; }
   var code = state.dep.code;
+  document.getElementById('levelTitle').textContent = 'Annuaire — ' + state.dep.nom + ' (' + code + ')';
   var geoPromise = state.communesGeo[code] ? Promise.resolve(state.communesGeo[code]) :
     fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[code] + '/communes-' + DEP_FOLDERS[code] + '.geojson')
       .then(function (g) { state.communesGeo[code] = g; return g; });
@@ -952,10 +981,16 @@ function annEnter() {
   document.getElementById('yearLabel').style.display = 'none';
   document.getElementById('legendBlock').style.display = 'none';
   document.getElementById('annPanel').style.display = '';
-  // retour à la vue France
-  state.view = 'france'; state.dep = null;
-  document.getElementById('backBtn').hidden = true;
-  document.getElementById('levelTitle').textContent = 'Annuaire — France';
+  // On conserve le département sélectionné (s'il y en a un) : on reste sur
+  // le territoire en cours, sinon on repart de la vue France.
+  if (state.view === 'dep' && state.dep) {
+    document.getElementById('backBtn').hidden = false;
+    document.getElementById('levelTitle').textContent = 'Annuaire — ' + state.dep.nom + ' (' + state.dep.code + ')';
+  } else {
+    state.view = 'france'; state.dep = null;
+    document.getElementById('backBtn').hidden = true;
+    document.getElementById('levelTitle').textContent = 'Annuaire — France';
+  }
   loadNomen().catch(function (err) { console.warn('[OpenFrance] Nomenclature WALDEC :', err); });
   annRefresh();
 }
@@ -971,6 +1006,14 @@ function annLeave() {
   document.getElementById('indicatorLabel').style.display = '';
   document.getElementById('legendBlock').style.display = '';
   document.getElementById('annPanel').style.display = 'none';
+  // Restaure le titre correspondant au territoire conservé (le département
+  // n'est PAS réinitialisé : app.js gère la suite via selectIndicator(…, keepDep))
+  if (state.view === 'dep' && state.dep) {
+    document.getElementById('levelTitle').textContent = state.dep.nom + ' (' + state.dep.code + ') — par commune';
+  } else {
+    document.getElementById('backBtn').hidden = true;
+    document.getElementById('levelTitle').textContent = 'France — par département';
+  }
 }
 
 // ---------- Branchement UI ----------
