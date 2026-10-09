@@ -13,6 +13,7 @@ index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (rec
 style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*) et cache (.cache-*)
 app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI)
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
+score31.js      — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (branche de test `score31`)
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
 netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises
 ```
@@ -39,6 +40,16 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - **Marqueurs par différence** (`annSyncMarkers` + `ANN.markerIndex`) : à chaque frappe, seuls les nouveaux marqueurs sont créés, les disparus retirés — jamais de recréation complète (anti-scintillement). Clés : `a:<id RNA>` / `e:<siren>`.
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
 - `annEnter`/`annLeave` : **conservent le département courant** (pas de retour forcé à la France).
+
+### score31.js — mode « Composeur de critères » (branche de test `score31`)
+- **Généralisation de l'ancien « Score perso (31) »** : indice composite **personnalisable** des communes de **n'importe quel département**, **hors REGISTRY** (`scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` de app.js via `typeof` guards).
+- **Département** au choix (select) + **ville cible** avec autocomplete sur les communes du département (recherche insensible aux accents via `normTxt`, dropdown custom `#scTargetDrop`, Entrée = 1er résultat).
+- **Critères ajoutables/retirables à volonté** (bouton ＋ / ✕), chacun avec : **sens** (⬆ plus = mieux / ⬇ moins = mieux) et **poids 0–10**. Types : 📍 distance à la ville cible · 🛡 délinquance (indicateur au choix, dernière année) · 💰 loyers (Carte des loyers 2025) · 💶 niveau de vie médian (Filosofi) · 🏠 prix m² DVF (appartements/maisons) · 🥋 associations RNA (requête multi-opérateurs) · 🗳 politique par commune (indicateurs numériques du REGISTRY : abstentions, voix candidat/nuance/liste).
+- Normalisation P5–P95 avec saturation par critère (`scBounds`) ; score = Σ poids×part / Σ poids ; **donnée absente → part neutre 0,5** ; critère non chargé → neutre également.
+- **Temps réel** : `scDraw` recalcule puis `setStyle` en place (jamais de recréation de couche) ; les chargements de données sont paresseux, par critère, avec dédoublonnage (`SC.valCache[key].promise`).
+- Couleurs : `colorFor(1 − score)` (vert = bon score) ; **meilleure commune en bleu** (#2563eb, bordure blanche, 🏆 infobulle/légende/top 10) ; infobulle détaillée = valeur de chaque critère.
+- Au premier passage, critères par défaut = reproduction de l'ancien score perso (distance Toulouse, délinquance ensemble, loyers, assos « "mma" + "systema" + ninjutsu » ; poids 5/5/5/3).
+- Mode isolé : retire `geoLayer`, couche propre `SC.layer`, ne remplace pas `refresh`, réutilise les caches existants (IndexedDB assos, `state.communesGeo`/`communesCache`, SW `/data/` et `/api/`).
 
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
@@ -74,6 +85,10 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Associations : RNA agrégé national (Waldec) — voir architecture ci-dessus
 - Entreprises : API Recherche d'entreprises (DINUM) — gratuit, sans clé, résultats cachés IndexedDB pour économiser le quota
 
+### Composeur de critères
+- Loyers d'annonce prédits par commune : « Carte des loyers » 2025 (Ministère de la Transition écologique, dataset `693aa2feed1bf4da603faa49`), resource `55b34088-...` (colonnes `INSEE_C`, `loypredm2`) via `/api/loyers/`, filtre `DEP__exact=<dept>` (généralisé à tout département) — une valeur par commune, même pour les petites (prédiction par maille).
+- Tous les autres critères réutilisent les sources existantes (france-geojson, délinquance communale, Filosofi, DVF, élections agrégées, RNA) — aucune copie de données.
+
 ## 🐛 Bugs résolus (NE PAS RÉGRESSER)
 
 1. Parser CSV naïf → années NaN → maintenant regex robuste
@@ -93,6 +108,7 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
 - **Workflow** : travailler sur une branche dédiée (`work`), tester en local avec `netlify dev`, merger vers `main` seulement quand stable = 1 seul deploy
+- Branche de test **`score31`** (fork de `work`) : fonctionnalité « Composeur de critères » (généralisation du score perso). Tester en local (`netlify dev`, les proxys `/api/loyers/` y sont actifs), merger vers `work`/`main` ou abandonner librement.
 - Migration Vercel envisagée (100 deploys/jour) : traduire `netlify.toml` → `vercel.json` (rewrites), rien d'autre à changer
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 

@@ -27,6 +27,7 @@
       <option value="economie">Économie</option>
       <option value="politique">Politique</option>
       <option value="annuaire">Associations & entreprises</option>
+      <option value="score31">Composeur de critères</option>
     </select>
   </label>
   <label id="indicatorLabel">Indicateur
@@ -50,6 +51,20 @@
       <select id="annCat"><option value="">Toutes catégories</option></select>
     </label>
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
+  </div>
+  <div id="scoreControls" style="display:none">
+    <label>Département
+      <select id="scDep"></select>
+    </label>
+    <label id="scTargetWrap">Ville cible
+      <input id="scTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="scTargetDrop" class="sc-drop"></div>
+    </label>
+    <div id="scCrits"></div>
+    <label>Ajouter un critère
+      <select id="scAddType"></select>
+    </label>
+    <button id="scAddBtn" type="button" title="Ajouter le critère sélectionné">＋ Ajouter</button>
   </div>
   <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
   <span id="status">⏳ Chargement des données…</span>
@@ -93,6 +108,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 <script src="annuaire.js"></script>
+<script src="score31.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {

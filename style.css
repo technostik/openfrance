@@ -68,3 +68,28 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 .cache-btn.cache-purge { background: #7f1d1d; }
 .cache-btn.cache-purge:hover { background: #991b1b; }
 .cache-btn:disabled { opacity: .5; cursor: wait; }
+
+/* --- Composeur de critères (ex-Score perso 31) --- */
+#scoreControls { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+#scoreControls label { display: flex; flex-direction: column; font-size: .8rem; color: #94a3b8; gap: 4px; }
+#scoreControls select { min-width: 200px; }
+#scTargetWrap { position: relative; }
+#scTarget { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 8px 12px; font-size: .95rem; min-width: 220px; }
+.sc-drop { position: absolute; top: 100%; left: 0; background: #1e293b; border: 1px solid #475569; border-radius: 6px; z-index: 1500; max-height: 220px; overflow-y: auto; min-width: 260px; display: none; }
+.sc-drop div { padding: 6px 10px; font-size: .82rem; cursor: pointer; }
+.sc-drop div:hover { background: #334155; }
+#scCrits { display: flex; gap: 8px; flex-wrap: wrap; }
+.sc-crit { display: flex; gap: 8px; align-items: center; background: #334155; border-radius: 6px; padding: 6px 10px; flex-wrap: wrap; }
+.sc-crit .sc-ico { font-size: 1rem; }
+.sc-crit select, .sc-crit input[type="text"] { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 5px 8px; font-size: .8rem; max-width: 240px; }
+.sc-crit .sc-lab { font-size: .8rem; color: #e2e8f0; }
+.sc-crit input[type="range"] { width: 90px; accent-color: #2563eb; }
+.sc-crit b { color: #e2e8f0; min-width: 1.2em; text-align: center; }
+.sc-dir { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; cursor: pointer; padding: 4px 8px; }
+.sc-dir:hover { border-color: #2563eb; }
+.sc-del { background: #7f1d1d; color: #fff; border: none; border-radius: 6px; cursor: pointer; padding: 4px 8px; }
+.sc-del:hover { background: #991b1b; }
+#scAddBtn { background: #1d4ed8; color: white; border: none; border-radius: 6px; padding: 10px 14px; font-size: .9rem; cursor: pointer; align-self: center; }
+#scAddBtn:hover { background: #2563eb; }
+.sc-winline { font-size: .85rem; background: #1d4ed8; color: #fff; border-radius: 6px; padding: 8px; margin: 8px 0; }
+.top-row.sc-win { background: #1d4ed8; color: #fff; font-weight: bold; }

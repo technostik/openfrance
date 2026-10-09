@@ -1251,6 +1251,14 @@ function initUI() {
 
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
+
+    // Mode « Score perso (31) » (score31.js) : hors REGISTRY, gestion dédiée.
+    // Les scripts annuaire.js/score31.js se chargent après app.js : appel par typeof guard.
+    if (state.category === 'score31') {
+      if (typeof scoreEnter === 'function') scoreEnter();
+      return;
+    }
+    if (typeof scoreIsActive === 'function' && scoreIsActive()) scoreLeave();
     // Conserve le département sélectionné si on est en vue département :
     // on change d'indicateur mais on reste sur le même territoire.
     var keepDep = (state.view === 'dep' && state.dep);
