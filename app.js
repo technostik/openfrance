@@ -2,7 +2,8 @@
 // Sources (toutes via proxy Netlify, même origine) :
 //  - Délinquance : Ministère de l'Intérieur (CSV départements + API tabulaire communale)
 //  - Économie : Filosofi 2021 par commune (Geoptis) + statistiques DVF (prix au m²)
-//  - Politique : Présidentielle 2022, Législatives 2024 (nuances par circo), Européennes 2024
+//  - Politique : Présidentielle 2022, Législatives 2024 (nuances), Européennes 2024
+//    + niveau commune via l'agrégat officiel « Données des élections agrégées » (data.gouv)
 
 var URLS = {
   delinquance: '/data/delinquance-dep.csv',
@@ -14,7 +15,9 @@ var URLS = {
   presT2: '/data/pres2022-t2.txt',
   legT1: '/data/leg2024-t1.csv',
   legT2: '/data/leg2024-t2.csv',
-  euroDep: '/data/euro2024-dep.csv'
+  euroDep: '/data/euro2024-dep.csv',
+  electGen: '/api/elect-gen/',
+  electCand: '/api/elect-cand/'
 };
 
 var DEP_FOLDERS = {
@@ -144,7 +147,7 @@ function colIdx(header, re) {
 }
 
 // ============================================================
-// DÉLINQUANCE (inchangé)
+// DÉLINQUANCE
 // ============================================================
 var DELINQ = { allRows: [], totalRows: [], loaded: false };
 
@@ -272,7 +275,7 @@ function delinquanceCommunes(depCode, indicateur, annee) {
 }
 
 // ============================================================
-// ÉCONOMIE (inchangé)
+// ÉCONOMIE
 // ============================================================
 var REV = { com: {}, dept: {}, loaded: false };
 
@@ -607,6 +610,29 @@ function legVotesNuaData(nuaCode) {
   return data;
 }
 
+function legVotesWinnerData() {
+  var data = {};
+  for (var dep in LEG.votesByDepNua) {
+    var best = null, parts = [];
+    for (var nua in LEG.votesByDepNua[dep]) {
+      var v = LEG.votesByDepNua[dep][nua];
+      parts.push({ nua: nua, v: v });
+      if (!best || v > best.v) best = { nua: nua, v: v };
+    }
+    var expr = LEG.exprByDep[dep] || 0;
+    parts.sort(function (a, b) { return b.v - a.v; });
+    var breakdown = parts.slice(0, 3).map(function (p) {
+      return LEG.nuaLabel(p.nua) + ' : ' + (expr > 0 ? fmt1((p.v / expr) * 100) : '0') + ' %';
+    }).join(' · ');
+    data[dep] = {
+      key: LEG.nuaLabel(best.nua),
+      val: expr > 0 ? (best.v / expr) * 100 : 0, catUnit: ' % des exprimés',
+      lines: [fmt(best.v) + ' voix (T1)', breakdown]
+    };
+  }
+  return data;
+}
+
 function topNuances(max) {
   var arr = Object.keys(LEG.seatsByNua).sort(function (a, b) { return LEG.seatsByNua[b] - LEG.seatsByNua[a]; });
   return arr.slice(0, max || 8);
@@ -702,6 +728,131 @@ function topEuroLists(max) {
 }
 
 // ============================================================
+// POLITIQUE — niveau commune (agrégat « Données des élections agrégées »,
+// data.gouv : résultats par bureau de vote, agrégés ici par commune)
+// id_election : 2022_pres_t1 / 2022_pres_t2 / 2024_legi_t1 / 2024_euro_t1
+// ============================================================
+var ELECAGR = { byDepElection: {} }; // "dep|idElection" -> { codeCommune: { ins, abs, expr, votes: {clé: voix} } }
+
+// Pagination parallèle par lots de 10 (page_size max 200, on ne suit PAS links.next)
+function fetchElectPages(base) {
+  function page(p) {
+    return fetch(base + '&page=' + p).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' (page ' + p + ')');
+      return res.json();
+    });
+  }
+  return page(1).then(function (j) {
+    var rows = (j.data || []).slice();
+    var total = (j.meta && j.meta.total) || rows.length;
+    var npages = Math.max(1, Math.ceil(total / 200));
+    setStatus('⏳ Résultats communaux : ' + npages + ' pages à charger…', 'loading');
+    function batch(i) {
+      var lo = i * 10 + 2, hi = Math.min((i + 1) * 10 + 1, npages);
+      var chunk = [];
+      for (var p = lo; p <= hi; p++) chunk.push(p);
+      if (!chunk.length) return Promise.resolve();
+      return Promise.all(chunk.map(page)).then(function (js) {
+        js.forEach(function (j2) { (j2.data || []).forEach(function (r) { rows.push(r); }); });
+        setStatus('⏳ Résultats communaux : ' + Math.min(rows.length, total).toLocaleString('fr-FR') + ' / ' + total.toLocaleString('fr-FR') + ' lignes…', 'loading');
+        return batch(i + 1);
+      });
+    }
+    return batch(0).then(function () { return rows; });
+  });
+}
+
+// Clé de vote selon le type d'élection (candidat / nuance / liste)
+function electVoteKey(row, idElection) {
+  if (idElection.indexOf('pres') !== -1) return 'CAND:' + (row.nom || '').trim();
+  if (idElection.indexOf('legi') !== -1) return 'NUA:' + (row.nuance || '').trim();
+  return 'LST:' + ((row.libelle_abrege_liste || row.liste || row.libelle_etendu_liste || '').trim());
+}
+function electVoteLabel(key) {
+  if (key.indexOf('CAND:') === 0) return key.slice(5);
+  if (key.indexOf('NUA:') === 0) { var code = key.slice(4); return (LEG.nuaLabels && LEG.nuaLabels[code]) || code; }
+  return key.slice(4); // LST:
+}
+
+function loadElectCommunes(depCode, idElection) {
+  var cacheKey = depCode + '|' + idElection;
+  if (ELECAGR.byDepElection[cacheKey]) return Promise.resolve(ELECAGR.byDepElection[cacheKey]);
+  setStatus('⏳ Chargement des résultats par commune (' + idElection + ')…', 'loading');
+  var q = '?id_election__exact=' + idElection + '&code_departement__exact=' + encodeURIComponent(depCode) + '&page_size=200';
+  return Promise.all([
+    fetchElectPages(URLS.electGen + q),   // inscrits / abstentions / exprimés par BV
+    fetchElectPages(URLS.electCand + q)   // voix par candidat/nuance/liste et BV
+  ]).then(function (res) {
+    var gen = res[0], cand = res[1];
+    var com = {};
+    function slot(code) {
+      if (!com[code]) com[code] = { ins: 0, abs: 0, expr: 0, votes: {} };
+      return com[code];
+    }
+    gen.forEach(function (r) {
+      var code = (r.code_commune || '').trim();
+      if (!/^\d{5}$/.test(code)) return;
+      var s = slot(code);
+      s.ins += r.inscrits || 0;
+      s.abs += r.abstentions || 0;
+      s.expr += r.exprimes || 0;
+    });
+    cand.forEach(function (r) {
+      var code = (r.code_commune || '').trim();
+      if (!/^\d{5}$/.test(code)) return;
+      var key = electVoteKey(r, idElection);
+      if (!key || key === 'CAND:' || key === 'NUA:' || key === 'LST:') return;
+      var s = slot(code);
+      s.votes[key] = (s.votes[key] || 0) + (r.voix || 0);
+    });
+    if (!Object.keys(com).length) throw new Error('aucune donnée communale pour ' + depCode + ' / ' + idElection);
+    ELECAGR.byDepElection[cacheKey] = com;
+    return com;
+  });
+}
+
+function electCommunesWinner(depCode, idElection) {
+  var com = ELECAGR.byDepElection[depCode + '|' + idElection];
+  var data = {};
+  for (var c in com) {
+    var e = com[c];
+    var best = null;
+    for (var k in e.votes) if (!best || e.votes[k] > e.votes[best]) best = k;
+    if (!best || !e.expr) continue;
+    data[c] = {
+      key: electVoteLabel(best),
+      val: (e.votes[best] / e.expr) * 100, catUnit: ' % des exprimés',
+      lines: [fmt(e.votes[best]) + ' voix', fmt(e.ins) + ' inscrits']
+    };
+  }
+  return data;
+}
+
+function electCommunesAbst(depCode, idElection) {
+  var com = ELECAGR.byDepElection[depCode + '|' + idElection];
+  var data = {};
+  for (var c in com) {
+    var e = com[c];
+    if (!e.ins) continue;
+    data[c] = { val: (e.abs / e.ins) * 100, lines: [fmt(e.ins) + ' inscrits', fmt(e.abs) + ' abstentions'] };
+  }
+  return data;
+}
+
+function electCommunesKey(depCode, idElection, key) {
+  var com = ELECAGR.byDepElection[depCode + '|' + idElection];
+  var data = {};
+  var label = electVoteLabel(key);
+  for (var c in com) {
+    var e = com[c];
+    var v = e.votes[key];
+    if (v === undefined || !e.expr) continue;
+    data[c] = { val: (v / e.expr) * 100, lines: [fmt(v) + ' voix', label] };
+  }
+  return data;
+}
+
+// ============================================================
 // REGISTRE DES INDICATEURS
 // ============================================================
 var REGISTRY = [];
@@ -753,39 +904,31 @@ function registerEconomieIndicators() {
 }
 
 function registerPolitiqueIndicators() {
-  // --- Présidentielle 2022 ---
-  REGISTRY.push({
-    cat: 'politique', label: 'Présidentielle 2022 — candidat en tête (T1)', unit: '%', type: 'cat',
-    hasYears: false, hasCommunes: false,
-    ensure: loadElections, france: function () { return electionsWinnerData(1); }, communes: null
-  });
-  REGISTRY.push({
-    cat: 'politique', label: 'Présidentielle 2022 — abstention (T1)', unit: '%', type: 'num',
-    hasYears: false, hasCommunes: false,
-    ensure: loadElections, france: function () { return electionsAbstData(1); }, communes: null
-  });
-  electionsCandidates(1).forEach(function (nom) {
+  // --- Présidentielle 2022 (départements + communes) ---
+  [1, 2].forEach(function (tour) {
+    var id = tour === 1 ? '2022_pres_t1' : '2022_pres_t2';
     REGISTRY.push({
-      cat: 'politique', label: 'Présidentielle 2022 — voix ' + nom + ' (T1, %)', unit: '%', type: 'num',
-      hasYears: false, hasCommunes: false,
-      ensure: loadElections, france: function () { return electionsCandidateData(1, nom); }, communes: null
+      cat: 'politique', label: 'Présidentielle 2022 — candidat en tête (T' + tour + ')', unit: '%', type: 'cat',
+      hasYears: false, hasCommunes: true, electId: id,
+      ensure: loadElections,
+      france: function () { return electionsWinnerData(tour); },
+      communes: function (dep) { return electCommunesWinner(dep, id); }
     });
-  });
-  REGISTRY.push({
-    cat: 'politique', label: 'Présidentielle 2022 — candidat en tête (T2)', unit: '%', type: 'cat',
-    hasYears: false, hasCommunes: false,
-    ensure: loadElections, france: function () { return electionsWinnerData(2); }, communes: null
-  });
-  REGISTRY.push({
-    cat: 'politique', label: 'Présidentielle 2022 — abstention (T2)', unit: '%', type: 'num',
-    hasYears: false, hasCommunes: false,
-    ensure: loadElections, france: function () { return electionsAbstData(2); }, communes: null
-  });
-  electionsCandidates(2).forEach(function (nom) {
     REGISTRY.push({
-      cat: 'politique', label: 'Présidentielle 2022 — voix ' + nom + ' (T2, %)', unit: '%', type: 'num',
-      hasYears: false, hasCommunes: false,
-      ensure: loadElections, france: function () { return electionsCandidateData(2, nom); }, communes: null
+      cat: 'politique', label: 'Présidentielle 2022 — abstention (T' + tour + ')', unit: '%', type: 'num',
+      hasYears: false, hasCommunes: true, electId: id,
+      ensure: loadElections,
+      france: function () { return electionsAbstData(tour); },
+      communes: function (dep) { return electCommunesAbst(dep, id); }
+    });
+    electionsCandidates(tour).forEach(function (nom) {
+      REGISTRY.push({
+        cat: 'politique', label: 'Présidentielle 2022 — voix ' + nom + ' (T' + tour + ', %)', unit: '%', type: 'num',
+        hasYears: false, hasCommunes: true, electId: id,
+        ensure: loadElections,
+        france: function () { return electionsCandidateData(tour, nom); },
+        communes: function (dep) { return electCommunesKey(dep, id, 'CAND:' + nom); }
+      });
     });
   });
 
@@ -803,34 +946,51 @@ function registerPolitiqueIndicators() {
     });
   });
   REGISTRY.push({
+    cat: 'politique', label: 'Législatives 2024 — nuance en tête (voix T1)', unit: '%', type: 'cat',
+    hasYears: false, hasCommunes: true, electId: '2024_legi_t1',
+    ensure: loadLegislatives,
+    france: legVotesWinnerData,
+    communes: function (dep) { return electCommunesWinner(dep, '2024_legi_t1'); }
+  });
+  REGISTRY.push({
     cat: 'politique', label: 'Législatives 2024 — abstention (T1)', unit: '%', type: 'num',
-    hasYears: false, hasCommunes: false,
-    ensure: loadLegislatives, france: legAbstData, communes: null
+    hasYears: false, hasCommunes: true, electId: '2024_legi_t1',
+    ensure: loadLegislatives,
+    france: legAbstData,
+    communes: function (dep) { return electCommunesAbst(dep, '2024_legi_t1'); }
   });
   topNuances(6).forEach(function (nua) {
     REGISTRY.push({
       cat: 'politique', label: 'Législatives 2024 — voix ' + LEG.nuaLabel(nua) + ' (T1, %)', unit: '%', type: 'num',
-      hasYears: false, hasCommunes: false,
-      ensure: loadLegislatives, france: function () { return legVotesNuaData(nua); }, communes: null
+      hasYears: false, hasCommunes: true, electId: '2024_legi_t1',
+      ensure: loadLegislatives,
+      france: function () { return legVotesNuaData(nua); },
+      communes: function (dep) { return electCommunesKey(dep, '2024_legi_t1', 'NUA:' + nua); }
     });
   });
 
-  // --- Européennes 2024 ---
+  // --- Européennes 2024 (départements + communes) ---
   REGISTRY.push({
     cat: 'politique', label: 'Européennes 2024 — liste en tête', unit: '%', type: 'cat',
-    hasYears: false, hasCommunes: false,
-    ensure: loadEuropeennes, france: euroWinnerData, communes: null
+    hasYears: false, hasCommunes: true, electId: '2024_euro_t1',
+    ensure: loadEuropeennes,
+    france: euroWinnerData,
+    communes: function (dep) { return electCommunesWinner(dep, '2024_euro_t1'); }
   });
   REGISTRY.push({
     cat: 'politique', label: 'Européennes 2024 — abstention', unit: '%', type: 'num',
-    hasYears: false, hasCommunes: false,
-    ensure: loadEuropeennes, france: euroAbstData, communes: null
+    hasYears: false, hasCommunes: true, electId: '2024_euro_t1',
+    ensure: loadEuropeennes,
+    france: euroAbstData,
+    communes: function (dep) { return electCommunesAbst(dep, '2024_euro_t1'); }
   });
   topEuroLists(6).forEach(function (label) {
     REGISTRY.push({
       cat: 'politique', label: 'Européennes 2024 — voix ' + label + ' (%)', unit: '%', type: 'num',
-      hasYears: false, hasCommunes: false,
-      ensure: loadEuropeennes, france: function () { return euroListData(label); }, communes: null
+      hasYears: false, hasCommunes: true, electId: '2024_euro_t1',
+      ensure: loadEuropeennes,
+      france: function () { return euroListData(label); },
+      communes: function (dep) { return electCommunesKey(dep, '2024_euro_t1', 'LST:' + label); }
     });
   });
 }
@@ -990,7 +1150,9 @@ function refresh() {
   if (state.view === 'france') {
     updateFrance();
   } else if (ind.hasCommunes) {
-    var prep = ind.cat === 'delinquance' ? loadCommunesDelinquance(state.dep.code, state.annee) : Promise.resolve();
+    var prep = Promise.resolve();
+    if (ind.cat === 'delinquance') prep = loadCommunesDelinquance(state.dep.code, state.annee);
+    else if (ind.electId) prep = loadElectCommunes(state.dep.code, ind.electId);
     prep.then(function () {
       var geoPromise = state.communesGeo[state.dep.code] ? Promise.resolve(state.communesGeo[state.dep.code]) :
         fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[state.dep.code] + '/communes-' + DEP_FOLDERS[state.dep.code] + '.geojson')
@@ -1062,7 +1224,20 @@ function initUI() {
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
     if (state.category === 'economie' && catIndicators('economie').length === 0) registerEconomieIndicators();
-    if (state.category === 'politique' && catIndicators('politique').length === 0) registerPolitiqueIndicators();
+    if (state.category === 'politique' && catIndicators('politique').length === 0) {
+      // Les indicateurs politiques dépendent des données chargées (listes de
+      // candidats/nuances/listes) : on charge AVANT d'enregistrer le registre.
+      setStatus('⏳ Chargement des données politiques…', 'loading');
+      Promise.all([loadElections(), loadLegislatives(), loadEuropeennes()]).then(function () {
+        registerPolitiqueIndicators();
+        fillIndicatorSelect();
+        if (catIndicators(state.category).length) selectIndicator(catIndicators(state.category)[0].label, false);
+      }).catch(function (err) {
+        console.error('[OpenFrance] Échec politique :', err);
+        showError('Impossible de charger les données politiques.', err.message);
+      });
+      return;
+    }
     fillIndicatorSelect();
     if (catIndicators(state.category).length) selectIndicator(catIndicators(state.category)[0].label, false);
   });
