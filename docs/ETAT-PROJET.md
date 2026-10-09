@@ -13,7 +13,7 @@ index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (rec
 style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*) et cache (.cache-*)
 app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI)
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
-score31.js      — Mode Score perso (31) : indice ad hoc pondérable des communes du 31 (branche de test `score31`)
+score31.js      — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (branche de test `score31`)
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
 netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises
 ```
@@ -41,13 +41,15 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
 - `annEnter`/`annLeave` : **conservent le département courant** (pas de retour forcé à la France).
 
-### score31.js — mode « Score perso (31) » (branche de test `score31`)
-- Indice composite **ad hoc** des communes du 31 uniquement, **hors REGISTRY** : `scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` (app.js) via `typeof` guards (score31.js se charge après app.js).
-- 4 critères normalisés P5–P95 avec saturation (`scBounds`, même logique que `scaleBounds`) : **distance à Toulouse** (haversine centroïde→centroïde via `annCentroids`), **sécurité** (taux ‰ ensemble des faits, dernière année, `loadCommunesDelinquance`), **loyers** (€/m² prédit, Carte des loyers 2025), **clubs** (nb d'assos RNA du 31 matchant la requête `parseAnnQuery`/`annMatch`, défaut `mma + systema + ninjutsu`, 3 clubs = part max).
-- Score = Σ poids×part / Σ poids ; poids 0–10 via 4 sliders ; **donnée absente → part neutre 0,5** (pas de pénalité, ex. délinquance non diffusée des petites communes).
-- **Temps réel** : `scUpdateLive` recalcule (~600 communes, instantané) puis `setStyle` en place — jamais de recréation de couche.
-- Couleurs : `colorFor(1 − score)` (vert = bon score) ; **meilleure commune en bleu** (#2563eb, bordure blanche, 🏆 infobulle/légende/top 10).
-- Mode isolé : retire `geoLayer`, gère sa propre couche `SC.layer`, ne remplace pas `refresh`, ne touche pas aux caches existants (réutilise IndexedDB assos + RAM).
+### score31.js — mode « Composeur de critères » (branche de test `score31`)
+- **Généralisation de l'ancien « Score perso (31) »** : indice composite **personnalisable** des communes de **n'importe quel département**, **hors REGISTRY** (`scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` de app.js via `typeof` guards).
+- **Département** au choix (select) + **ville cible** avec autocomplete sur les communes du département (recherche insensible aux accents via `normTxt`, dropdown custom `#scTargetDrop`, Entrée = 1er résultat).
+- **Critères ajoutables/retirables à volonté** (bouton ＋ / ✕), chacun avec : **sens** (⬆ plus = mieux / ⬇ moins = mieux) et **poids 0–10**. Types : 📍 distance à la ville cible · 🛡 délinquance (indicateur au choix, dernière année) · 💰 loyers (Carte des loyers 2025) · 💶 niveau de vie médian (Filosofi) · 🏠 prix m² DVF (appartements/maisons) · 🥋 associations RNA (requête multi-opérateurs) · 🗳 politique par commune (indicateurs numériques du REGISTRY : abstentions, voix candidat/nuance/liste).
+- Normalisation P5–P95 avec saturation par critère (`scBounds`) ; score = Σ poids×part / Σ poids ; **donnée absente → part neutre 0,5** ; critère non chargé → neutre également.
+- **Temps réel** : `scDraw` recalcule puis `setStyle` en place (jamais de recréation de couche) ; les chargements de données sont paresseux, par critère, avec dédoublonnage (`SC.valCache[key].promise`).
+- Couleurs : `colorFor(1 − score)` (vert = bon score) ; **meilleure commune en bleu** (#2563eb, bordure blanche, 🏆 infobulle/légende/top 10) ; infobulle détaillée = valeur de chaque critère.
+- Au premier passage, critères par défaut = reproduction de l'ancien score perso (distance Toulouse, délinquance ensemble, loyers, assos « mma + systema + ninjutsu » ; poids 5/5/5/3).
+- Mode isolé : retire `geoLayer`, couche propre `SC.layer`, ne remplace pas `refresh`, réutilise les caches existants (IndexedDB assos, `state.communesGeo`/`communesCache`, SW `/data/` et `/api/`).
 
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
