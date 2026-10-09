@@ -7,9 +7,10 @@
 //  - Entreprises : API Recherche d'entreprises (DINUM) — recherche texte par département.
 //
 // Recherche multi-mots-clés (locale, sur les données du département en cache) :
-//   ninjutsu + mma - boxe
-//   → « ninjutsu » OU « mma », mais sans « boxe »
-//   mots simples = tous requis (ET) · +mot = OU (au moins un) · -mot = exclusion
+//   ninjutsu + mma - boxe "mma"
+//   → « ninjutsu » OU « mma », sans « boxe » ; "mma" entre guillemets = mot exact
+//   mots simples = tous requis (ET, correspondance de chaîne)
+//   +mot = OU (au moins un) · -mot = exclusion · "mot" = mot complet (frontières de mot)
 
 var ANN = {
   active: false,
@@ -60,27 +61,48 @@ function esc(s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
+function escRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 function normTxt(s) {
   s = String(s == null ? '' : s).toLowerCase();
   if (s.normalize) s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   return s.replace(/\s+/g, ' ').trim();
 }
+function fmtSize(n) {
+  if (n > 1048576) return (n / 1048576).toFixed(1) + ' Mo';
+  if (n > 1024) return (n / 1024).toFixed(0) + ' Ko';
+  return n + ' o';
+}
 
-// Analyse d'une requête « a b +c -d "e f" »
+// Analyse d'une requête « a b +c -d "mot exact" »
+// Chaque token : { t: terme normalisé, w: true si « mot complet » (guillemets) }
 function parseAnnQuery(str) {
   var req = [], or = [], neg = [];
   var tokens = String(str || '').match(/"[^"]*"|\S+/g) || [];
-  tokens.forEach(function (tok) {
+  tokens.forEach(function (raw) {
     var sign = '';
+    var tok = raw;
     if (tok.charAt(0) === '-') { sign = 'neg'; tok = tok.slice(1); }
     else if (tok.charAt(0) === '+') { sign = 'or'; tok = tok.slice(1); }
-    tok = normTxt(tok.replace(/"/g, ''));
+    var w = false;
+    if (/^"[^"]*"$/.test(tok)) { w = true; tok = tok.slice(1, -1); }
+    tok = normTxt(tok);
     if (!tok) return;
-    if (sign === 'neg') { if (neg.indexOf(tok) === -1) neg.push(tok); }
-    else if (sign === 'or') { if (or.indexOf(tok) === -1) or.push(tok); }
-    else { if (req.indexOf(tok) === -1) req.push(tok); }
+    var item = { t: tok, w: w };
+    var bucket = sign === 'neg' ? neg : (sign === 'or' ? or : req);
+    var already = bucket.some(function (x) { return x.t === tok && x.w === w; });
+    if (!already) bucket.push(item);
   });
   return { req: req, or: or, neg: neg };
+}
+
+// Teste un token contre un haystack normalisé
+// w=false : simple sous-chaîne · w=true : mot complet (frontières de mot)
+function tokMatch(h, tok) {
+  if (!tok.w) return h.indexOf(tok.t) !== -1;
+  if (!tok.re) tok.re = new RegExp('(^|[^a-z0-9])' + escRe(tok.t) + '($|[^a-z0-9])');
+  return tok.re.test(h);
 }
 
 // haystack pré-normalisé, mis en cache sur l'enregistrement
@@ -89,13 +111,13 @@ function annHaystack(a) {
   return a._h;
 }
 function annMatch(h, q) {
-  for (var i = 0; i < q.req.length; i++) if (h.indexOf(q.req[i]) === -1) return false;
+  for (var i = 0; i < q.req.length; i++) if (!tokMatch(h, q.req[i])) return false;
   if (q.or.length) {
     var ok = false;
-    for (var j = 0; j < q.or.length; j++) if (h.indexOf(q.or[j]) !== -1) { ok = true; break; }
+    for (var j = 0; j < q.or.length; j++) if (tokMatch(h, q.or[j])) { ok = true; break; }
     if (!ok) return false;
   }
-  for (var k = 0; k < q.neg.length; k++) if (h.indexOf(q.neg[k]) !== -1) return false;
+  for (var k = 0; k < q.neg.length; k++) if (tokMatch(h, q.neg[k])) return false;
   return true;
 }
 
@@ -130,6 +152,33 @@ function idbSet(key, val) {
       } catch (e) { res(); }
     });
   }).catch(function () { /* cache best-effort */ });
+}
+function idbDelete(key) {
+  return idbOpen().then(function (db) {
+    return new Promise(function (res) {
+      try {
+        var tx = db.transaction('assos', 'readwrite');
+        tx.objectStore('assos').delete(key);
+        tx.oncomplete = function () { res(); };
+        tx.onerror = function () { res(); };
+      } catch (e) { res(); }
+    });
+  }).catch(function () { /* best-effort */ });
+}
+function idbKeys() {
+  return idbOpen().then(function (db) {
+    return new Promise(function (res) {
+      var ks = [];
+      try {
+        var rq = db.transaction('assos').objectStore('assos').openKeyCursor();
+        rq.onsuccess = function () {
+          var cur = rq.result;
+          if (cur) { ks.push(cur.key); cur.continue(); } else res(ks);
+        };
+        rq.onerror = function () { res(ks); };
+      } catch (e) { res(ks); }
+    });
+  }).catch(function () { return []; });
 }
 
 // ---------- Nomenclature WALDEC (thèmes) ----------
@@ -247,7 +296,15 @@ function annCentroids(code) {
 
 // ---------- Entreprises (API Recherche d'entreprises, recherche texte) ----------
 function fetchEntPages(base) {
-  function page(p) { return fetch(base + '&page=' + p).then(function (r) { return r.json(); }); }
+  function page(p) {
+    return fetch(base + '&page=' + p).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (j) {
+      if (j && j.erreur) throw new Error(j.erreur);
+      return j;
+    });
+  }
   return page(1).then(function (j) {
     var rows = (j.results || []).slice();
     var np = Math.min(j.total_pages || 1, 4); // l'API plafonne les résultats
@@ -261,7 +318,8 @@ function fetchEntPages(base) {
 }
 
 function searchEntreprises(dep, q, section) {
-  var terms = q.req.concat(q.or).filter(function (v, i, a) { return a.indexOf(v) === i; });
+  var terms = q.req.concat(q.or).map(function (x) { return x.t; })
+    .filter(function (v, i, a) { return a.indexOf(v) === i; });
   if (!terms.length) return Promise.resolve([]);
   var key = dep + '|' + terms.join(' ') + '|' + (section || '');
   if (ANN.entCache[key]) return Promise.resolve(ANN.entCache[key]);
@@ -285,7 +343,7 @@ function searchEntreprises(dep, q, section) {
       var e = bySiren[s];
       var h = normTxt((e.nom_complet || '') + ' ' + ((e.siege && e.siege.adresse) || '') + ' ' + ((e.siege && e.siege.activite_principale) || ''));
       var bad = false;
-      for (var k = 0; k < q.neg.length; k++) if (h.indexOf(q.neg[k]) !== -1) { bad = true; break; }
+      for (var k = 0; k < q.neg.length; k++) if (tokMatch(h, q.neg[k])) { bad = true; break; }
       if (!bad) out.push(e);
     }
     ANN.entCache[key] = out;
@@ -440,25 +498,26 @@ function annApplySearch() {
   }
 
   // --- Entreprises : recherche texte via l'API (uniquement si requête) ---
+  // res === null → pas de recherche entreprise lancée
+  // res = { ents: [...] } | { err: 'message' }
   var entPromise;
   if (type === 'ent' || type === 'both') {
     if (q.req.length + q.or.length > 0) {
       var section = type === 'ent' ? cat : '';
       setStatus('⏳ Recherche entreprises…', 'loading');
-      entPromise = searchEntreprises(code, q, section).catch(function (err) {
-        console.error('[OpenFrance] Recherche entreprises :', err);
-        return [];
-      });
-    } else {
-      document.getElementById('annStatus').innerHTML =
-        (assoCount ? assoCount.toLocaleString('fr-FR') + ' association(s)' : '') +
-        (type === 'both' || type === 'ent' ? ' — <i>saisissez un mot-clé pour chercher des entreprises</i>' : '');
+      entPromise = searchEntreprises(code, q, section)
+        .then(function (ents) { return { ents: ents }; })
+        .catch(function (err) {
+          console.error('[OpenFrance] Recherche entreprises :', err);
+          return { err: err.message || String(err) };
+        });
     }
   }
 
   var entCount = 0;
-  (entPromise || Promise.resolve(null)).then(function (ents) {
+  (entPromise || Promise.resolve(null)).then(function (res) {
     if (token !== ANN.seq) return; // une recherche plus récente a pris le dessus
+    var ents = res && res.ents, entErr = res && res.err;
     if (ents && ents.length) {
       entCount = ents.length;
       addEntMarkers(ents);
@@ -467,18 +526,14 @@ function annApplySearch() {
     renderAnnList();
     var parts = [];
     if (type !== 'ent' && assoCount) parts.push(assoCount.toLocaleString('fr-FR') + ' association(s)');
-    if ((type === 'ent' || type === 'both') && (ents || entCount)) parts.push(entCount.toLocaleString('fr-FR') + ' entreprise(s)');
-    var entHint = (ents === null && (type === 'both' || type === 'ent'))
-      ? ' — <i>saisissez un mot-clé pour chercher des entreprises</i>' : '';
+    if ((type === 'ent' || type === 'both') && res !== null) parts.push(entCount.toLocaleString('fr-FR') + ' entreprise(s)');
+    if (entErr) parts.push('<span class="ann-warn">⚠️ Entreprises : ' + esc(entErr) + '</span>');
+    var entHint = (res === null && (type === 'both' || type === 'ent'))
+      ? ' — <i>saisissez un mot-clé : l\'API ne permet pas de lister tout un département</i>' : '';
     document.getElementById('annStatus').innerHTML = parts.join(' · ') +
       ((assoCount > 2000 || entCount > 2000) ? ' (marqueurs limités à 2000)' : '') + entHint;
     setStatus('Annuaire : ' + (assoCount + entCount).toLocaleString('fr-FR') + ' résultat(s)');
   });
-
-  if (!entPromise) {
-    renderAnnList();
-    setStatus('Annuaire : ' + assoCount.toLocaleString('fr-FR') + ' association(s)');
-  }
 }
 
 // ---------- Vue France (mode annuaire) : sélection du département ----------
@@ -516,10 +571,66 @@ function annRefresh() {
       if (xs.length) map.fitBounds([[Math.min.apply(null, ys), Math.min.apply(null, xs)], [Math.max.apply(null, ys), Math.max.apply(null, xs)]], { padding: [30, 30] });
       var cached = ANN.assos[code] && ANN.assos[code].length;
       setStatus(cached.toLocaleString('fr-FR') + ' associations dans ' + state.dep.nom + ' (en cache)');
+      // si le dialog cache est ouvert, le rafraîchir
+      if (document.getElementById('annCacheDlg').style.display !== 'none') annRenderCache();
     });
   }).catch(function (err) {
     console.error('[OpenFrance] Annuaire :', err);
     showError('Impossible de charger les associations de ' + state.dep.nom + '.', err.message);
+  });
+}
+
+// ---------- Gestion du cache (page de diagnostic) ----------
+function annRenderCache() {
+  var box = document.getElementById('annCacheList');
+  return idbKeys().then(function (keys) {
+    keys = keys.filter(function (k) { return String(k).indexOf('assos-') === 0; }).sort();
+    return Promise.all(keys.map(function (k) {
+      return idbGet(k).then(function (v) { return { key: String(k), v: v }; });
+    }));
+  }).then(function (entries) {
+    if (!entries.length) {
+      box.innerHTML = '<p class="muted">Aucun jeu de données en cache pour l\'instant. Ouvrez un département pour le charger.</p>';
+      return;
+    }
+    var html = '';
+    entries.forEach(function (e) {
+      var dep = e.key.slice(6);
+      var n = e.v && e.v.rows ? e.v.rows.length : 0;
+      var d = e.v && e.v.date ? new Date(e.v.date).toLocaleString('fr-FR') : '?';
+      var size = e.v ? JSON.stringify(e.v).length : 0;
+      var cur = state.dep && state.dep.code === dep;
+      html += '<div class="cache-row" data-dep="' + esc(dep) + '">' +
+        '<div class="cache-info"><b>' + esc(dep) + (cur ? ' <span class="muted">(département courant)</span>' : '') + '</b>' +
+        '<br><span class="muted">' + n.toLocaleString('fr-FR') + ' associations · ' + fmtSize(size) + ' · mis en cache le ' + esc(d) + '</span></div>' +
+        '<div class="cache-actions">' +
+        (cur ? '<button class="cache-btn cache-refresh" type="button" title="Purger et recharger depuis la source">🔄 Rafraîchir</button>' : '') +
+        '<button class="cache-btn cache-purge" type="button" title="Supprimer du cache">🗑</button>' +
+        '</div></div>';
+    });
+    box.innerHTML = html;
+  });
+}
+
+function annToggleCache(show) {
+  var dlg = document.getElementById('annCacheDlg');
+  var visible = show === undefined ? dlg.style.display === 'none' : show;
+  dlg.style.display = visible ? 'flex' : 'none';
+  if (visible) annRenderCache();
+}
+
+function annCacheAction(dep, action) {
+  var key = 'assos-' + dep;
+  var isCur = state.dep && state.dep.code === dep;
+  idbDelete(key).then(function () {
+    delete ANN.assos[dep];
+    if (action === 'refresh' && isCur) {
+      // purge + rechargement immédiat depuis la source
+      annRefresh();
+    } else {
+      annRenderCache();
+      if (isCur) annApplySearch();
+    }
   });
 }
 
@@ -546,6 +657,7 @@ function annLeave() {
   if (ANN.prevRefresh) refresh = ANN.prevRefresh;
   clearAnnMarkers();
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
+  annToggleCache(false);
   document.getElementById('annControls').style.display = 'none';
   document.getElementById('annHint').style.display = 'none';
   document.getElementById('indicatorLabel').style.display = '';
@@ -577,6 +689,21 @@ function annInitUI() {
     annApplySearch();
   });
   document.getElementById('annCat').addEventListener('change', annApplySearch);
+
+  // Page cache
+  document.getElementById('annCacheBtn').addEventListener('click', function () { annToggleCache(); });
+  document.getElementById('annCacheClose').addEventListener('click', function () { annToggleCache(false); });
+  document.getElementById('annCacheDlg').addEventListener('click', function (e) {
+    if (e.target === this) annToggleCache(false); // clic sur le fond
+  });
+  document.getElementById('annCacheList').addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('button') : null;
+    if (!btn) return;
+    var row = btn.closest('.cache-row');
+    if (!row) return;
+    if (btn.classList.contains('cache-purge')) annCacheAction(row.dataset.dep, 'purge');
+    else if (btn.classList.contains('cache-refresh')) annCacheAction(row.dataset.dep, 'refresh');
+  });
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', annInitUI);

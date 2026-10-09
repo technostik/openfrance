@@ -37,7 +37,7 @@
   </label>
   <div id="annControls" style="display:none">
     <label>Recherche
-      <input id="annSearch" type="text" placeholder="ex. ninjutsu + mma - boxe">
+      <input id="annSearch" type="text" placeholder="ex. ninjutsu + mma - boxe &quot;mma&quot;">
     </label>
     <label>Type
       <select id="annType">
@@ -50,10 +50,11 @@
       <select id="annCat"><option value="">Toutes catégories</option></select>
     </label>
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
+    <button id="annCacheBtn" type="button" title="Voir et gérer le cache local">🗂 Cache</button>
   </div>
   <span id="status">⏳ Chargement des données…</span>
 </section>
-<p id="annHint" class="muted" style="display:none">💡 Recherche : les mots simples sont tous requis (ET) · <b>+mot</b> = OU (au moins un) · <b>-mot</b> = exclure · guillemets pour une expression. Les entreprises nécessitent un mot-clé.</p>
+<p id="annHint" class="muted" style="display:none">💡 Recherche : les mots simples sont tous requis (ET) · <b>+mot</b> = OU · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Les entreprises nécessitent un mot-clé.</p>
 
 <main>
   <div id="map"></div>
@@ -75,6 +76,18 @@
     <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF, RNA (associations), API Recherche d'entreprises (DINUM)</p>
   </aside>
 </main>
+
+<!-- Page de gestion du cache (annuaire) -->
+<div id="annCacheDlg" style="display:none">
+  <div class="cache-card">
+    <div class="cache-head">
+      <b>🗂 Cache local (IndexedDB)</b>
+      <button id="annCacheClose" type="button" title="Fermer">✕</button>
+    </div>
+    <p class="muted">Jeux de données du mode annuaire stockés dans le navigateur. « Rafraîchir » purge l'entrée puis la recharge immédiatement depuis la source (data.gouv). La nomenclature WALDEC et les résultats entreprises sont en mémoire vive uniquement (non listés ici).</p>
+    <div id="annCacheList"><p class="muted">⏳ Lecture du cache…</p></div>
+  </div>
+</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
