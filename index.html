@@ -27,7 +27,7 @@
       <option value="economie">Économie</option>
       <option value="politique">Politique</option>
       <option value="annuaire">Associations & entreprises</option>
-      <option value="score31">Score perso (31)</option>
+      <option value="score31">Composeur de critères</option>
     </select>
   </label>
   <label id="indicatorLabel">Indicateur
@@ -53,21 +53,18 @@
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
   </div>
   <div id="scoreControls" style="display:none">
-    <label>📍 Distance Toulouse
-      <input id="scDist" type="range" min="0" max="10" value="5"> <b id="scDistV">5</b>
+    <label>Département
+      <select id="scDep"></select>
     </label>
-    <label>🛡 Sécurité
-      <input id="scSecu" type="range" min="0" max="10" value="5"> <b id="scSecuV">5</b>
+    <label id="scTargetWrap">Ville cible
+      <input id="scTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="scTargetDrop" class="sc-drop"></div>
     </label>
-    <label>💰 Loyers (bas = mieux)
-      <input id="scLoyer" type="range" min="0" max="10" value="5"> <b id="scLoyerV">5</b>
+    <div id="scCrits"></div>
+    <label>Ajouter un critère
+      <select id="scAddType"></select>
     </label>
-    <label>🥋 Clubs
-      <input id="scClubs" type="range" min="0" max="10" value="3"> <b id="scClubsV">3</b>
-    </label>
-    <label>Requête clubs
-      <input id="scQuery" type="text" value="mma + systema + ninjutsu" placeholder="ex. mma + systema + ninjutsu - boxe">
-    </label>
+    <button id="scAddBtn" type="button" title="Ajouter le critère sélectionné">＋ Ajouter</button>
   </div>
   <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
   <span id="status">⏳ Chargement des données…</span>
