@@ -214,7 +214,7 @@ var SC_TYPES = {
   },
   ann: {
     icon: '🥋', label: 'Associations (requête RNA)', dir: 'max', cfg: 'text',
-    defCfg: function () { return { q: 'mma + systema + ninjutsu' }; },
+    defCfg: function () { return { q: '"mma" + "systema" + ninjutsu' }; },
     key: function (cfg) { return 'ann|' + cfg.q; },
     describe: function (cfg) { return 'Assos « ' + cfg.q + ' »'; },
     ensure: function () { return scEnsureAssos(); },
