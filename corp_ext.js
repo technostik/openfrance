@@ -336,8 +336,10 @@ function extRomeLib(code) {
 function extOpenMetier(code) {
   extShowFiche({ codeRome: code, libelleRome: extRomeLib(code) || code });
 }
-// Barre de sous-filtre par codes ROME (re-render local, sans nouvel appel API)
-function extRomeFilterBar(filterCodes) {
+// Barre de sous-filtre par codes ROME (re-render local, sans nouvel appel API).
+// Chaque case affiche le nombre de résultats du code ; les codes à 0 sont
+// décochés d'office et grisés (case désactivée).
+function extRomeFilterBar(filterCodes, romeCounts) {
   var bar = document.createElement('div');
   bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:6px 0;';
   var title = document.createElement('span');
@@ -345,18 +347,21 @@ function extRomeFilterBar(filterCodes) {
   title.textContent = '🔖 Métiers (ROME) :';
   bar.appendChild(title);
   filterCodes.forEach(function (code) {
+    var n = (romeCounts && romeCounts[code] !== undefined) ? romeCounts[code] : 0;
     var lab = document.createElement('label');
-    lab.style.cssText = 'font-size:.78rem;color:#e2e8f0;cursor:pointer;white-space:nowrap;';
-    lab.title = extRomeLib(code) || code;
+    lab.style.cssText = 'font-size:.78rem;white-space:nowrap;' +
+      (n === 0 ? 'color:#64748b;cursor:not-allowed;' : 'color:#e2e8f0;cursor:pointer;');
+    lab.title = (extRomeLib(code) || code) + ' — ' + n + ' résultat(s)';
     var cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = EXT.romeFilter[code] !== false;
+    cb.checked = n > 0 && EXT.romeFilter[code] !== false;
+    cb.disabled = n === 0;
     cb.addEventListener('change', function () {
       EXT.romeFilter[code] = cb.checked;
       if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated);
     });
     lab.appendChild(cb);
-    lab.appendChild(document.createTextNode(' ' + code));
+    lab.appendChild(document.createTextNode(' ' + code + ' (' + n + ')'));
     bar.appendChild(lab);
   });
   var all = document.createElement('a');
@@ -365,7 +370,9 @@ function extRomeFilterBar(filterCodes) {
   all.textContent = 'Tout';
   all.addEventListener('click', function (ev) {
     ev.preventDefault();
-    filterCodes.forEach(function (code) { EXT.romeFilter[code] = true; });
+    filterCodes.forEach(function (code) {
+      if (!romeCounts || romeCounts[code] > 0) EXT.romeFilter[code] = true;
+    });
     if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated);
   });
   var none = document.createElement('a');
@@ -414,25 +421,29 @@ function extRenderResults(lbb, curated) {
   var all = (lbb && lbb.companies) || [];
   var total = (lbb && lbb.total != null) ? lbb.total : all.length;
   var noCoords = (lbb && lbb.noCoords) || 0;
-  var comps = all.filter(extSizePass);
+  var sized = all.filter(extSizePass);
   var romesUsed = (lbb && lbb.romes && lbb.romes.length)
     ? lbb.romes
     : EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; });
-  // Sous-filtre ROME : par défaut tout est coché (init à la 1re présentation des résultats)
-  if (!EXT.romeFilter) {
-    EXT.romeFilter = {};
-    romesUsed.forEach(function (code) { EXT.romeFilter[code] = true; });
-  }
   // Codes proposés en cases à cocher : romes utilisés + éventuels codes rapportés
-  // par les entreprises mais hors liste (toujours affichés par défaut)
+  // par les entreprises mais hors liste
   var filterCodes = romesUsed.slice();
   all.forEach(function (c) {
-    if (c.rome && filterCodes.indexOf(c.rome) === -1) {
-      filterCodes.push(c.rome);
-      if (EXT.romeFilter[c.rome] === undefined) EXT.romeFilter[c.rome] = true;
-    }
+    if (c.rome && filterCodes.indexOf(c.rome) === -1) filterCodes.push(c.rome);
   });
-  comps = comps.filter(extRomePass);
+  // Nombre de résultats par code (après filtre Taille, avant filtre ROME)
+  var romeCounts = {};
+  filterCodes.forEach(function (code) { romeCounts[code] = 0; });
+  sized.forEach(function (c) { if (c.rome && romeCounts[c.rome] !== undefined) romeCounts[c.rome]++; });
+  // Sous-filtre ROME : par défaut tout est coché, SAUF les codes à 0 résultat
+  // (décochés d'office et grisés — ils ne rapportent rien ; réappliqué à chaque
+  // rendu pour suivre le filtre Taille, sans toucher aux choix utilisateur)
+  if (!EXT.romeFilter) EXT.romeFilter = {};
+  filterCodes.forEach(function (code) {
+    if (romeCounts[code] === 0) EXT.romeFilter[code] = false;
+    else if (EXT.romeFilter[code] === undefined) EXT.romeFilter[code] = true;
+  });
+  var comps = sized.filter(extRomePass);
   var checkedCount = 0;
   filterCodes.forEach(function (code) { if (EXT.romeFilter[code] !== false) checkedCount++; });
   var romeFilterNote = (checkedCount < filterCodes.length)
@@ -452,7 +463,7 @@ function extRenderResults(lbb, curated) {
   extClearMap(); // re-render local (filtres) : retire les anciens marqueurs/cercle avant de reconstruire
   extFrameZone();
   // Sous-filtre par codes ROME (cases à cocher, tout coché par défaut ; re-render local)
-  box.appendChild(extRomeFilterBar(filterCodes));
+  box.appendChild(extRomeFilterBar(filterCodes, romeCounts));
   // liste : les entreprises des listes curatées en premier
   var sorted = comps.slice().sort(function (a, b) {
     return (bySiren[b.siren] ? 1 : 0) - (bySiren[a.siren] ? 1 : 0);
