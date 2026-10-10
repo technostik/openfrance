@@ -9,14 +9,15 @@ Application web **100 % statique** (pas de backend) affichant des cartes choropl
 ## 🗂️ Structure du repo
 
 ```
-index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (recherche/type/catégorie), composeur d'entreprises (ciblage + critères), page cache globale, bandeau d'erreur, bouton retour
-style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*), composeur d'entreprises (.co-*) et cache (.cache-*)
+index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (recherche/type/catégorie), composeur d'entreprises (ciblage + critères), page cache globale, favoris (bouton ⭐ + panneau), bandeau d'erreur, bouton retour
+style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*), composeur d'entreprises (.co-*), cache (.cache-*) et favoris (.fav-*)
 app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI)
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
 score31.js      — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (branche de test `score31`)
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
 corp_ext.js     — Mode Recherche étendue : ROMEO → ROME 4.0 → La Bonne Boite → croisement listes curatées Supabase (branche de test corp_ext)
-netlify/functions/ft.js, curated.js — Fonctions Netlify : proxy France Travail (OAuth + cache token + throttle) et listes curatées Supabase
+favoris.js      — Mode transversal Favoris : étoiles sur toutes les entités (assos, entreprises, villes), IndexedDB dédié + panneau, moteurs de recherche email/site web (branche de test get_email)
+netlify/functions/ft.js, curated.js, email.js — Fonctions Netlify : proxy France Travail (OAuth + cache token + throttle), listes curatées Supabase, recherche email/site web des favoris (chaîne de moteurs, budget 9 s)
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
 netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises, /api/ent
 ```
@@ -77,6 +78,13 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - **Auto-câblage** comme corp.js : listener propre sur #categorySelect (extEnter/extLeave), aucune modification d'app.js. Réutilise esc/normTxt/annCentroids (annuaire.js), coDepLabel (corp.js), colorFor (dégradé app.js pour les marqueurs), classes .co-row/.co-badge/.ann-obj/.sc-drop + .ext-* (style.css).
 - **Service worker** : /ft/* hors TTL → jamais mis en cache (données dynamiques fraîches) ; pas de bump de CACHE_NAME nécessaire (le SW ne cache pas les .js).
 
+### favoris.js — mode transversal « Favoris et contacts » (branche de test get_email)
+
+- **Étoile ⭐ partout, sans modifier les fichiers existants** : n'importe quelle entité des modes existants peut être mise en favori — associations/entreprises de l'annuaire, entreprises du Composeur et de la Recherche étendue (listes, popups, fiches détaillées, annuaire French Tech), villes cibles du Composeur et de la Recherche étendue (étoile près du champ ville) et toute commune via le champ BAN du panneau. favoris.js **enveloppe** au DOMContentLoaded les fonctions de rendu (renderAnnList, assoPopup, entPopup, coRenderResults, coPopupHtml, coOpenFiche, extRenderResults, extRenderFT, extPopupHtml, extFTPopupHtml) et décore le DOM produit — association lignes ↔ données par ordre (ANN.showing, CO.shown, EXT.lastFT), SIREN relu dans le texte des lignes LBB (l'ordre trié « curées d'abord » n'est pas exposé).
+- **Persistance** : IndexedDB dédié « openfrance-favoris » (store « fav », clé type:id — ent:<siren>, asso:<id RNA>, commune:<insee>), miroir RAM FAV.all ; rien ne quitte le navigateur en dehors des requêtes de lookup.
+- **Recherche email + site web automatisée** (🔎 par favori, « Chercher tout » pour les favoris sans email) : moteur **Wikidata côté client** (P856 site officiel / P968 email — wbsearchentities + wbgetentities avec origin=*, suffixes légaux SAS/SARL… retirés du nom, homonymes écartés par racine du libellé), puis **POST /ft/email** (fonction email.js) avec les moteurs cochés : officiel (mairies), tavily (découverte du site), scrape (extraction d'emails), prospector (opt-in). Fusion dans le favori : email + source + confiance %, site web, note d'échec, date du dernier lookup.
+- **Système de plugins découplé** : registre déclaratif FAV_ENGINES côté front (id / client-serveur / types concernés / label) ; côté serveur un moteur = une fonction engXxx + une entrée dans opLookup (email.js). Ajouter un moteur ne touche à rien d'autre. Moteurs cochables dans le panneau, config en localStorage « openfrance-fav-engines » (prospector décoché par défaut : quota gratuit 50 vérifs/jour).
+
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
 - **IndexedDB** (`openfrance-annuaire`, store `assos`) : clés `assos-<dep>` ({v, date, rows}), `nomen` ({child}), `ent-<dep|terms|section>` (résultats de recherche entreprises) — **persistant entre sessions**
@@ -124,6 +132,14 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - **Lauréats French Tech (~450 entreprises, seul signal « French Tech » en base)** : programmes officiels — Next40/FT120 2021→2026, Green20/Agri20/DeepNum20 (2022), Health20 (2023), FT2030 (2023/2025). Collecte : annuaire Numeum (sitemap ~520 fiches, tags programme + année, `tools/collect-numeum.mjs`) + listes officielles (promo 2026, communiqués Green/Agri/DeepNum) → 522 noms uniques → résolution SIREN via l'API Recherche d'entreprises (`tools/resolve-sirens.mjs` : score exact/préfixe/inclusion, 466 résolus → 441 SIREN après fusion, base 72 → 449 lignes, listes = union + 'French Tech' + labels programme/année, source='laureats-frenchtech-officiels'). Le « fichier FrenchTech 5K » Salesdorado s'est révélé un aimant à emails (lien 404) : écarté, script supprimé. Il n'existe pas de fichier ouvert unique à 5 000 : le label officiel ne couvre que ~120 lauréats/an + promos thématiques (voir piège n°22).
 - **Géocodage des villes curatées** (mode annuaire FT) : [Base Adresse Nationale](https://api-adresse.data.gouv.fr) via le proxy `/api/adr/*` (gratuit, sans clé ; cache disque SW `/api/` 7 j + cache mémoire front) — les fiches curatées n'ont qu'une ville en texte, convertie en centroïde communal (`type=municipality`) pour le filtre par rayon et les marqueurs (positions approximatives, jamais les sièges exacts).
 
+### Favoris et contacts (favoris.js + email.js, branche get_email)
+
+- **Annuaire de l'administration** (DILA) : API ODS v2.1 api-lannuaire.service-public.gouv.fr (dataset api-lannuaire-administration) — emails (adresse_courriel) et sites (site_internet) officiels des mairies par code INSEE (pivot « mairie » + repli sans filtre pivot), appelé côté serveur par email.js. Gratuit, sans clé.
+- **Wikidata** : site officiel (P856) et email (P968), appelés directement côté client (api.php wbsearchentities/wbgetentities, origin=*), gratuit, sans clé.
+- **Tavily** : découverte du site web officiel (annuaires, réseaux sociaux et agrégateurs écartés par liste de blocage) ; clé de l'utilisateur en variable d'environnement Netlify TAVILY_API_KEY (jamais dans le repo) — moteur sauté proprement si absente.
+- **prospector-mcp** (npm prospector-mcp, github.com/JosieBot26/prospector-mcp-email-finder, MIT) : recherche + vérification des emails (DNS/SMTP sans envoi), lancé par email.js en sous-processus MCP stdio (outil find_emails) ; tier gratuit 50 vérifs/jour, opt-in.
+- **Base Adresse Nationale** : autocomplete « Ajouter une ville » du panneau favoris (proxy /api/adr/ existant, type=municipality).
+
 ## 🐛 Bugs résolus / pièges connus (NE PAS RÉGRESSER)
 
 1. Parser CSV naïf → années NaN → maintenant regex robuste
@@ -152,6 +168,8 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
     - Faux positifs systématiques à écarter : filiales étrangères (BACK MARKET GERMANY GMBH → pénalité siège étranger), holdings/véhicules (WARREN AMI LABS, HOLDING OKAMAC, 1001PACT, PAPERNEST GLOBAL), fonds de dotation (CONTENTSQUARE FOUNDATION), homonymes (MANO quincaillerie, FOODLE conseil, SCI LABELLEVIE, LES/COOL/SWAP/INFINITE génériques), EI radiées ; jamais d'entité fermée (état F/C) ; ~40 SIREN en liste d'exclusion + 23 overrides dans le script ; le résidu douteux reste HORS base (pas de badge plutôt qu'un faux).
     - PostgREST : lots homogènes obligatoires (PGRST102 — grouper par signature de clés) ; `merge-duplicates` fait ON CONFLICT DO UPDATE sur TOUTES les colonnes (une colonne absente du payload est écrasée à NULL → envoyer des lignes complètes : nom/domaine/ville/site préservés de l'existant, null seulement si vide des deux côtés) ; doublons intra-lot interdits (21000 — fusionner par SIREN avant, ex. Brevo/Sendinblue) ; clé ANON en lecture seule (42501 en écriture → `SUPABASE_SERVICE_KEY` en .env local uniquement pour --apply, jamais sur Netlify).
 
+23. **Favoris : l'email d'entreprise est le cas difficile, pas l'identifiant** (10/2026) : avec SIREN/SIRET on identifie une entreprise mais aucun annuaire officiel gratuit ne donne son email (les annuaires payants agrègent du scraping). Chaîne retenue : Wikidata → Tavily (site officiel) → scraping du site (mailto, regex, JSON-LD, déobfuscation [at]/(at)/[dot], protection Cloudflare data-cfemail XOR, pages contact, contrôle MX dns.promises — emails de prestataires hors domaine pénalisés, domaines sans MX écartés) → prospector-mcp (vérif SMTP opt-in, 50/jour). Les mairies ont elles une source officielle (annuaire service-public, champ adresse_courriel). Pièges : fonctions Netlify synchrones ~10 s → budget 9 s réparti entre moteurs (moteurs suivants sautés si le temps manque) ; Tavily sans TAVILY_API_KEY → moteur sauté proprement ; erreurs applicatives en HTTP 200 {ok:false} ; écriture des fichiers JS par l'agent → backslashes des regex mangés dans les template literals, écrire sur disque + new Function() en garde avant tout push.
+
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
@@ -159,6 +177,7 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Branche de test **`score31`** (fork de `work`) : fonctionnalité « Composeur de critères » (généralisation du score perso). Tester en local (`netlify dev`, les proxys `/api/loyers/` y sont actifs), merger vers `work`/`main` ou abandonner librement.
 - Branche de test **`corp_search`** (fork de `work`) : fonctionnalité « Composeur d'entreprises » (corp.js). Tester en local (`netlify dev`, le proxy `/api/ent/` y est actif), merger vers `work`/`main` ou abandonner librement.
 - Branche de test **corp_ext** (fork de work) : fonctionnalité « Recherche étendue d'entreprises » (corp_ext.js + netlify/functions/). Variables d'env Netlify requises (mêmes contextes que FT_CLIENT_ID existant) : FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY. Test local : clés dans .env puis netlify dev (fonctions + redirects /ft/* actifs).
+- Branche de test **get_email** (fork de work) : fonctionnalité « Favoris et contacts » (favoris.js + netlify/functions/email.js). Variable d'env Netlify OPTIONNELLE : TAVILY_API_KEY (découverte des sites web — moteur sauté proprement si absente) ; prospector-mcp (dépendance npm netlify/functions/package.json) pour la vérification SMTP opt-in. Test local : netlify dev (fonction + redirect /ft/email actifs).
 - Migration Vercel envisagée (100 deploys/jour) : traduire `netlify.toml` → `vercel.json` (rewrites), rien d'autre à changer
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 
@@ -169,4 +188,4 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Cache partagé côté serveur (Netlify Blobs, ~1 Go gratuit)
 - Sélecteur de département déroulant dans l'annuaire (au lieu du clic carte)
 - Autres jeux de données data.gouv
-- **Enrichissement contact entreprises** : récupérer/compléter site web + email (recherche web type Tavily) sur la fiche détaillée du composeur d'entreprises — l'utilisateur a une clé API, fonctionnalité volontairement différée
+- **Enrichissement contact entreprises** — **RÉALISÉ** (branche get_email : favoris.js + email.js — favoris toutes entités + moteurs email/site web, panneau ⭐ Favoris ; voir « Favoris et contacts »)
