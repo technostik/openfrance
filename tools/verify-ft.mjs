@@ -1,268 +1,199 @@
 #!/usr/bin/env node
-/**
- * verify-ft.mjs (v2) — Vérification EMPIRIQUE des API France Travail (francetravail.io)
- * ============================================================================
- * Étape 1 de la fonctionnalité « Recherche étendue d'entreprises » (branche corp_ext).
- * Zéro dépendance : Node.js >= 18 (fetch natif). Les secrets ne sont JAMAIS
- * imprimés ni écrits dans le rapport (le client_id est partiellement masqué).
- *
- * v2 — focus diagnostic 401 passerelle :
- *   - empreinte du CLIENT_ID (pour vérifier que .env = l'appli où les APIs sont activées)
- *   - tous les en-têtes de réponse + corps d'erreur capturés
- *   - appel témoin SANS Authorization (baseline 401) et vers un chemin inexistant
- *     (contrôle du routage : 404 attendu)
- *   - API témoin « Offres d'emploi v2 » (activer cette API sur francetravail.io
- *     si ce n'est pas déjà fait : c'est la plus standard du portail)
- *   - Pages employeurs : retiré du périmètre (scope inexistant, confirmé)
- *
- * Usage :
- *   node tools/verify-ft.mjs   (lit FT_CLIENT_ID / FT_CLIENT_SECRET dans l'env ou .env)
- *
- * Sortie :
- *   - console : résumé lisible
- *   - tools/ft-report.json : rapport détaillé (gitignoré, NE PAS commit)
- */
+// tools/verify-ft.mjs — v3 : bac à sable France Travail + canari prod
+// Usage : node tools/verify-ft.mjs  (racine du repo ; FT_CLIENT_ID/FT_CLIENT_SECRET dans env ou .env)
+// Sortie : résumé console + tools/ft-report.json (gitignoré, ne pas committer)
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { performance } from 'node:perf_hooks';
+import { readFileSync, writeFileSync } from 'node:fs';
 
-function loadEnv() {
-  if (existsSync('.env')) {
-    for (const line of readFileSync('.env', 'utf8').split('\n')) {
-      const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (!m) continue;
-      let v = m[2].trim();
-      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-      if (!(m[1] in process.env)) process.env[m[1]] = v;
+const TOKEN_URL = 'https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire';
+const API_BASE = 'https://api.francetravail.io/partenaire';
+const NL = String.fromCharCode(10);
+
+try {
+  const txt = readFileSync('.env', 'utf8');
+  for (const line of txt.split(NL)) {
+    const i = line.indexOf('=');
+    if (i > 0) {
+      const k = line.slice(0, i).trim();
+      if (!process.env[k]) process.env[k] = line.slice(i + 1).trim();
     }
   }
-}
-loadEnv();
+} catch (e) {}
 
 const CLIENT_ID = process.env.FT_CLIENT_ID;
 const CLIENT_SECRET = process.env.FT_CLIENT_SECRET;
 if (!CLIENT_ID || !CLIENT_SECRET) {
-  console.error('✗ FT_CLIENT_ID / FT_CLIENT_SECRET absents (env ou .env).');
+  console.error('FT_CLIENT_ID / FT_CLIENT_SECRET introuvables (ni env, ni .env).');
   process.exit(1);
 }
 
-const TOKEN_URL = 'https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire';
-const API_BASE = 'https://api.francetravail.io/partenaire';
+const fingerprint = CLIENT_ID.slice(0, 10) + '...' + CLIENT_ID.slice(-4) + ' (' + CLIENT_ID.length + ' car.)';
+const report = { generatedAt: new Date().toISOString(), clientIdFingerprint: fingerprint, steps: [] };
 
-const SCOPES = {
-  offres: 'api_offresdemploiv2 o2dsoffre',
-  romeo: 'api_romeov2',
-  lbb: 'api_labonneboitev2',
-  romeMetiers: 'api_rome-metiersv1 nomenclatureRome',
-  romeFiches: 'api_rome-fiches-metiersv1 nomenclatureRome',
-};
+function step(name, obj) { obj.name = name; report.steps.push(obj); }
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-const report = {
-  generatedAt: new Date().toISOString(),
-  clientIdFingerprint: CLIENT_ID.slice(0, 12) + '…' + CLIENT_ID.slice(-4) + ' (' + CLIENT_ID.length + ' car.)',
-  steps: [],
-};
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function log(...a) { console.log(...a); }
-function step(name, data) {
-  report.steps.push({ name, ...data });
-  if (data.ok) log('  ✓ ' + name);
-  else log('  ✗ ' + name + ' : ' + (data.err || ('HTTP ' + data.status + (data.raw ? ' — ' + String(data.raw).slice(0, 120) : ''))));
-}
-
-const tokenCache = new Map();
+const tokens = {};
 async function getToken(scope) {
-  if (tokenCache.has(scope)) return tokenCache.get(scope);
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: CLIENT_ID,
-    client_secret: CLIENT_SECRET,
-    scope,
-  });
-  const t0 = performance.now();
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
-  const ms = Math.round(performance.now() - t0);
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error('HTTP ' + res.status + ' sur token (scope="' + scope + '") en ' + ms + 'ms — ' + txt.slice(0, 300));
-  }
-  const j = await res.json();
-  tokenCache.set(scope, j.access_token);
-  return { token: j.access_token, expires_in: j.expires_in, scope_echo: j.scope, ms };
+  if (tokens[scope] && Date.now() < tokens[scope].exp) return tokens[scope].value;
+  const body = new URLSearchParams();
+  body.set('grant_type', 'client_credentials');
+  body.set('client_id', CLIENT_ID);
+  body.set('client_secret', CLIENT_SECRET);
+  body.set('scope', scope);
+  const t0 = Date.now();
+  const res = await fetch(TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+  const txt = await res.text();
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' sur token (scope="' + scope + '") en ' + (Date.now() - t0) + 'ms — ' + txt.slice(0, 200));
+  const j = JSON.parse(txt);
+  tokens[scope] = { value: j.access_token, exp: Date.now() + (j.expires_in - 60) * 1000 };
+  return j.access_token;
 }
 
-async function callApi(scope, method, url, opts) {
-  opts = opts || {};
-  const headers = { Accept: 'application/json' };
-  if (opts.noAuth !== true) {
-    const t = await getToken(scope);
-    headers.Authorization = 'Bearer ' + t.token;
+async function apiCall(path, scope, opts) {
+  const token = await getToken(scope);
+  const init = { method: (opts && opts.method) || 'GET', headers: { Authorization: 'Bearer ' + token } };
+  if (opts && opts.body) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(opts.body);
   }
-  if (opts.jsonBody !== undefined) headers['Content-Type'] = 'application/json';
-  const t0 = performance.now();
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: opts.jsonBody !== undefined ? JSON.stringify(opts.jsonBody) : (opts.formBody !== undefined ? opts.formBody : undefined),
-  });
-  const ms = Math.round(performance.now() - t0);
-  const text = await res.text().catch(() => '');
-  let json = null;
-  try { json = JSON.parse(text); } catch (e) { /* non-JSON */ }
-  const hdrs = {};
-  for (const entry of res.headers.entries()) {
-    if (!/^set-cookie/i.test(entry[0])) hdrs[entry[0]] = entry[1];
-  }
-  return { status: res.status, ms, headers: hdrs, json, bodyLength: text.length, raw: text.slice(0, 500) };
+  const t0 = Date.now();
+  const res = await fetch(API_BASE + path, init);
+  const txt = await res.text();
+  const headers = {};
+  res.headers.forEach(function (v, k) { headers[k] = v; });
+  return { status: res.status, ms: Date.now() - t0, body: txt, headers: headers };
 }
 
-function sample(json, maxItems) {
-  maxItems = maxItems === undefined ? 3 : maxItems;
-  if (Array.isArray(json)) return { type: 'array', length: json.length, first: json.slice(0, maxItems) };
-  if (json && typeof json === 'object') {
-    if (json.companies) return { keys: Object.keys(json), companies_length: json.companies.length, first: json.companies.slice(0, maxItems) };
-    if (json.results) return { keys: Object.keys(json), results_length: (json.results || []).length, first: (json.results || []).slice(0, maxItems).map((o) => ({ intitule: o.intitule, codeROME: o.codeROME })) };
-    return { keys: Object.keys(json), sample: json };
-  }
-  return json;
-}
-
-// Détail complet d'échec : TOUS les en-têtes + corps (c'est ce qui manque au 401)
 function failDetail(r) {
-  return {
-    status: r.status, ms: r.ms,
-    bodyLength: r.bodyLength,
-    raw: r.raw,
-    headers: r.headers,
-  };
+  return { status: r.status, ms: r.ms, bodyLength: r.body.length, raw: r.body.slice(0, 400), headers: r.headers };
 }
 
-async function main() {
-  log('\n═══════════════════════════════════════════════════════════════');
-  log(' Vérification empirique des API France Travail — openfrance/corp_ext (v2)');
-  log('═══════════════════════════════════════════════════════════════');
-  log(' Client ID (empreinte, à comparer avec l\'appli francetravail.io) : ' + report.clientIdFingerprint);
-  log('');
+const BAR = '===============================================================';
 
-  // --- 1. OAuth par scope --------------------------------------------------
-  log('── 1. OAuth (client_credentials, realm=/partenaire) ──');
-  for (const entry of [['offres', SCOPES.offres], ['romeo', SCOPES.romeo], ['lbb', SCOPES.lbb], ['romeMetiers', SCOPES.romeMetiers], ['romeFiches', SCOPES.romeFiches]]) {
-    const name = entry[0], scope = entry[1];
-    try {
-      const t = await getToken(scope);
-      step('token ' + name, { ok: true, scope, expires_in: t.expires_in, scope_echo: t.scope_echo, ms: t.ms });
-    } catch (e) { step('token ' + name, { ok: false, scope, err: String(e.message) }); }
+console.log(BAR);
+console.log(' Verif France Travail v3 — bac a sable + canari prod (corp_ext)');
+console.log(' client_id : ' + fingerprint);
+console.log(BAR);
+
+console.log(NL + '-- 1. Canari prod : GET /rome-metiers/v1/metiers/metier --');
+try {
+  const r = await apiCall('/rome-metiers/v1/metiers/metier', 'api_rome-metiersv1 nomenclatureRome');
+  const ok = r.status === 200;
+  let nb = null; let first = null;
+  if (ok) {
+    const j = JSON.parse(r.body);
+    nb = (j && j.length) || null;
+    if (nb) first = j[0].code + ' - ' + j[0].libelle;
   }
-  log('');
+  step('PROD canari /rome-metiers/v1/metiers/metier', Object.assign({ ok: ok, nb: nb, first: first }, ok ? {} : { detail: failDetail(r) }));
+  console.log(ok ? '  OK prod - ' + nb + ' metiers, premier : ' + first : '  ECHEC prod : HTTP ' + r.status + (r.body ? ' - ' + r.body.slice(0, 120) : ' (corps vide)'));
+} catch (e) {
+  step('PROD canari /rome-metiers/v1/metiers/metier', { ok: false, err: e.message });
+  console.log('  ECHEC prod : ' + e.message);
+}
+await sleep(1100);
 
-  // --- 2. Contrôles de diagnostic (401 passerelle) ---------------------------
-  log('── 2. Contrôles de diagnostic ──');
+console.log(NL + '-- 2. Tokens bac a sable (memes identifiants, scopes api_test...) --');
+const tokenCandidates = [
+  { key: 'testromeo', scope: 'api_testromeov2' },
+  { key: 'testlbb', scope: 'api_testlabonneboitev2' },
+  { key: 'testromeMetiers-a', scope: 'api_testrome-metiersv1 nomenclatureTestRome' },
+  { key: 'testromeMetiers-b', scope: 'api_testrome-metiersv1 nomenclatureRome' },
+  { key: 'testromeMetiers-c', scope: 'api_testrome-metiersv1' },
+  { key: 'testromeFiches-a', scope: 'api_testrome-fiches-metiersv1 nomenclatureTestRome' },
+  { key: 'testromeFiches-b', scope: 'api_testrome-fiches-metiersv1 nomenclatureRome' }
+];
+const working = {};
+for (const c of tokenCandidates) {
+  const fam = c.key.split('-')[0];
   try {
-    const r = await callApi(null, 'GET', API_BASE + '/rome-metiers/v1/metiers/metier', { noAuth: true });
-    step('SANS Authorization (baseline, 401 attendu)', { ok: r.status === 401, ...failDetail(r), expected: 401 });
-  } catch (e) { step('SANS Authorization (baseline)', { ok: false, err: String(e.message).slice(0, 200) }); }
-  try {
-    const r = await callApi(SCOPES.romeo, 'GET', API_BASE + '/zzz-openfrance-inexistant');
-    step('chemin inexistant avec token (404 attendu = routage OK)', { ok: r.status === 404, ...failDetail(r), expected: 404 });
-  } catch (e) { step('chemin inexistant avec token', { ok: false, err: String(e.message).slice(0, 200) }); }
-  log('');
-
-  // --- 3. Témoin : Offres d'emploi v2 ---------------------------------------
-  log('── 3. Témoin Offres d\'emploi v2 — GET /offresdemploi/v2/recherche ──');
-  try {
-    const r = await callApi(SCOPES.offres, 'GET', API_BASE + '/offresdemploi/v2/recherche?codeROME=M1806');
-    step('Offres d\'emploi codeROME=M1806', {
-      ok: r.status === 200, ...(r.status === 200 ? { status: r.status, ms: r.ms, fiche: sample(r.json, 2) } : failDetail(r)),
-    });
-  } catch (e) { step('Offres d\'emploi codeROME=M1806', { ok: false, err: String(e.message).slice(0, 300) }); }
-  log('');
-
-  // --- 4. ROMEO -------------------------------------------------------------
-  log('── 4. ROMEO v2 — POST /romeo/v2/predictionMetiers ──');
-  const romeCodesIA = [];
-  for (const kw of ['intelligence artificielle', 'data scientist', 'machine learning', 'transition écologique']) {
-    try {
-      const r = await callApi(SCOPES.romeo, 'POST', API_BASE + '/romeo/v2/predictionMetiers', {
-        jsonBody: {
-          appellations: [{ intitule: kw, identifiant: '1' }],
-          options: { nbResultats: 10, nomAppelant: 'openfrance', toggleScorePrediction: true },
-        },
-      });
-      const preds = Array.isArray(r.json) ? r.json.flatMap((p) => p.metiersRome || []) : [];
-      if (kw === 'intelligence artificielle') for (const p of preds) romeCodesIA.push(p.codeRome);
-      step('ROMEO "' + kw + '"', {
-        ok: r.status === 200, ...(r.status === 200 ? {
-          status: r.status, ms: r.ms,
-          nb_predictions: preds.length,
-          top: preds.slice(0, 8).map((p) => ({ code: p.codeRome, rome: p.libelleRome, appellation: p.libelleAppellation, score: p.scorePrediction })),
-        } : failDetail(r)),
-      });
-    } catch (e) { step('ROMEO "' + kw + '"', { ok: false, err: String(e.message).slice(0, 300) }); }
-    await sleep(350); // ROMEO : 3 appels/s annoncés
+    const tok = await getToken(c.scope);
+    if (!working[fam]) working[fam] = c.scope;
+    step('SBX token ' + c.key, { ok: true, scope: c.scope, sample: tok.slice(0, 12) + '...' });
+    console.log('  OK token ' + c.key + ' (scope ' + c.scope + ')');
+  } catch (e) {
+    step('SBX token ' + c.key, { ok: false, scope: c.scope, err: e.message });
+    console.log('  ECHEC token ' + c.key + ' : ' + e.message);
   }
-  log('');
+  await sleep(300);
+}
 
-  // --- 5. ROME 4.0 ----------------------------------------------------------
-  log('── 5. ROME 4.0 — /rome-metiers/v1 · /rome-fiches-metiers/v1 ──');
+console.log(NL + '-- 3. Bac a sable : ROMEO POST /testromeo/v2/predictionMetiers --');
+if (working.testromeo) {
   try {
-    const r = await callApi(SCOPES.romeMetiers, 'GET', API_BASE + '/rome-metiers/v1/metiers/metier');
-    step('ROME métiers (liste)', {
-      ok: r.status === 200, ...(r.status === 200 ? { status: r.status, ms: r.ms, nb_metiers: Array.isArray(r.json) ? r.json.length : null, first: Array.isArray(r.json) ? r.json.slice(0, 2) : r.json } : failDetail(r)),
-    });
-  } catch (e) { step('ROME métiers (liste)', { ok: false, err: String(e.message).slice(0, 300) }); }
-  await sleep(1000);
-  const testCode = (romeCodesIA.find((c) => /^[A-Z]\d{4}$/.test(c || '')) || 'M1806');
-  try {
-    const r = await callApi(SCOPES.romeMetiers, 'GET', API_BASE + '/rome-metiers/v1/metiers/metier/' + testCode);
-    step('ROME métier ' + testCode, { ok: r.status === 200, ...(r.status === 200 ? { status: r.status, ms: r.ms, fiche: sample(r.json, 1) } : failDetail(r)) });
-  } catch (e) { step('ROME métier ' + testCode, { ok: false, err: String(e.message).slice(0, 300) }); }
-  await sleep(1000);
-  try {
-    const r = await callApi(SCOPES.romeFiches, 'GET', API_BASE + '/rome-fiches-metiers/v1/fiches-rome/fiche-metier/' + testCode);
-    step('ROME fiche métier ' + testCode, { ok: r.status === 200, ...(r.status === 200 ? { status: r.status, ms: r.ms, fiche: sample(r.json, 1) } : failDetail(r)) });
-  } catch (e) { step('ROME fiche métier ' + testCode, { ok: false, err: String(e.message).slice(0, 300) }); }
-  log('');
+    const r = await apiCall('/testromeo/v2/predictionMetiers', working.testromeo, { method: 'POST', body: { appellations: [{ intitule: 'intelligence artificielle', identifiant: '1' }], options: { nbResultats: 10, nomAppelant: 'openfrance', toggleScorePrediction: true } } });
+    const ok = r.status === 200;
+    let top = [];
+    if (ok) {
+      const j = JSON.parse(r.body);
+      const preds = (j && j[0] && j[0].metiersRome) || [];
+      top = preds.slice(0, 5).map(function (m) { return m.codeRome + ' - ' + m.libelleRome + ' (' + (m.scorePrediction || '?') + ')'; });
+    }
+    step('SBX ROMEO predictionMetiers', Object.assign({ ok: ok, nbPredictions: top.length, top: top }, ok ? {} : { detail: failDetail(r) }));
+    console.log(ok ? '  OK ROMEO bac a sable - top : ' + top.join(' | ') : '  ECHEC ROMEO bac a sable : HTTP ' + r.status + (r.body ? ' - ' + r.body.slice(0, 120) : ' (corps vide)'));
+  } catch (e) {
+    step('SBX ROMEO predictionMetiers', { ok: false, err: e.message });
+    console.log('  ECHEC ROMEO bac a sable : ' + e.message);
+  }
+} else {
+  step('SBX ROMEO predictionMetiers', { ok: false, err: 'scope api_testromeov2 indisponible' });
+  console.log('  (saute : pas de token test ROMEO)');
+}
+await sleep(400);
 
-  // --- 6. La Bonne Boite v2 -------------------------------------------------
-  log('── 6. La Bonne Boite v2 — GET /labonneboite/v2/company/ ──');
-  log('   (2 appels/s max : espacement 600 ms entre chaque essai)');
-  const lbbCodes = (romeCodesIA.filter((c) => c).slice(0, 3).join(',') || 'M1806,M1805');
-  const lbbTests = [
-    ['lat/lon + 1 code ROME', 'rome_codes=' + lbbCodes.split(',')[0] + '&latitude=43.6045&longitude=1.4442&distance=10'],
-    ['lat/lon + plusieurs codes', 'rome_codes=' + lbbCodes + '&latitude=43.6045&longitude=1.4442&distance=10'],
-    ['param commune (31555)', 'rome_codes=' + lbbCodes.split(',')[0] + '&commune=31555&distance=10'],
-    ['param departement (31)', 'rome_codes=' + lbbCodes.split(',')[0] + '&departement=31'],
-    ['pagination per_page/page', 'rome_codes=' + lbbCodes.split(',')[0] + '&latitude=43.6045&longitude=1.4442&distance=10&per_page=50&page=2'],
-  ];
-  for (const pair of lbbTests) {
-    const label = pair[0], qs = pair[1];
+console.log('-- Bac a sable : GET /testrome-metiers/v1/metiers/metier --');
+if (working.testromeMetiers) {
+  try {
+    const r = await apiCall('/testrome-metiers/v1/metiers/metier', working.testromeMetiers);
+    const ok = r.status === 200;
+    let nb = null;
+    if (ok) { const j = JSON.parse(r.body); nb = (j && j.length) || null; }
+    step('SBX ROME metiers liste', Object.assign({ ok: ok, nbMetiers: nb }, ok ? {} : { detail: failDetail(r) }));
+    console.log(ok ? '  OK ROME metiers bac a sable - ' + nb + ' metiers' : '  ECHEC ROME metiers bac a sable : HTTP ' + r.status + (r.body ? ' - ' + r.body.slice(0, 120) : ' (corps vide)'));
+  } catch (e) {
+    step('SBX ROME metiers liste', { ok: false, err: e.message });
+    console.log('  ECHEC ROME metiers bac a sable : ' + e.message);
+  }
+} else {
+  step('SBX ROME metiers liste', { ok: false, err: 'scope test rome-metiers indisponible' });
+  console.log('  (saute : pas de token test ROME metiers)');
+}
+await sleep(1100);
+
+console.log('-- Bac a sable : La Bonne Boite /testlabonneboite/v2/company/ puis v1 --');
+if (working.testlbb) {
+  const qs = '?rome_codes=M1806&latitude=43.6045&longitude=1.4442&distance=10';
+  for (const ver of ['v2', 'v1']) {
+    try {
+      const r = await apiCall('/testlabonneboite/' + ver + '/company/' + qs, working.testlbb);
+      const ok = r.status === 200;
+      let nb = null; let first = [];
+      if (ok) {
+        const j = JSON.parse(r.body);
+        const comps = Array.isArray(j) ? j : ((j && j.companies) || []);
+        nb = comps.length;
+        first = comps.slice(0, 3).map(function (c) { return (c.name || '?') + ' (' + (c.city || '?') + ')'; });
+      }
+      step('SBX LBB ' + ver + ' company', Object.assign({ ok: ok, nb: nb, first: first }, ok ? {} : { detail: failDetail(r) }));
+      console.log(ok ? '  OK LBB ' + ver + ' bac a sable - ' + nb + ' entreprises : ' + first.join(' | ') : '  ECHEC LBB ' + ver + ' : HTTP ' + r.status + (r.body ? ' - ' + r.body.slice(0, 120) : ' (corps vide)'));
+    } catch (e) {
+      step('SBX LBB ' + ver + ' company', { ok: false, err: e.message });
+      console.log('  ECHEC LBB ' + ver + ' : ' + e.message);
+    }
     await sleep(600);
-    try {
-      const r = await callApi(SCOPES.lbb, 'GET', API_BASE + '/labonneboite/v2/company/?' + qs);
-      const items = (r.json && (r.json.companies || (Array.isArray(r.json) ? r.json : (r.json.items || r.json.results)))) || [];
-      step('LBB ' + label, {
-        ok: r.status === 200, ...(r.status === 200 ? {
-          status: r.status, ms: r.ms,
-          nb: Array.isArray(items) ? items.length : null,
-          first: (Array.isArray(items) ? items.slice(0, 2) : items),
-          resp_keys: r.json && typeof r.json === 'object' && !Array.isArray(r.json) ? Object.keys(r.json) : null,
-        } : failDetail(r)),
-      });
-    } catch (e) { step('LBB ' + label, { ok: false, err: String(e.message).slice(0, 300) }); }
   }
-  log('');
-
-  writeFileSync('tools/ft-report.json', JSON.stringify(report, null, 2));
-  const okCount = report.steps.filter((s) => s.ok).length;
-  log('═══════════════════════════════════════════════════════════════');
-  log(' Terminé : ' + okCount + '/' + report.steps.length + ' étapes OK — rapport : tools/ft-report.json (ne pas commit)');
-  log(' Coller le contenu de ft-report.json (ou ce résumé) à l\'agent.');
-  log('═══════════════════════════════════════════════════════════════');
+} else {
+  step('SBX LBB v2 company', { ok: false, err: 'scope api_testlabonneboitev2 indisponible' });
+  step('SBX LBB v1 company', { ok: false, err: 'scope api_testlabonneboitev2 indisponible' });
+  console.log('  (saute : pas de token test LBB)');
 }
 
-main().catch((e) => { console.error('Erreur fatale :', e); process.exit(1); });
+const out = JSON.stringify(report, null, 2);
+let written = 'tools/ft-report.json';
+try { writeFileSync(written, out); } catch (e) { written = 'ft-report.json'; writeFileSync(written, out); }
+const nbOk = report.steps.filter(function (s) { return s.ok; }).length;
+console.log(NL + BAR);
+console.log(' Termine : ' + nbOk + '/' + report.steps.length + ' etapes OK - rapport : ' + written + ' (ne pas committer)');
+console.log(' Coller le contenu de ' + written + " a l'agent.");
+console.log(BAR);
