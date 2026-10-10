@@ -4,30 +4,39 @@
 // choisit une ville cible et un rayon. Pipeline :
 //  1. ROMEO (France Travail, via /ft/ft?op=romeo) prédit les codes ROME du texte ;
 //  2. clic sur un métier → fiche ROME 4.0 (compétences, via /ft/ft?op=fiche) ;
-//  3. La Bonne Boite (via /ft/ft?op=lbb) liste les entreprises qui recrutent sur ces
+//  3. La Bonne Boite v2 (via /ft/ft?op=lbb) liste les entreprises qui recrutent sur ces
 //     codes ROME autour de la ville cible ;
 //  4. croisement avec les listes curatées (Airtable via /ft/airtable, ex. French Tech
 //     2030) → badge 🏆 sur la carte et dans la liste (signal certain).
 //
-// ⚠️ Contraintes (vérifiées empiriquement le 10/10/2026, voir docs/ETAT-PROJET.md) :
-//  - La Bonne Boite renvoie 403 insufficient_scope tant que l'abonnement n'est pas
-//    provisionné côté francetravail.io → dégradation gracieuse : message + métiers
-//    ROME affichés quand même. La forme exacte de la réponse LBB est inconnue : le
-//    normalisateur (netlify/functions/ft.js) est tolérant, à ajuster si besoin.
+// ⚠️ Contraintes (vérifiées le 10/10/2026, voir docs/ETAT-PROJET.md) :
+//  - La Bonne Boite v2 : GET /partenaire/labonneboite/v2/recherche — le token doit porter
+//    le scope 'search office api_labonneboitev2' (api_labonneboitev2 seul → 403).
+//    Réponse : {hits, items:[{siret, office_name, location{latitude,longitude},
+//    headcount_min/max, hiring_potential 0–100}]}, 204 = aucun résultat.
+//    Si l'abonnement n'est pas provisionné → message + métiers ROME affichés quand même.
+//  - Fiche détaillée : récupérée à la volée depuis l'API Recherche d'entreprises
+//    (q=SIREN, proxy /api/ent existant) et rendue par coOpenFiche — le modal du
+//    Composeur d'entreprises est réutilisé tel quel (identité, siège, dirigeants, labels,
+//    établissements, lien officiel annuaire-entreprises.data.gouv.fr).
+//  - Filtre « Taille » : appliqué LOCALEMENT (headcount_min de la réponse LBB).
 //  - Les fonctions Netlify sont servies sous /ft/* : le service worker ne les met PAS
 //    en cache (seuls /api/, /data/, /geo/ le sont) → résultats frais à chaque recherche.
 //
 // Dépend de app.js (state, map, geoLayer, DEP_FOLDERS, fetchJSONCached, setStatus,
-// showError, hideError), annuaire.js (esc, normTxt, annCentroids) et corp.js (coDepLabel).
+// showError, hideError), annuaire.js (esc, normTxt, annCentroids) et corp.js (coDepLabel,
+// CO.byId, coOpenFiche, coFicheClose).
 
 var EXT = {
   active: false,
   dep: '31',
   target: null,          // { code, nom, latlng } — ville cible
   radius: 10,            // km
+  size: '',              // filtre local headcount_min : '' | '10' | '50' | '100'
   geo: null, geoDep: null, cities: [], centroids: null,
   metiers: [],            // prédictions ROME en cours
   curated: null,         // cache (promesse) des listes curatées Airtable
+  lastLbb: null, lastCurated: null, // dernière réponse (re-render local si filtre taille)
   seq: 0,
   markers: null, markerBySiren: {}, circle: null, targetMk: null,
   uiReady: false
@@ -143,6 +152,7 @@ function extSearch() {
   var seq = ++EXT.seq;
   var status = document.getElementById('extStatus');
   extClearMap();
+  EXT.lastLbb = null; EXT.lastCurated = null;
   document.getElementById('extMetiers').innerHTML = '';
   document.getElementById('extFiche').style.display = 'none';
   document.getElementById('extResults').innerHTML = '';
@@ -173,6 +183,7 @@ function extSearch() {
     }));
     return Promise.all([lbbP, extCurated().catch(function () { return null; })]).then(function (arr) {
       if (seq !== EXT.seq) return;
+      EXT.lastLbb = arr[0]; EXT.lastCurated = arr[1];
       extRenderResults(arr[0], arr[1]);
     });
   }).catch(function (err) {
@@ -223,26 +234,60 @@ function extShowFiche(m) {
   });
 }
 
+// ---------- Fiche détaillée entreprise (base Sirene via /api/ent, modal du Composeur) ----------
+function extOpenFiche(siren) {
+  var dlg = document.getElementById('coFicheDlg');
+  document.getElementById('coFicheTitle').textContent = '⏳ Chargement de la fiche…';
+  document.getElementById('coFicheBody').innerHTML = '<p class="muted">Interrogation de la base Sirene…</p>';
+  dlg.style.display = 'flex';
+  fetch('/api/ent/search?per_page=1&page=1&est_association=false&q=' + encodeURIComponent(siren))
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (j) {
+      var e = (j.results || [])[0];
+      if (!e) {
+        document.getElementById('coFicheTitle').textContent = 'Entreprise ' + siren;
+        document.getElementById('coFicheBody').innerHTML =
+          '<p class="muted">Fiche Sirene introuvable pour ce SIREN.</p>' +
+          '<a class="co-official" href="https://annuaire-entreprises.data.gouv.fr/entreprise/' + encodeURIComponent(siren) + '" target="_blank" rel="noopener">🔗 Fiche officielle — annuaire-entreprises.data.gouv.fr</a>';
+        return;
+      }
+      CO.byId[siren] = e; // réutilise le rendu complet du Composeur d'entreprises
+      coOpenFiche(siren);
+    })
+    .catch(function (err) {
+      document.getElementById('coFicheTitle').textContent = 'Entreprise ' + siren;
+      document.getElementById('coFicheBody').innerHTML = '<p class="muted">Fiche indisponible : ' + esc(err.message) + '</p>';
+    });
+}
+
 // ---------- Rendu : résultats (liste + carte) ----------
+function extSizePass(c) {
+  if (!EXT.size) return true;
+  return c.headcount != null && c.headcount >= parseInt(EXT.size, 10);
+}
 function extPopupHtml(c, cur) {
   var html = '<b>' + esc(c.name || c.siren) + '</b>';
-  if (c.city) html += '<br>' + esc(c.city);
+  if (c.city) html += '<br>' + esc(c.city) + (c.zipcode ? ' (' + esc(c.zipcode) + ')' : '');
+  html += '<br><i>⭐ ' + c.stars + '/5 — potentiel d\'embauche' +
+    (c.headcountText ? ' · 👥 ' + esc(c.headcountText) : '') + '</i>';
+  if (c.nafText) html += '<br>' + esc(c.nafText);
   if (cur && (cur.listes || []).length) html += '<br>🏆 ' + esc(cur.listes.join(', '));
-  if (cur && (cur.domaines || []).length) html += ' <span class="muted">' + esc(cur.domaines.join(', ')) + '</span>';
-  if (c.rome) html += '<br><i>ROME ' + esc(String(c.rome)) + '</i>';
-  html += '<br><a href="https://annuaire-entreprises.data.gouv.fr/entreprise/' + encodeURIComponent(c.siren) + '" target="_blank" rel="noopener">🗂 Fiche officielle</a>';
+  html += '<br><a href="#" onclick="extOpenFiche(\'' + c.siren + '\');return false;">📋 Fiche détaillée</a>';
+  html += ' · <a href="https://labonneboite.francetravail.fr/entreprises/siret/' + encodeURIComponent(c.siret || c.siren) + '" target="_blank" rel="noopener">La Bonne Boite</a>';
   return html;
 }
 function extRenderResults(lbb, curated) {
   var status = document.getElementById('extStatus');
   var box = document.getElementById('extResults');
   box.innerHTML = '';
-  var comps = (lbb && lbb.companies) || [];
+  var all = (lbb && lbb.companies) || [];
+  var total = (lbb && lbb.total != null) ? lbb.total : all.length;
+  var comps = all.filter(extSizePass);
   var bySiren = (curated && curated.bySiren) || {};
   var curatedCount = 0;
   comps.forEach(function (c) { if (bySiren[c.siren]) curatedCount++; });
   status.innerHTML = '📍 ' + esc(EXT.target.nom) + ' — rayon ' + EXT.radius + ' km · <b>' +
-    comps.length + ' entreprise(s) recrutante(s)</b>' +
+    comps.length + ' entreprise(s) recrutante(s)</b>' + (comps.length < total ? ' sur ' + total : '') +
     (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
     ' · ROME : ' + esc(EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; }).join(', '));
   extFrameZone();
@@ -257,32 +302,38 @@ function extRenderResults(lbb, curated) {
     var head = document.createElement('div');
     head.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
       (cur ? '#f59e0b' : '#22c55e') + '"></span> <b>' + esc(c.name || c.siren) + '</b>' +
+      ' <span class="co-badge" title="Potentiel d\'embauche (La Bonne Boite)">⭐ ' + c.stars + '</span>' +
+      (c.headcountText ? ' <span class="co-badge">👥 ' + esc(c.headcountText) + '</span>' : '') +
       (c.city ? ' <span class="co-badge">' + esc(c.city) + '</span>' : '') +
-      (cur ? ' <span class="co-badge ext-curated">🏆 ' + esc((cur.listes || []).join(', ')) + '</span>' : '') +
-      (cur && (cur.domaines || []).length ? ' <span class="co-badge">' + esc(cur.domaines.join(', ')) + '</span>' : '');
+      (cur ? ' <span class="co-badge ext-curated">🏆 ' + esc((cur.listes || []).join(', ')) + '</span>' : '');
     var sub = document.createElement('div');
     sub.className = 'ann-obj';
-    sub.textContent = 'SIREN ' + c.siren + (c.hiring ? ' · recrute' : '') + (c.rome ? ' · ROME ' + c.rome : '');
+    sub.textContent = (c.naf ? c.naf + ' · ' : '') + (c.nafText || '') +
+      ' · SIREN ' + c.siren +
+      (cur && (cur.domaines || []).length ? ' · ' + cur.domaines.join(', ') : '');
     row.appendChild(head);
     row.appendChild(sub);
-    row.addEventListener('click', function () {
-      var mk = EXT.markerBySiren[c.siren];
-      if (mk && c.lat !== null && c.lon !== null) { map.setView([c.lat, c.lon], 13); mk.openPopup(); }
-    });
+    row.addEventListener('click', function () { extOpenFiche(c.siren); });
     box.appendChild(row);
   });
   if (!comps.length) {
     var p = document.createElement('p');
     p.className = 'muted';
-    p.textContent = 'Aucune entreprise recrutante trouvée sur ces métiers dans la zone — élargissez le rayon ou reformulez.';
+    p.textContent = total
+      ? 'Aucune entreprise ne passe le filtre Taille sur les ' + total + ' résultat(s).'
+      : 'Aucune entreprise recrutante trouvée sur ces métiers dans la zone — élargissez le rayon ou reformulez.';
     box.appendChild(p);
+  } else if (comps.length > EXT_MAX_LIST) {
+    var p2 = document.createElement('p');
+    p2.className = 'muted';
+    p2.textContent = '+' + (comps.length - EXT_MAX_LIST) + ' autre(s) résultat(s) non affiché(s) — élargissez le rayon pour voir les marqueurs.';
+    box.appendChild(p2);
   }
   setStatus('Recherche étendue : ' + comps.length + ' entreprise(s) recrutante(s)');
-  // marqueurs (seulement celles avec coordonnées)
-  var entries = comps.filter(function (c) { return c.lat !== null && c.lon !== null && !isNaN(c.lat) && !isNaN(c.lon); });
-  if (!entries.length) return;
+  // marqueurs (le serveur ne renvoie que des items avec coordonnées)
+  if (!comps.length) return;
   EXT.markers = L.featureGroup();
-  entries.slice(0, 600).forEach(function (c) {
+  comps.slice(0, 600).forEach(function (c) {
     var cur = bySiren[c.siren];
     var m = L.circleMarker([c.lat, c.lon], {
       radius: cur ? 7 : 5, weight: 1, color: '#0f172a',
@@ -334,6 +385,12 @@ function extInitUI() {
   radSel.value = String(EXT.radius);
   radSel.addEventListener('change', function () { EXT.radius = parseInt(radSel.value, 10); });
 
+  var sizeSel = document.getElementById('extSize');
+  sizeSel.addEventListener('change', function () {
+    EXT.size = sizeSel.value;
+    if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated); // re-render local
+  });
+
   var tin = document.getElementById('extTarget');
   var deb = null;
   tin.addEventListener('input', function () {
@@ -358,11 +415,19 @@ function extInitUI() {
     if (ev.key === 'Enter') { ev.preventDefault(); extSearch(); }
   });
   document.getElementById('extSearchBtn').addEventListener('click', extSearch);
+
+  // modal fiche (partagé avec le Composeur : les listeners sont posés par coInitUI
+  // à l'entrée du mode corp ; on les pose ici aussi pour couvrir le cas corp jamais visité)
+  document.getElementById('coFicheClose').addEventListener('click', coFicheClose);
+  document.getElementById('coFicheDlg').addEventListener('click', function (ev) {
+    if (ev.target === this) coFicheClose();
+  });
 }
 
 function extSetDep(dep) {
   EXT.dep = dep;
   EXT.geo = null; EXT.target = null;
+  EXT.lastLbb = null; EXT.lastCurated = null;
   document.getElementById('extTarget').value = '';
   extClearMap();
   extEnsureGeo().then(function () {
@@ -406,9 +471,11 @@ function extEnter() {
 function extLeave() {
   EXT.active = false;
   EXT.seq++; // invalide les recherches en vol
+  EXT.lastLbb = null; EXT.lastCurated = null;
   extTargetDropEl(false);
   extClearMap();
   EXT.metiers = [];
+  if (typeof coFicheClose === 'function') coFicheClose();
   document.getElementById('extControls').style.display = 'none';
   document.getElementById('extPanel').style.display = 'none';
   document.getElementById('indicatorLabel').style.display = '';

@@ -2,15 +2,20 @@
 //
 // Endpoints (GET, paramètre op) :
 //   /ft/ft?op=romeo&text=...                            → codes ROME prédits (ROMEO v2)
-//   /ft/ft?op=lbb&rome=M1806&lat=..&lon=..&dist=..     → entreprises recrutantes (LBB v2)
-//   /ft/ft?op=fiche&code=M1806                         → fiche métier ROME 4.0 (compétences)
+//   /ft/ft?op=lbb&rome=M1806&lat=..&lon=..&dist=..      → entreprises recrutantes (LBB v2)
+//   /ft/ft?op=fiche&code=M1806                          → fiche métier ROME 4.0 (compétences)
 //
 // Secrets : FT_CLIENT_ID / FT_CLIENT_SECRET (variables d'environnement Netlify, jamais
 // dans le repo). Chemins/scopes vérifiés empiriquement le 10/10/2026 (docs/ETAT-PROJET.md) :
 //  - ROME fiches : /partenaire/rome-fiches-metiers/v1/fiches-rome/fiche-metier/<code>
 //    (segment /fiches-rome/ obligatoire — sinon 404 ; scope sans nomenclatureRome → 403)
-//  - LBB : 403 insufficient_scope tant que l'abonnement n'est pas provisionné côté portail
-//    → réponse gracieuse {ok:false, code:'lbb_unavailable'} (dégradation côté front)
+//  - LBB v2 : GET /partenaire/labonneboite/v2/recherche — le token doit porter le scope
+//    'search office api_labonneboitev2' (api_labonneboitev2 SEUL → 403 insufficient_scope).
+//    Paramètres : rome répétés (rome=A&rome=B, pas de rome_codes), job (texte libre),
+//    latitude/longitude/distance (]0;200[ km), page/page_size (max 100, LBB plafonne à 100).
+//    Réponse : {hits, items:[{siret, office_name, company_name, naf, naf_label,
+//    location{latitude,longitude}, city, postcode, headcount_min/max, hiring_potential 0-100}]}
+//    204 = aucun résultat ; 403 → {ok:false, code:'lbb_unavailable'} (dégradation côté front).
 //  - Throttles France Travail : ROME 1/s, LBB 2/s, ROMEO 3/s (file séquentielle ci-dessous)
 //  - Les erreurs applicatives partent en HTTP 200 {ok:false} pour rester distinguables
 //    des erreurs transport (réseau, 5xx, secrets manquants).
@@ -20,7 +25,7 @@ const API_BASE = 'https://api.francetravail.io/partenaire';
 const SCOPES = {
   romeo: 'api_romeov2',
   fiches: 'api_rome-fiches-metiersv1 nomenclatureRome',
-  lbb: 'api_labonneboitev2'
+  lbb: 'search office api_labonneboitev2'
 };
 
 // Cache de tokens par scope (par instance chaude de fonction) — expires_in ~ 25 min
@@ -97,18 +102,40 @@ async function opRomeo(params) {
   return { ok: true, metiers: metiers };
 }
 
+function intOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? null : n;
+}
+function headcountText(min, max) {
+  if (min === null && max === null) return '';
+  if (min !== null && max !== null) return min === max ? (min + ' salariés') : (min + ' à ' + max + ' salariés');
+  if (min !== null) return min + ' salariés et plus';
+  return 'jusqu\'à ' + max + ' salariés';
+}
+
 async function opLbb(params) {
+  // v2 : au moins un critère job|rome requis ; rome en paramètres répétés
   const rome = String(params.rome || '').split(',').map(function (s) { return s.trim(); })
-    .filter(Boolean).slice(0, 5);
+    .filter(Boolean).slice(0, 60);
+  const job = String(params.job || '').slice(0, 100).trim();
   const lat = parseFloat(params.lat);
   const lon = parseFloat(params.lon);
-  const dist = Math.min(50, Math.max(1, parseInt(params.dist || '10', 10) || 10));
-  if (!rome.length || isNaN(lat) || isNaN(lon)) return { ok: false, error: 'paramètres rome, lat, lon requis' };
-  const qs = '?rome_codes=' + encodeURIComponent(rome.join(',')) +
-    '&latitude=' + lat + '&longitude=' + lon + '&distance=' + dist;
-  const r = await apiCall('/labonneboite/v2/company/' + qs, 'lbb');
+  const dist = Math.min(100, Math.max(1, parseInt(params.dist || '10', 10) || 10));
+  if (!rome.length && !job) return { ok: false, error: 'critère requis (rome ou job)' };
+  if (isNaN(lat) || isNaN(lon)) return { ok: false, error: 'paramètres lat, lon requis' };
+  const qs = new URLSearchParams();
+  qs.set('latitude', String(lat));
+  qs.set('longitude', String(lon));
+  qs.set('distance', String(dist));
+  qs.set('page', '1');
+  qs.set('page_size', '100'); // max LBB v2 ; la carte en affiche jusqu'à 600 mais 100 suffisent
+  rome.forEach(function (c) { qs.append('rome', c); });
+  if (job) qs.set('job', job);
+  const r = await apiCall('/labonneboite/v2/recherche?' + qs.toString(), 'lbb');
+  if (r.status === 204) return { ok: true, companies: [], total: 0 };
   if (r.status === 403) {
-    // Abonnement LBB non provisionné (constaté le 10/10/2026) : dégradation gracieuse
+    // Abonnement non provisionné OU scope incomplet (v2 : 'search office api_labonneboitev2')
     return {
       ok: false,
       code: 'lbb_unavailable',
@@ -118,22 +145,36 @@ async function opLbb(params) {
   if (r.status !== 200) {
     return { ok: false, code: 'ft_error', status: r.status, message: 'La Bonne Boite a renvoyé HTTP ' + r.status, detail: r.text.slice(0, 300) };
   }
-  // ⚠️ Forme de la réponse non vérifiable tant que l'abonnement n'est pas actif :
-  // normalisateur tolérant, à ajuster à la vraie forme si besoin (docs/ETAT-PROJET.md).
   const j = JSON.parse(r.text);
-  const raw = Array.isArray(j) ? j : ((j && (j.companies || j.results || j.data)) || []);
+  // v2 : {hits, items:[...]} — tolérant aux variantes (companies|tableau) par prudence
+  const raw = Array.isArray(j.items) ? j.items : (Array.isArray(j.companies) ? j.companies : (Array.isArray(j) ? j : []));
   const companies = raw.map(function (c) {
+    const loc = (c && c.location) || {};
+    const siret = String(c.siret || '');
+    const potential = Number(c.hiring_potential);
+    const hcMin = intOrNull(c.headcount_min);
+    const hcMax = intOrNull(c.headcount_max);
     return {
-      siren: String(c.siren || c.siret || '').slice(0, 9),
-      name: c.name || c.nom || c.raison_sociale || c.brand || '',
-      city: c.city || c.ville || c.libelle_commune || '',
-      lat: parseFloat(c.lat || c.latitude),
-      lon: parseFloat(c.lon || c.longitude),
-      rome: c.rome_code || c.rome_codes || '',
-      hiring: c.hiring || c.recruitment || null
+      siren: String(c.siren || siret).slice(0, 9), // SIREN = 9 premiers chiffres du SIRET
+      siret: siret,
+      name: c.office_name || c.company_name || c.name || c.nom || '',
+      naf: c.naf || '',
+      nafText: c.naf_label || c.naf_text || '',
+      city: c.city || '',
+      zipcode: c.postcode || c.zipcode || '',
+      lat: Number(loc.latitude != null ? loc.latitude : c.lat),
+      lon: Number(loc.longitude != null ? loc.longitude : c.lon),
+      headcount: hcMin,
+      headcountMax: hcMax,
+      headcountText: headcountText(hcMin, hcMax),
+      // hiring_potential 0-100 → étoiles 0-5 (arrondi au dixième)
+      stars: isFinite(potential) ? Math.round(Math.min(Math.max(potential, 0), 100) / 20 * 10) / 10 : 0
     };
-  }).filter(function (c) { return c.siren && c.name; });
-  return { ok: true, companies: companies };
+  }).filter(function (c) {
+    return c.siren && c.name && isFinite(c.lat) && isFinite(c.lon) && c.lat !== 0 && c.lon !== 0;
+  });
+  const total = (j && j.hits != null) ? j.hits : companies.length;
+  return { ok: true, companies: companies, total: total };
 }
 
 async function opFiche(params) {

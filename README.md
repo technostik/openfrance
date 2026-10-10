@@ -25,7 +25,7 @@ Application web de visualisation des données ouvertes françaises (data.gouv.fr
 **Recherche étendue d'entreprises** (catégorie « Recherche étendue d'entreprises ») :
 - Décrivez un métier en texte libre : [ROMEO](https://francetravail.io) (France Travail) prédit les codes ROME correspondants ; un clic sur un métier affiche sa fiche ROME 4.0 (compétences mobilisées).
 - [La Bonne Boite](https://labonneboite.francetravail.io) (France Travail) liste les entreprises qui recrutent sur ces métiers autour d'une ville cible et d'un rayon.
-- Les résultats sont croisés avec des listes curatées (base Airtable — ex. lauréats [French Tech 2030](https://lafrenchtech.gouv.fr/fr/programme/french-tech-2030/)) : badge 🏆 sur les entreprises des listes, marqueurs verts/orange sur la carte.
+- Les résultats sont croisés avec des listes curatées (base Airtable — ex. lauréats [French Tech 2030](https://lafrenchtech.gouv.fr/fr/programme/french-tech-2030/)) : badge 🏆 sur les entreprises des listes, marqueurs verts/orange sur la carte. Potentiel d'embauche en étoiles (hiring_potential), filtre Taille (salariés min.), et **fiche détaillée complète** au clic (identité, siège, dirigeants, labels, établissements — base Sirene, API Recherche d'entreprises).
 - Ces APIs passent par des fonctions Netlify (netlify/functions/, servies sous /ft/*) : OAuth client_credentials France Travail côté serveur, secrets en variables d'environnement Netlify. Tant que l'abonnement La Bonne Boite n'est pas provisionné, le mode dégrade proprement (métiers ROME affichés, message explicite).
 
 ## Stack
