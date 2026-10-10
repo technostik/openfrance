@@ -12,9 +12,10 @@
 // ⚠️ Contraintes (vérifiées le 10/10/2026, voir docs/ETAT-PROJET.md) :
 //  - La Bonne Boite v2 : GET /partenaire/labonneboite/v2/recherche — le token doit porter
 //    le scope 'search office api_labonneboitev2' (api_labonneboitev2 seul → 403).
-//    Réponse : {hits, items:[{siret, office_name, location{latitude,longitude},
-//    headcount_min/max, hiring_potential 0–100}]}, 204 = aucun résultat.
-//    Si l'abonnement n'est pas provisionné → message + métiers ROME affichés quand même.
+//    La forme exacte des items varie : le proxy normalise de façon tolérante et renvoie
+//    count/noCoords/sample ; si 0 item reconnu alors que LBB annonce des résultats, le
+//    front affiche un lien vers /ft/ft?op=lbb_raw (réponse brute) pour diagnostiquer.
+//    Items sans coordonnées : liste + fiche détaillée OK, pas de marqueur carte.
 //  - Fiche détaillée : récupérée à la volée depuis l'API Recherche d'entreprises
 //    (q=SIREN, proxy /api/ent existant) et rendue par coOpenFiche — le modal du
 //    Composeur d'entreprises est réutilisé tel quel (identité, siège, dirigeants, labels,
@@ -34,7 +35,7 @@ var EXT = {
   radius: 10,            // km
   size: '',              // filtre local headcount_min : '' | '10' | '50' | '100'
   geo: null, geoDep: null, cities: [], centroids: null,
-  metiers: [],            // prédictions ROME en cours
+  metiers: [],            // prédictions ROME en cours (dédoublonnées par code)
   curated: null,         // cache (promesse) des listes curatées Airtable
   lastLbb: null, lastCurated: null, // dernière réponse (re-render local si filtre taille)
   seq: 0,
@@ -168,6 +169,12 @@ function extSearch() {
   extFetchJson(extUrl('romeo', { text: text })).then(function (j) {
     if (seq !== EXT.seq) return;
     EXT.metiers = (j && j.metiers) || [];
+    // Dédoublonnage local de sécurité (le proxy dédoublonne déjà côté serveur)
+    var seen = {}, uniq = [];
+    EXT.metiers.forEach(function (m) {
+      if (m && m.codeRome && !seen[m.codeRome]) { seen[m.codeRome] = 1; uniq.push(m); }
+    });
+    EXT.metiers = uniq;
     extRenderMetiers();
     if (!EXT.metiers.length) {
       status.textContent = 'Aucun métier prédit pour cette description — essayez une formulation plus générique.';
@@ -205,6 +212,13 @@ function extSearch() {
 function extRenderMetiers() {
   var box = document.getElementById('extMetiers');
   box.innerHTML = '';
+  var hint = document.createElement('div');
+  hint.className = 'muted';
+  hint.style.margin = '0 0 4px 0';
+  hint.textContent = 'Métiers détectés à partir de votre texte — codes ROME (référentiel métiers France Travail). ' +
+    'Clic sur un métier : fiche métier (compétences). Les ' + EXT_TOP_ROME +
+    ' premiers (surlignés) sont utilisés pour chercher les entreprises recrutantes :';
+  box.appendChild(hint);
   EXT.metiers.forEach(function (m, i) {
     var chip = document.createElement('span');
     chip.className = 'ext-chip' + (i < EXT_TOP_ROME ? ' ext-chip-on' : '');
@@ -217,7 +231,7 @@ function extRenderMetiers() {
 }
 function extShowFiche(m) {
   var box = document.getElementById('extFiche');
-  box.style.display = '';
+  box.style.display = 'block';
   box.innerHTML = '⏳ Fiche ROME ' + esc(m.codeRome) + '…';
   extFetchJson(extUrl('fiche', { code: m.codeRome })).then(function (j) {
     var f = (j && j.fiche) || {};
@@ -282,12 +296,14 @@ function extRenderResults(lbb, curated) {
   box.innerHTML = '';
   var all = (lbb && lbb.companies) || [];
   var total = (lbb && lbb.total != null) ? lbb.total : all.length;
+  var noCoords = (lbb && lbb.noCoords) || 0;
   var comps = all.filter(extSizePass);
   var bySiren = (curated && curated.bySiren) || {};
   var curatedCount = 0;
   comps.forEach(function (c) { if (bySiren[c.siren]) curatedCount++; });
   status.innerHTML = '📍 ' + esc(EXT.target.nom) + ' — rayon ' + EXT.radius + ' km · <b>' +
     comps.length + ' entreprise(s) recrutante(s)</b>' + (comps.length < total ? ' sur ' + total : '') +
+    (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement)' : '') +
     (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
     ' · ROME : ' + esc(EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; }).join(', '));
   extFrameZone();
@@ -319,10 +335,24 @@ function extRenderResults(lbb, curated) {
   if (!comps.length) {
     var p = document.createElement('p');
     p.className = 'muted';
-    p.textContent = total
-      ? 'Aucune entreprise ne passe le filtre Taille sur les ' + total + ' résultat(s).'
-      : 'Aucune entreprise recrutante trouvée sur ces métiers dans la zone — élargissez le rayon ou reformulez.';
-    box.appendChild(p);
+    if (EXT.size && all.length) {
+      p.textContent = 'Aucune entreprise ne passe le filtre Taille sur les ' + all.length + ' résultat(s).';
+      box.appendChild(p);
+    } else if (total > 0) {
+      // LBB annonce des résultats mais aucun item n'a été reconnu → diagnostic
+      if (lbb && lbb.sample) {
+        console.warn('[OpenFrance] LBB : ' + total + ' résultat(s) reçus, 0 reconnu — réponse brute :', lbb.sample, 'shape :', lbb.shape);
+      }
+      p.innerHTML = '⚠️ ' + total + ' résultat(s) reçus de La Bonne Boite mais aucun champ reconnu (structure de réponse inattendue). ' +
+        'Ouvrez <a href="' + extUrl('lbb_raw', {
+          rome: EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; }).join(','),
+          lat: EXT.target.latlng[0], lon: EXT.target.latlng[1], dist: EXT.radius
+        }) + '" target="_blank" rel="noopener">la réponse brute (diagnostic)</a> et transmettez son contenu.';
+      box.appendChild(p);
+    } else {
+      p.textContent = 'Aucune entreprise recrutante trouvée sur ces métiers dans la zone — élargissez le rayon ou reformulez.';
+      box.appendChild(p);
+    }
   } else if (comps.length > EXT_MAX_LIST) {
     var p2 = document.createElement('p');
     p2.className = 'muted';
@@ -330,10 +360,11 @@ function extRenderResults(lbb, curated) {
     box.appendChild(p2);
   }
   setStatus('Recherche étendue : ' + comps.length + ' entreprise(s) recrutante(s)');
-  // marqueurs (le serveur ne renvoie que des items avec coordonnées)
+  // marqueurs (uniquement les items avec coordonnées ; le reste reste dans la liste)
   if (!comps.length) return;
   EXT.markers = L.featureGroup();
   comps.slice(0, 600).forEach(function (c) {
+    if (c.lat == null || c.lon == null) return; // sans coordonnées : pas de marqueur
     var cur = bySiren[c.siren];
     var m = L.circleMarker([c.lat, c.lon], {
       radius: cur ? 7 : 5, weight: 1, color: '#0f172a',
