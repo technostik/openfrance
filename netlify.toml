@@ -150,6 +150,12 @@
 # Secrets requis (variables d'environnement Netlify, jamais dans le repo) :
 #   FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY
 # Le service worker ne met PAS /ft/* en cache (données dynamiques fraîches).
+
+# --- Recherche étendue : géocodage des villes curatées (Base Adresse Nationale) ---
+# Sert le mode « annuaire French Tech » (texte vide + case 🇫🇷) : les fiches
+# curatées n'ont qu'une ville en texte — on la convertit en centroïde communal
+# (type=municipality) pour filtrer par distance et poser des marqueurs.
+# Gratuit, sans clé ; cache disque SW automatique (/api/ 7 j).
 [[redirects]]
   from = "/ft/ft"
   to = "/.netlify/functions/ft"
@@ -159,5 +165,11 @@
 [[redirects]]
   from = "/ft/curated"
   to = "/.netlify/functions/curated"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/adr/*"
+  to = "https://api-adresse.data.gouv.fr/:splat"
   status = 200
   force = true

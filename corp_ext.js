@@ -36,6 +36,11 @@
 //    de lauréats — Next40/FT120, Green20/Agri20/DeepNum20/Health20, FT2030). Le bandeau
 //    d'état affiche toujours le total French Tech en base ; si le filtre vide la liste,
 //    #extFiche explique (total en base, 0 dans le rayon → élargir ou décocher).
+//  - Mode annuaire (texte libre VIDE + case 🇫🇷) : pas de ROMEO/LBB — affiche les fiches
+//    curatées elles-mêmes (extShowFTAround). Ville renseignée → filtrées par distance
+//    (rayon, tri croissant) ; champ ville effacé → toute la base (tri par nom, liste
+//    seule). Géocodage communal via la BAN (proxy /api/adr/, cache mémoire EXT.addrCache
+//    + disque SW) : positions approximatives (pas les sièges), fiche Sirene au clic.
 //  - Les fonctions Netlify sont servies sous /ft/* : le service worker ne les met PAS
 //    en cache (seuls /api/, /data/, /geo/ le sont) → résultats frais à chaque recherche.
 //
@@ -54,6 +59,8 @@ var EXT = {
   metiers: [],            // prédictions ROME en cours (dédoublonnées par code)
   curated: null,         // cache (promesse) des listes curatées Supabase
   lastLbb: null, lastCurated: null, // dernière réponse (re-render local si filtre taille/ROME)
+  lastFT: null,          // dernier annuaire FT affiché (texte vide + case 🇫🇷)
+  addrCache: {},         // géocodage BAN : ville -> {lat, lon} | null (mémoire vive)
   romeFilter: null,        // { codeROME: bool } — sous-filtre local par métier (null = tout coché)
   seq: 0,
   markers: null, markerBySiren: {}, circle: null, targetMk: null,
@@ -171,6 +178,170 @@ function extCurated() {
   return EXT.curated;
 }
 
+// ---------- Annuaire French Tech (texte vide + case 🇫🇷) ----------
+// Sans texte libre, pas de ROMEO ni de La Bonne Boite : on affiche les fiches
+// curatées elles-mêmes. Avec une ville cible → filtrées par distance (rayon) ;
+// champ ville effacé → toute la base (tri par nom, sans marqueurs ciblés).
+// Les fiches n'ont qu'une ville en texte : géocodage en centroïde communal via
+// la BAN (proxy /api/adr/, cache mémoire + cache disque SW). Positions
+// approximatives (commune, pas siège) — la fiche Sirene au clic donne l'exact.
+function extDistKm(a, b) {
+  var R = 6371, dLa = (b[0] - a[0]) * Math.PI / 180, dLo = (b[1] - a[1]) * Math.PI / 180;
+  var s = Math.sin(dLa / 2) * Math.sin(dLa / 2) +
+    Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) *
+    Math.sin(dLo / 2) * Math.sin(dLo / 2);
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+function extGeoVille(ville) {
+  var key = (ville || '').trim();
+  if (!key) return Promise.resolve(null);
+  if (EXT.addrCache.hasOwnProperty(key)) return Promise.resolve(EXT.addrCache[key]);
+  var p = fetch('/api/adr/search/?q=' + encodeURIComponent(key) + '&type=municipality&limit=1')
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (j) {
+      var f = (j && j.features && j.features[0]) || null;
+      var xy = (f && f.geometry && f.geometry.coordinates) || null;
+      var pt = (xy && xy.length === 2) ? { lat: xy[1], lon: xy[0] } : null;
+      EXT.addrCache[key] = pt;
+      return pt;
+    })
+    .catch(function () { EXT.addrCache[key] = null; return null; });
+  EXT.addrCache[key] = null; // valeur d'attente (requêtes simultanées partagées)
+  return p.then(function (pt) { EXT.addrCache[key] = pt; return pt; });
+}
+function extShowFTAround() {
+  var status = document.getElementById('extStatus');
+  var seq = ++EXT.seq;
+  extClearMap();
+  EXT.lastLbb = null; EXT.lastCurated = null; EXT.lastFT = null; EXT.romeFilter = null;
+  document.getElementById('extMetiers').innerHTML = '';
+  document.getElementById('extResults').innerHTML = '';
+  extInfo(null);
+  var typed = (document.getElementById('extTarget').value || '').trim();
+  if (!typed) EXT.target = null; // champ effacé → toute la base, pas de zone
+  status.textContent = '⏳ Listes curatées + géocodage des communes…';
+  return extCurated().then(function (curated) {
+    if (seq !== EXT.seq) return;
+    var recs = [];
+    var bySiren = (curated && curated.bySiren) || {};
+    for (var s in bySiren) { if (extIsFT(bySiren[s])) recs.push(bySiren[s]); }
+    var villes = {}, i;
+    for (i = 0; i < recs.length; i++) {
+      if (recs[i].ville) villes[recs[i].ville.trim()] = 1;
+    }
+    var names = Object.keys(villes);
+    // Géocodage par vagues (BAN, usage raisonnable)
+    var chain = Promise.resolve();
+    names.forEach(function (v, idx) {
+      if (idx % 20 === 0) chain = chain.then(function () { return new Promise(function (r) { setTimeout(r, 100); }); });
+      chain = chain.then(function () { return extGeoVille(v); });
+    });
+    return chain.then(function () {
+      if (seq !== EXT.seq) return;
+      var rows = [], noGeo = 0;
+      recs.forEach(function (rec) {
+        var pt = rec.ville ? EXT.addrCache[rec.ville.trim()] : null;
+        var dist = null;
+        if (EXT.target && pt) {
+          dist = extDistKm(EXT.target.latlng, [pt.lat, pt.lon]);
+          if (dist > EXT.radius) return;
+        }
+        if (EXT.target && !pt) { noGeo++; return; }
+        rows.push({ rec: rec, pt: pt, dist: dist });
+      });
+      // Sans cible : sans localisation d'abord par nom quand même (pas de tri géo)
+      rows.sort(function (a, b) {
+        if (a.dist != null && b.dist != null) return a.dist - b.dist;
+        var na = (a.rec.nom || '').toLowerCase(), nb = (b.rec.nom || '').toLowerCase();
+        return na < nb ? -1 : (na > nb ? 1 : 0);
+      });
+      EXT.lastFT = { rows: rows, noGeo: noGeo, total: recs.length };
+      extRenderFT();
+    });
+  }).catch(function (err) {
+    if (seq !== EXT.seq) return;
+    console.error('[OpenFrance] Annuaire French Tech :', err);
+    showError('Annuaire French Tech impossible.', err && err.message);
+  });
+}
+function extFTPopupHtml(row) {
+  var rec = row.rec;
+  var html = '<b>' + esc(rec.nom || rec.siren) + '</b>';
+  if (rec.ville) html += '<br>' + esc(rec.ville);
+  if (row.dist != null) html += ' <i>(' + (Math.round(row.dist * 10) / 10) + ' km)</i>';
+  html += '<br>🏆 ' + esc((rec.listes || []).join(', '));
+  if ((rec.domaines || []).length) html += '<br>' + esc(rec.domaines.join(', '));
+  html += '<br><a href="#" onclick="extOpenFiche(\'' + rec.siren + '\');return false;">📋 Fiche détaillée</a>';
+  return html;
+}
+function extRenderFT() {
+  var status = document.getElementById('extStatus');
+  var box = document.getElementById('extResults');
+  box.innerHTML = '';
+  var data = EXT.lastFT;
+  if (!data) return;
+  var rows = data.rows.slice(0, EXT_MAX_LIST);
+  if (EXT.target) {
+    status.innerHTML = '🇫🇷 <b>' + data.rows.length + ' entreprise(s) French Tech</b> autour de ' +
+      esc(EXT.target.nom) + ' — rayon ' + EXT.radius + ' km' +
+      (data.noGeo ? ' · ' + data.noGeo + ' sans commune localisable (hors carte et rayon)' : '') +
+      ' · ' + data.total + ' en base';
+  } else {
+    status.innerHTML = '🇫🇷 <b>' + data.rows.length + ' entreprise(s) French Tech</b> en base' +
+      (data.rows.length < data.total ? ' (' + data.total + ' au total)' : '') +
+      ' · sans ville cible : tri par nom (choisissez une ville pour les situer et les filtrer par rayon)';
+  }
+  extClearMap();
+  extFrameZone();
+  rows.forEach(function (row) {
+    var rec = row.rec;
+    var el = document.createElement('div');
+    el.className = 'co-row';
+    var head = document.createElement('div');
+    head.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b"></span> <b>' +
+      esc(rec.nom || rec.siren) + '</b>' +
+      (row.dist != null ? ' <span class="co-badge">📍 ' + (Math.round(row.dist * 10) / 10) + ' km</span>' : '') +
+      (rec.ville ? ' <span class="co-badge">' + esc(rec.ville) + '</span>' : '') +
+      ' <span class="co-badge ext-curated">🏆 ' + esc((rec.listes || []).join(', ')) + '</span>';
+    var sub = document.createElement('div');
+    sub.className = 'ann-obj';
+    sub.textContent = 'SIREN ' + rec.siren + ((rec.domaines || []).length ? ' · ' + rec.domaines.join(', ') : '');
+    el.appendChild(head);
+    el.appendChild(sub);
+    el.addEventListener('click', function () { extOpenFiche(rec.siren); });
+    box.appendChild(el);
+  });
+  if (data.rows.length > EXT_MAX_LIST) {
+    var p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = '+' + (data.rows.length - EXT_MAX_LIST) + ' autre(s) — affinez avec une ville et un rayon.';
+    box.appendChild(p);
+  }
+  if (!data.rows.length) {
+    extInfo('<span class="muted">🇫🇷 0 entreprise French Tech dans un rayon de ' + EXT.radius +
+      ' km autour de ' + esc(EXT.target.nom) + ' (sur ' + data.total + ' en base) — élargissez le rayon ou effacez la ville pour voir toute la base.</span>');
+    setStatus('Annuaire French Tech : 0 entreprise dans la zone');
+    return;
+  }
+  extInfo('<span class="muted">✅ ' + data.rows.length + ' entreprise(s) French Tech' +
+    (EXT.target ? ' autour de ' + esc(EXT.target.nom) + ' (' + EXT.radius + ' km)' : ' en base') +
+    (data.noGeo ? ' · ' + data.noGeo + ' sans commune localisable' : '') +
+    ' · 📍 positions = centroïdes communaux (Base Adresse Nationale), pas les sièges exacts — fiche détaillée (Sirene) au clic.</span>');
+  setStatus('Annuaire French Tech : ' + data.rows.length + ' entreprise(s)');
+  if (!EXT.target) return; // sans cible : liste seule, pas de marqueurs
+  EXT.markers = L.featureGroup();
+  rows.forEach(function (row) {
+    if (!row.pt) return;
+    var m = L.circleMarker([row.pt.lat, row.pt.lon], {
+      radius: 6, weight: 2, color: '#0f172a', fillColor: '#f59e0b', fillOpacity: 0.9
+    });
+    m.bindPopup(extFTPopupHtml(row));
+    m.addTo(EXT.markers);
+    EXT.markerBySiren[row.rec.siren] = m;
+  });
+  EXT.markers.addTo(map);
+}
+
 // ---------- Recherche ----------
 function extSearch() {
   if (!EXT.active) return;
@@ -178,12 +349,19 @@ function extSearch() {
   var seq = ++EXT.seq;
   var status = document.getElementById('extStatus');
   extClearMap();
-  EXT.lastLbb = null; EXT.lastCurated = null; EXT.romeFilter = null; // nouvelle recherche : filtres locaux réinitialisés
+  EXT.lastLbb = null; EXT.lastCurated = null; EXT.lastFT = null; EXT.romeFilter = null; // nouvelle recherche : filtres locaux réinitialisés
   document.getElementById('extMetiers').innerHTML = '';
   extInfo(null);
   document.getElementById('extResults').innerHTML = '';
   if (!text) {
-    status.textContent = 'Entrez un métier en texte libre (ex. « intelligence artificielle »).';
+    // Sans texte : pas de ROMEO/LBB possibles. Avec la case 🇫🇷 → annuaire des
+    // French Tech (ville cible = autour, champ effacé = toute la base).
+    if (document.getElementById('extFTOnly').checked) {
+      EXT.onlyFT = true;
+      extShowFTAround();
+      return;
+    }
+    status.textContent = 'Entrez un métier en texte libre (ex. « intelligence artificielle ») — ou cochez « 🇫🇷 French Tech uniquement » puis Rechercher (ville = autour, champ ville effacé = toute la base).';
     return;
   }
   if (!EXT.target) {
@@ -627,6 +805,16 @@ function extInitUI() {
   ftCb.addEventListener('change', function () {
     EXT.onlyFT = ftCb.checked;
     if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated); // re-render local
+    else if (!ftCb.checked && EXT.lastFT) {
+      // Annuaire FT affiché et case décochée → on efface la vue (plus de critère)
+      EXT.seq++;
+      EXT.lastFT = null;
+      extClearMap();
+      document.getElementById('extResults').innerHTML = '';
+      extInfo(null);
+      document.getElementById('extStatus').textContent =
+        'Entrez un métier en texte libre, choisissez une ville, puis « 🔎 Rechercher ».';
+    }
   });
 
   var tin = document.getElementById('extTarget');
@@ -666,7 +854,7 @@ function extInitUI() {
 function extSetDep(dep) {
   EXT.dep = dep;
   EXT.geo = null; EXT.target = null;
-  EXT.lastLbb = null; EXT.lastCurated = null;
+  EXT.lastLbb = null; EXT.lastCurated = null; EXT.lastFT = null;
   document.getElementById('extTarget').value = '';
   extClearMap();
   extEnsureGeo().then(function () {
