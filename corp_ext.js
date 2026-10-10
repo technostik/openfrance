@@ -404,7 +404,7 @@ function extPopupHtml(c, cur) {
   }
   if (cur && (cur.listes || []).length) html += '<br>🏆 ' + esc(cur.listes.join(', '));
   html += '<br><a href="#" onclick="extOpenFiche(\'' + c.siren + '\');return false;">📋 Fiche détaillée</a>';
-  html += ' · <a href="https://labonneboite.francetravail.fr/entreprises/siret/' + encodeURIComponent(c.siret || c.siren) + '" target="_blank" rel="noopener">La Bonne Boite</a>';
+  html += ' · <a href="https://labonneboite.francetravail.fr/entreprise/' + encodeURIComponent(c.siret || c.siren) + '" target="_blank" rel="noopener">La Bonne Boite</a>';
   return html;
 }
 function extRenderResults(lbb, curated) {
@@ -449,6 +449,7 @@ function extRenderResults(lbb, curated) {
     (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement)' : '') +
     (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
     ' · ROME : ' + esc(romesUsed.join(', ')) + retryNote + romeFilterNote;
+  extClearMap(); // re-render local (filtres) : retire les anciens marqueurs/cercle avant de reconstruire
   extFrameZone();
   // Sous-filtre par codes ROME (cases à cocher, tout coché par défaut ; re-render local)
   box.appendChild(extRomeFilterBar(filterCodes));
@@ -467,7 +468,7 @@ function extRenderResults(lbb, curated) {
       (c.headcountText ? ' <span class="co-badge">👥 ' + esc(c.headcountText) + '</span>' : '') +
       (c.city ? ' <span class="co-badge">' + esc(c.city) + '</span>' : '') +
       (c.rome ? ' <a class="co-badge" href="#" title="' + esc((extRomeLib(c.rome) ? extRomeLib(c.rome) + ' — ' : '') + 'clic : fiche métier') +
-        '" onclick="extOpenMetier(\'' + c.rome + '\');return false;">🔖 ' + esc(c.rome) + '</a>' : '') +
+        '" onclick="event.stopPropagation();extOpenMetier(\'' + c.rome + '\');return false;">🔖 ' + esc(c.rome) + '</a>' : '') +
       (cur ? ' <span class="co-badge ext-curated">🏆 ' + esc((cur.listes || []).join(', ')) + '</span>' : '');
     var sub = document.createElement('div');
     sub.className = 'ann-obj';
