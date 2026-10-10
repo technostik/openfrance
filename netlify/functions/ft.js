@@ -17,6 +17,9 @@
 //    {ok:false, code:'lbb_unavailable'} (le front dégrade proprement).
 //    Paramètres : rome répétés (rome=A&rome=B), job (texte libre), latitude/longitude/
 //    distance (]0;200[ km), page/page_size (max 100). 204 = aucun résultat.
+//    rome = 3 premiers codes ROMEO, rome_all = tous les codes (optionnel) : si le
+//    1er appel donne 0 résultat, UNE retentative automatique avec tous les codes
+//    (champ 'retried:true' + 'romes' utilisés dans la réponse).
 //  - Réponse LBB v2 : la doc officielle est inaccessible aux robots et la forme exacte des
 //    items a varié selon les sources ({hits, items:[...]}, champs office_name/location…).
 //    Le normalisateur ci-dessous est donc TOLÉRANT (plusieurs noms de champs pour la
@@ -194,16 +197,7 @@ function normalizeCompany(item) {
   };
 }
 
-async function opLbb(params, raw) {
-  // v2 : au moins un critère job|rome requis ; rome en paramètres répétés
-  const rome = String(params.rome || '').split(',').map(function (s) { return s.trim(); })
-    .filter(Boolean).slice(0, 60);
-  const job = String(params.job || '').slice(0, 100).trim();
-  const lat = parseFloat(params.lat);
-  const lon = parseFloat(params.lon);
-  const dist = Math.min(100, Math.max(1, parseInt(params.dist || '10', 10) || 10));
-  if (!rome.length && !job) return { ok: false, error: 'critère requis (rome ou job)' };
-  if (isNaN(lat) || isNaN(lon)) return { ok: false, error: 'paramètres lat, lon requis' };
+async function lbbCall(rome, job, lat, lon, dist) {
   const qs = new URLSearchParams();
   qs.set('latitude', String(lat));
   qs.set('longitude', String(lon));
@@ -216,41 +210,22 @@ async function opLbb(params, raw) {
   // refus OAuth (400 invalid_scope) → retente api_labonneboitev2 seul (mémorisé).
   const path = '/labonneboite/v2/recherche?' + qs.toString();
   const candidates = lbbScope ? [lbbScope] : LBB_SCOPES.slice();
-  let r = null;
   const refused = [];
   for (let i = 0; i < candidates.length; i++) {
     try {
-      r = await apiCall(path, 'lbb', { scope: candidates[i] });
+      const r = await apiCall(path, 'lbb', { scope: candidates[i] });
       lbbScope = candidates[i];
-      break;
+      return { r: r, path: path };
     } catch (e) {
       const msg = String((e && e.message) || e);
       refused.push(msg.slice(0, 160));
       if (!/invalid_scope|Unknown\/invalid scope/i.test(msg)) throw e; // transport : on propage
     }
   }
-  if (!r) {
-    return {
-      ok: false,
-      code: 'lbb_unavailable',
-      message: 'La Bonne Boite indisponible — token refusé pour les scopes essayés (' +
-        refused.join(' / ') + '). Abonnement à valider sur francetravail.io.'
-    };
-  }
-  // Mode diagnostic : réponse brute (tronquée)
-  if (raw) return { ok: true, status: r.status, url: path, raw: r.text.slice(0, 5000) };
-  if (r.status === 204) return { ok: true, companies: [], total: 0, count: 0 };
-  if (r.status === 403) {
-    return {
-      ok: false,
-      code: 'lbb_unavailable',
-      message: "La Bonne Boite indisponible (403 insufficient_scope — abonnement à valider sur francetravail.io)"
-    };
-  }
-  if (r.status !== 200) {
-    return { ok: false, code: 'ft_error', status: r.status, message: 'La Bonne Boite a renvoyé HTTP ' + r.status, detail: r.text.slice(0, 300) };
-  }
-  const j = JSON.parse(r.text);
+  return { unavailable: refused };
+}
+
+function lbbNormalize(j) {
   const rawItems = firstObjectArray(j) || [];
   const total = Number(
     (j && j.hits != null) ? j.hits :
@@ -273,9 +248,66 @@ async function opLbb(params, raw) {
   return out;
 }
 
+async function opLbb(params, raw) {
+  // v2 : au moins un critère job|rome requis ; rome en paramètres répétés.
+  // Le front envoie rome = 3 premiers codes ROMEO et rome_all = tous les codes
+  // prédits : si le 1er appel donne 0 résultat, on retente UNE fois avec tous
+  // les codes (les codes très spécialisés type M1889 « IA » ont souvent 0 hit
+  // alors que les codes voisins M1805/M1841 en ont des dizaines).
+  const rome = String(params.rome || '').split(',').map(function (s) { return s.trim(); })
+    .filter(Boolean).slice(0, 60);
+  const romeAll = String(params.rome_all || '').split(',').map(function (s) { return s.trim(); })
+    .filter(function (s) { return s && rome.indexOf(s) === -1; }).slice(0, 60);
+  const job = String(params.job || '').slice(0, 100).trim();
+  const lat = parseFloat(params.lat);
+  const lon = parseFloat(params.lon);
+  const dist = Math.min(100, Math.max(1, parseInt(params.dist || '10', 10) || 10));
+  if (!rome.length && !job) return { ok: false, error: 'critère requis (rome ou job)' };
+  if (isNaN(lat) || isNaN(lon)) return { ok: false, error: 'paramètres lat, lon requis' };
+  const first = await lbbCall(rome, job, lat, lon, dist);
+  if (first.unavailable) {
+    return {
+      ok: false,
+      code: 'lbb_unavailable',
+      message: 'La Bonne Boite indisponible — token refusé pour les scopes essayés (' +
+        first.unavailable.join(' / ') + '). Abonnement à valider sur francetravail.io.'
+    };
+  }
+  const r = first.r;
+  // Mode diagnostic : réponse brute (tronquée)
+  if (raw) return { ok: true, status: r.status, url: first.path, raw: r.text.slice(0, 30000) };
+  if (r.status === 403) {
+    return {
+      ok: false,
+      code: 'lbb_unavailable',
+      message: "La Bonne Boite indisponible (403 insufficient_scope — abonnement à valider sur francetravail.io)"
+    };
+  }
+  if (r.status !== 200 && r.status !== 204) {
+    return { ok: false, code: 'ft_error', status: r.status, message: 'La Bonne Boite a renvoyé HTTP ' + r.status, detail: r.text.slice(0, 300) };
+  }
+  let out = r.status === 204 ? { ok: true, companies: [], total: 0, count: 0, noCoords: 0 } : lbbNormalize(JSON.parse(r.text));
+  out.romes = rome;
+  out.retried = false;
+  // 0 résultat avec les 3 premiers codes → une seule retentative avec tous les codes ROMEO
+  if (out.total === 0 && !out.companies.length && romeAll.length) {
+    const second = await lbbCall(rome.concat(romeAll), job, lat, lon, dist);
+    if (!second.unavailable && (second.r.status === 200 || second.r.status === 204)) {
+      out = second.r.status === 204
+        ? { ok: true, companies: [], total: 0, count: 0, noCoords: 0 }
+        : lbbNormalize(JSON.parse(second.r.text));
+      out.romes = rome.concat(romeAll);
+      out.retried = true;
+    }
+  }
+  return out;
+}
+
 async function opFiche(params) {
   const code = String(params.code || '').trim().toUpperCase();
-  if (!/^[A-K]\d{4}$/.test(code)) return { ok: false, error: 'paramètre code requis (format ROME, ex. M1806)' };
+  // ROME 4.0 : codes A-Z + 4 chiffres (les prédictions ROMEO incluent des codes
+  // en M/N/… — restreindre à A-K rejetait à tort la majorité des fiches).
+  if (!/^[A-Z]\d{4}$/.test(code)) return { ok: false, error: 'paramètre code requis (format ROME, ex. M1806)' };
   const r = await apiCall('/rome-fiches-metiers/v1/fiches-rome/fiche-metier/' + encodeURIComponent(code), 'fiches');
   if (r.status !== 200) {
     return { ok: false, code: 'ft_error', status: r.status, message: 'Fiche ROME indisponible', detail: r.text.slice(0, 300) };

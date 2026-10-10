@@ -3,9 +3,10 @@
 // Principe : l'utilisateur décrit un métier en texte libre (« intelligence artificielle »),
 // choisit une ville cible et un rayon. Pipeline :
 //  1. ROMEO (France Travail, via /ft/ft?op=romeo) prédit les codes ROME du texte ;
-//  2. clic sur un métier → fiche ROME 4.0 (compétences, via /ft/ft?op=fiche) ;
-//  3. La Bonne Boite v2 (via /ft/ft?op=lbb) liste les entreprises qui recrutent sur ces
-//     codes ROME autour de la ville cible ;
+//  2. clic sur un métier → fiche ROME 4.0 (compétences) dans le MODAL partagé
+//     #coFicheDlg, avec lien « 🔗 Source » vers /ft/ft?op=fiche (données officielles) ;
+//  3. La Bonne Boite v2 (via /ft/ft?op=lbb, rome = 3 premiers codes + rome_all =
+//     tous les codes : UNE retentative automatique si 0 résultat, champ 'retried')
 //  4. croisement avec les listes curatées (Airtable via /ft/airtable, ex. French Tech
 //     2030) → badge 🏆 sur la carte et dans la liste (signal certain).
 //
@@ -16,6 +17,9 @@
 //    count/noCoords/sample ; si 0 item reconnu alors que LBB annonce des résultats, le
 //    front affiche un lien vers /ft/ft?op=lbb_raw (réponse brute) pour diagnostiquer.
 //    Items sans coordonnées : liste + fiche détaillée OK, pas de marqueur carte.
+//  - #extFiche est la ZONE D'INFORMATION du mode : elle explique toujours l'état
+//    courant (synthèse X entreprises / Y curatées / Z sans coordonnées, motif exact
+//    d'absence de résultat ou d'erreur avec lien lbb_raw conservé).
 //  - Fiche détaillée : récupérée à la volée depuis l'API Recherche d'entreprises
 //    (q=SIREN, proxy /api/ent existant) et rendue par coOpenFiche — le modal du
 //    Composeur d'entreprises est réutilisé tel quel (identité, siège, dirigeants, labels,
@@ -155,7 +159,7 @@ function extSearch() {
   extClearMap();
   EXT.lastLbb = null; EXT.lastCurated = null;
   document.getElementById('extMetiers').innerHTML = '';
-  document.getElementById('extFiche').style.display = 'none';
+  extInfo(null);
   document.getElementById('extResults').innerHTML = '';
   if (!text) {
     status.textContent = 'Entrez un métier en texte libre (ex. « intelligence artificielle »).';
@@ -184,6 +188,7 @@ function extSearch() {
     var codes = EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; });
     var lbbP = extFetchJson(extUrl('lbb', {
       rome: codes.join(','),
+      rome_all: EXT.metiers.map(function (m) { return m.codeRome; }).join(','),
       lat: EXT.target.latlng[0],
       lon: EXT.target.latlng[1],
       dist: EXT.radius
@@ -208,7 +213,18 @@ function extSearch() {
   });
 }
 
-// ---------- Rendu : métiers prédits + fiche ROME ----------
+// ---------- Zone détail / diagnostic (#extFiche) ----------
+// Cette zone explique TOUJOURS l'état courant du mode : synthèse en cas de
+// succès, motif exact en cas d'absence de résultat ou d'erreur (fiche métier,
+// fiche entreprise, structure LBB non reconnue + lien lbb_raw).
+function extInfo(html) {
+  var box = document.getElementById('extFiche');
+  if (!html) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  box.innerHTML = html;
+}
+
+// ---------- Rendu : métiers prédits + fiche ROME (modal partagé) ----------
 function extRenderMetiers() {
   var box = document.getElementById('extMetiers');
   box.innerHTML = '';
@@ -230,21 +246,37 @@ function extRenderMetiers() {
   });
 }
 function extShowFiche(m) {
-  var box = document.getElementById('extFiche');
-  box.style.display = 'block';
-  box.innerHTML = '⏳ Fiche ROME ' + esc(m.codeRome) + '…';
+  // Fiche métier ROME dans le modal partagé #coFicheDlg (clic hors popup = fermer,
+  // listeners posés dans extInitUI), avec lien vers les données source officielles.
+  document.getElementById('coFicheTitle').textContent = '📋 ' + m.libelleRome + ' (' + m.codeRome + ')';
+  document.getElementById('coFicheBody').innerHTML = '<p class="muted">⏳ Chargement de la fiche ROME…</p>';
+  document.getElementById('coFicheDlg').style.display = 'flex';
   extFetchJson(extUrl('fiche', { code: m.codeRome })).then(function (j) {
     var f = (j && j.fiche) || {};
     var lib = (f.metier && f.metier.libelle) || f.libelle || m.libelleRome;
-    var comps = [];
-    (f.groupesCompetencesMobilisees || []).forEach(function (g) {
-      (g.competences || []).forEach(function (c) { comps.push(c.libelle); });
+    var groups = f.groupesCompetencesMobilisees || f.groupesCompetences || [];
+    var html = '<p><b>' + esc(lib) + '</b> (' + esc(m.codeRome) + ')</p>';
+    if (!groups.length) {
+      html += '<p class="muted">Aucune compétence détaillée dans cette fiche.</p>';
+    }
+    groups.forEach(function (g) {
+      var glib = (g.enjeu && g.enjeu.libelle) || g.libelle || 'Compétences';
+      html += '<p><b>' + esc(glib) + '</b></p><ul>';
+      (g.competences || []).forEach(function (c) {
+        html += '<li>' + esc(c.libelle || c.code || '') + '</li>';
+      });
+      html += '</ul>';
     });
-    var html = '<b>' + esc(lib) + '</b> (' + esc(m.codeRome) + ')';
-    if (comps.length) html += '<p class="muted">Compétences : ' + esc(comps.slice(0, 12).join(' · ')) + (comps.length > 12 ? ' …' : '') + '</p>';
-    box.innerHTML = html;
-  }).catch(function () {
-    box.innerHTML = '<span class="muted">Fiche indisponible.</span>';
+    html += '<a class="co-official" href="' + extUrl('fiche', { code: m.codeRome }) +
+      '" target="_blank" rel="noopener">🔗 Source : fiche ROME (France Travail)</a>';
+    document.getElementById('coFicheBody').innerHTML = html;
+  }).catch(function (err) {
+    var raw = err && err.ft
+      ? ('Fiche métier ' + m.codeRome + ' indisponible : HTTP ' + (err.ft.status || '?') +
+         ' — ' + (err.ft.message || err.ft.error || 'erreur proxy'))
+      : ('Fiche métier ' + m.codeRome + ' indisponible : ' + (err && err.message));
+    document.getElementById('coFicheBody').innerHTML = '<p class="muted">' + esc(raw) + '</p>';
+    extInfo('<span class="muted">⚠️ ' + esc(raw) + '</span>');
   });
 }
 
@@ -263,6 +295,8 @@ function extOpenFiche(siren) {
         document.getElementById('coFicheBody').innerHTML =
           '<p class="muted">Fiche Sirene introuvable pour ce SIREN.</p>' +
           '<a class="co-official" href="https://annuaire-entreprises.data.gouv.fr/entreprise/' + encodeURIComponent(siren) + '" target="_blank" rel="noopener">🔗 Fiche officielle — annuaire-entreprises.data.gouv.fr</a>';
+        extInfo('<span class="muted">⚠️ Fiche entreprise ' + esc(siren) +
+          ' introuvable : SIREN absent de la base Sirene (API Recherche d\u2019entreprises, 0 résultat).</span>');
         return;
       }
       CO.byId[siren] = e; // réutilise le rendu complet du Composeur d'entreprises
@@ -271,6 +305,8 @@ function extOpenFiche(siren) {
     .catch(function (err) {
       document.getElementById('coFicheTitle').textContent = 'Entreprise ' + siren;
       document.getElementById('coFicheBody').innerHTML = '<p class="muted">Fiche indisponible : ' + esc(err.message) + '</p>';
+      extInfo('<span class="muted">⚠️ Fiche entreprise ' + esc(siren) +
+        ' indisponible : ' + esc(err.message) + '</span>');
     });
 }
 
@@ -301,11 +337,17 @@ function extRenderResults(lbb, curated) {
   var bySiren = (curated && curated.bySiren) || {};
   var curatedCount = 0;
   comps.forEach(function (c) { if (bySiren[c.siren]) curatedCount++; });
+  var romesUsed = (lbb && lbb.romes && lbb.romes.length)
+    ? lbb.romes
+    : EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; });
+  var retryNote = (lbb && lbb.retried)
+    ? ' · 🔁 0 résultat avec les ' + EXT_TOP_ROME + ' premiers codes → relance automatique avec les ' + romesUsed.length + ' codes ROME'
+    : '';
   status.innerHTML = '📍 ' + esc(EXT.target.nom) + ' — rayon ' + EXT.radius + ' km · <b>' +
     comps.length + ' entreprise(s) recrutante(s)</b>' + (comps.length < total ? ' sur ' + total : '') +
     (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement)' : '') +
     (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
-    ' · ROME : ' + esc(EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; }).join(', '));
+    ' · ROME : ' + esc(romesUsed.join(', ')) + retryNote;
   extFrameZone();
   // liste : les entreprises des listes curatées en premier
   var sorted = comps.slice().sort(function (a, b) {
@@ -333,31 +375,40 @@ function extRenderResults(lbb, curated) {
     box.appendChild(row);
   });
   if (!comps.length) {
-    var p = document.createElement('p');
-    p.className = 'muted';
+    // Zone détail : explique TOUJOURS pourquoi il n'y a aucun marqueur
     if (EXT.size && all.length) {
-      p.textContent = 'Aucune entreprise ne passe le filtre Taille sur les ' + all.length + ' résultat(s).';
-      box.appendChild(p);
+      extInfo('<span class="muted">Aucune entreprise ne passe le filtre Taille sur les ' +
+        all.length + ' résultat(s) — 0 marqueur sur la carte pour cette raison.</span>');
     } else if (total > 0) {
       // LBB annonce des résultats mais aucun item n'a été reconnu → diagnostic
       if (lbb && lbb.sample) {
         console.warn('[OpenFrance] LBB : ' + total + ' résultat(s) reçus, 0 reconnu — réponse brute :', lbb.sample, 'shape :', lbb.shape);
       }
-      p.innerHTML = '⚠️ ' + total + ' résultat(s) reçus de La Bonne Boite mais aucun champ reconnu (structure de réponse inattendue). ' +
+      extInfo('<span class="muted">⚠️ ' + total + ' résultat(s) reçus de La Bonne Boite mais aucun champ reconnu ' +
+        '(structure de réponse inattendue) — 0 marqueur sur la carte. ' +
         'Ouvrez <a href="' + extUrl('lbb_raw', {
-          rome: EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; }).join(','),
+          rome: romesUsed.join(','),
           lat: EXT.target.latlng[0], lon: EXT.target.latlng[1], dist: EXT.radius
-        }) + '" target="_blank" rel="noopener">la réponse brute (diagnostic)</a> et transmettez son contenu.';
-      box.appendChild(p);
+        }) + '" target="_blank" rel="noopener">la réponse brute (diagnostic)</a> et transmettez son contenu.</span>');
     } else {
-      p.textContent = 'Aucune entreprise recrutante trouvée sur ces métiers dans la zone — élargissez le rayon ou reformulez.';
-      box.appendChild(p);
+      extInfo('<span class="muted">0 marqueur sur la carte : La Bonne Boite ne signale aucune entreprise ' +
+        'recrutante sur ces métiers (' + esc(romesUsed.join(', ')) + ') dans un rayon de ' + EXT.radius +
+        ' km autour de ' + esc(EXT.target.nom) + (retryNote ? ' (relance avec tous les codes incluse)' : '') +
+        ' — élargissez le rayon ou reformulez le métier.</span>');
     }
-  } else if (comps.length > EXT_MAX_LIST) {
-    var p2 = document.createElement('p');
-    p2.className = 'muted';
-    p2.textContent = '+' + (comps.length - EXT_MAX_LIST) + ' autre(s) résultat(s) non affiché(s) — élargissez le rayon pour voir les marqueurs.';
-    box.appendChild(p2);
+  } else {
+    // Succès : synthèse dans la zone détail
+    extInfo('<span class="muted">✅ ' + comps.length + ' entreprise(s) recrutante(s)' +
+      (comps.length < total ? ' affichée(s) sur ' + total : '') +
+      (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
+      (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement, pas de marqueur)' : '') +
+      (retryNote ? ' · 🔁 trouvées grâce à la relance avec tous les codes ROME' : '') + '.</span>');
+    if (comps.length > EXT_MAX_LIST) {
+      var p2 = document.createElement('p');
+      p2.className = 'muted';
+      p2.textContent = '+' + (comps.length - EXT_MAX_LIST) + ' autre(s) résultat(s) non affiché(s) — élargissez le rayon pour voir les marqueurs.';
+      box.appendChild(p2);
+    }
   }
   setStatus('Recherche étendue : ' + comps.length + ' entreprise(s) recrutante(s)');
   // marqueurs (uniquement les items avec coordonnées ; le reste reste dans la liste)
@@ -442,6 +493,7 @@ function extInitUI() {
   });
 
   var txt = document.getElementById('extText');
+  if (!txt.value.trim()) txt.value = 'intelligence artificielle'; // valeur par défaut à l'entrée du mode
   txt.addEventListener('keydown', function (ev) {
     if (ev.key === 'Enter') { ev.preventDefault(); extSearch(); }
   });
