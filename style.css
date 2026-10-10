@@ -102,7 +102,7 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 #coControls input:disabled { opacity: .45; }
 #coTargetWrap { position: relative; }
 #coTarget { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 8px 12px; font-size: .95rem; min-width: 220px; }
-#coControls .co-check { flex-direction: row; align-items: center; gap: 8px; color: #e2e8f0; font-size: .85rem; align-self: center; }
+#coControls .co-check, #extControls .co-check { flex-direction: row; align-items: center; gap: 8px; color: #e2e8f0; font-size: .85rem; align-self: center; }
 #coLabels { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .co-labchip { display: inline-flex; align-items: center; gap: 5px; background: #334155; border-radius: 6px; padding: 6px 10px; font-size: .78rem; color: #e2e8f0; cursor: pointer; flex-direction: row; }
 .co-labchip:hover { background: #3e4c63; }

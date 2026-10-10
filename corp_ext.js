@@ -30,6 +30,11 @@
 //    Composeur d'entreprises est réutilisé tel quel (identité, siège, dirigeants, labels,
 //    établissements, lien officiel annuaire-entreprises.data.gouv.fr).
 //  - Filtre « Taille » : appliqué LOCALEMENT (headcount_min de la réponse LBB).
+//  - Critère « 🇫🇷 French Tech uniquement » (case #extFTOnly) : filtre LOCAL sur le
+//    croisement SIREN (listes curatées contenant 'French Tech', base alimentée par
+//    tools/import-frenchtech.mjs depuis le fichier Salesdorado). Le bandeau d'état
+//    affiche toujours le total French Tech en base ; si le filtre vide la liste,
+//    #extFiche explique (total en base, 0 dans le rayon → élargir ou décocher).
 //  - Les fonctions Netlify sont servies sous /ft/* : le service worker ne les met PAS
 //    en cache (seuls /api/, /data/, /geo/ le sont) → résultats frais à chaque recherche.
 //
@@ -43,6 +48,7 @@ var EXT = {
   target: null,          // { code, nom, latlng } — ville cible
   radius: 10,            // km
   size: '',              // filtre local headcount_min : '' | '10' | '50' | '100'
+  onlyFT: false,         // filtre local « French Tech uniquement » (case #extFTOnly)
   geo: null, geoDep: null, cities: [], centroids: null,
   metiers: [],            // prédictions ROME en cours (dédoublonnées par code)
   curated: null,         // cache (promesse) des listes curatées Supabase
@@ -55,6 +61,12 @@ var EXT = {
 
 var EXT_TOP_ROME = 3;      // codes ROME transmis à La Bonne Boite
 var EXT_MAX_LIST = 300;   // lignes affichées dans la liste
+var EXT_FT_LABEL = 'French Tech'; // label du critère French Tech dans les listes curatées
+
+// Une fiche curatée est « French Tech » si son champ listes contient le label.
+function extIsFT(rec) {
+  return !!(rec && rec.listes && rec.listes.indexOf(EXT_FT_LABEL) !== -1);
+}
 
 // ---------- Utilitaires ----------
 function extUrl(op, params) {
@@ -146,10 +158,12 @@ function extCurated() {
       return r.json();
     }).then(function (j) {
       var bySiren = {};
+      var ftCount = 0;
       ((j && j.records) || []).forEach(function (rec) {
         if (rec.siren) bySiren[rec.siren] = rec;
+        if (extIsFT(rec)) ftCount++;
       });
-      return { bySiren: bySiren, count: ((j && j.records) || []).length };
+      return { bySiren: bySiren, count: ((j && j.records) || []).length, ftCount: ftCount };
     });
     EXT.curated.catch(function () { EXT.curated = null; }); // réessayé à la prochaine recherche
   }
@@ -444,12 +458,19 @@ function extRenderResults(lbb, curated) {
     else if (EXT.romeFilter[code] === undefined) EXT.romeFilter[code] = true;
   });
   var comps = sized.filter(extRomePass);
+  var bySiren = (curated && curated.bySiren) || {};
+  var ftTotal = (curated && curated.ftCount != null) ? curated.ftCount : 0;
+  // Critère « French Tech uniquement » : filtre LOCAL sur le croisement SIREN
+  // (même mécanique que le badge 🏆) — aucun nouvel appel API.
+  var preFT = comps;
+  if (EXT.onlyFT) {
+    comps = comps.filter(function (c) { return extIsFT(bySiren[c.siren]); });
+  }
   var checkedCount = 0;
   filterCodes.forEach(function (code) { if (EXT.romeFilter[code] !== false) checkedCount++; });
   var romeFilterNote = (checkedCount < filterCodes.length)
     ? ' · 🔖 filtre ROME : ' + checkedCount + '/' + filterCodes.length + ' codes'
     : '';
-  var bySiren = (curated && curated.bySiren) || {};
   var curatedCount = 0;
   comps.forEach(function (c) { if (bySiren[c.siren]) curatedCount++; });
   var retryNote = (lbb && lbb.retried)
@@ -459,6 +480,8 @@ function extRenderResults(lbb, curated) {
     comps.length + ' entreprise(s) recrutante(s)</b>' + (comps.length < total ? ' sur ' + total : '') +
     (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement)' : '') +
     (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
+    (curated ? ' · 🇫🇷 ' + ftTotal + ' French Tech en base' : '') +
+    (EXT.onlyFT ? ' · <b>filtre 🇫🇷 French Tech actif</b>' : '') +
     ' · ROME : ' + esc(romesUsed.join(', ')) + retryNote + romeFilterNote;
   extClearMap(); // re-render local (filtres) : retire les anciens marqueurs/cercle avant de reconstruire
   extFrameZone();
@@ -493,7 +516,14 @@ function extRenderResults(lbb, curated) {
   });
   if (!comps.length) {
     // Zone détail : explique TOUJOURS pourquoi il n'y a aucun marqueur
-    if (EXT.size && all.length) {
+    if (EXT.onlyFT && !curated) {
+      extInfo('<span class="muted">🇫🇷 Filtre « French Tech uniquement » actif mais listes curatées ' +
+        'indisponibles (erreur réseau) — 0 marqueur sur la carte pour cette raison. Décochez la case pour voir tous les résultats.</span>');
+    } else if (EXT.onlyFT && preFT.length) {
+      extInfo('<span class="muted">🇫🇷 ' + ftTotal + ' entreprise(s) French Tech dans la base, ' +
+        '0 dans ce rayon sur ces métiers (' + esc(romesUsed.join(', ')) + ') — élargissez le rayon ou décochez ' +
+        '« French Tech uniquement » pour voir les ' + preFT.length + ' entreprise(s) recrutante(s).</span>');
+    } else if (EXT.size && all.length) {
       extInfo('<span class="muted">Aucune entreprise ne passe le filtre Taille sur les ' +
         all.length + ' résultat(s) — 0 marqueur sur la carte pour cette raison.</span>');
     } else if (total > 0) {
@@ -511,7 +541,8 @@ function extRenderResults(lbb, curated) {
       extInfo('<span class="muted">0 marqueur sur la carte : La Bonne Boite ne signale aucune entreprise ' +
         'recrutante sur ces métiers (' + esc(romesUsed.join(', ')) + ') dans un rayon de ' + EXT.radius +
         ' km autour de ' + esc(EXT.target.nom) + (retryNote ? ' (relance avec tous les codes incluse)' : '') +
-        ' — élargissez le rayon ou reformulez le métier.</span>');
+        ' — élargissez le rayon' + (EXT.onlyFT ? ', décochez « French Tech uniquement »' : '') +
+        ' ou reformulez le métier.</span>');
     }
   } else {
     // Succès : synthèse dans la zone détail
@@ -588,6 +619,12 @@ function extInitUI() {
   var sizeSel = document.getElementById('extSize');
   sizeSel.addEventListener('change', function () {
     EXT.size = sizeSel.value;
+    if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated); // re-render local
+  });
+
+  var ftCb = document.getElementById('extFTOnly');
+  ftCb.addEventListener('change', function () {
+    EXT.onlyFT = ftCb.checked;
     if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated); // re-render local
   });
 

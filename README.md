@@ -26,6 +26,7 @@ Application web de visualisation des données ouvertes françaises (data.gouv.fr
 - Décrivez un métier en texte libre : [ROMEO](https://francetravail.io) (France Travail) prédit les codes ROME correspondants ; un clic sur un métier affiche sa fiche ROME 4.0 (compétences mobilisées).
 - [La Bonne Boite](https://labonneboite.francetravail.io) (France Travail) liste les entreprises qui recrutent sur ces métiers autour d'une ville cible et d'un rayon.
 - Les résultats sont croisés avec des listes curatées (table Supabase public.entreprises — ex. lauréats [French Tech 2030](https://lafrenchtech.gouv.fr/fr/programme/french-tech-2030/)) : badge 🏆 sur les entreprises des listes, marqueurs verts/orange sur la carte. Potentiel d'embauche en étoiles (hiring_potential), filtre Taille (salariés min.), et **fiche détaillée complète** au clic (identité, siège, dirigeants, labels, établissements — base Sirene, API Recherche d'entreprises).
+- Critère « 🇫🇷 French Tech uniquement » (case à cocher) : vrai filtre de recherche local sur le croisement SIREN avec les ~5 000 entreprises French Tech du fichier [Salesdorado](https://salesdorado.com/fichiers-prospection/frenchtech/) (importées en base via `node tools/import-frenchtech.mjs --apply`, voir README/doc). Le bandeau d'état affiche le total French Tech en base ; si le filtre vide la zone, un message explicite propose d'élargir le rayon ou de décocher (jamais de liste vide muette).
 - Ces APIs passent par des fonctions Netlify (netlify/functions/, servies sous /ft/*) : OAuth client_credentials France Travail côté serveur, secrets en variables d'environnement Netlify. Tant que l'abonnement La Bonne Boite n'est pas provisionné, le mode dégrade proprement (métiers ROME affichés, message explicite).
 
 ## Stack
@@ -37,6 +38,8 @@ Site statique sans build : HTML + CSS + JS, [Leaflet](https://leafletjs.com) + f
 `netlify dev` sert le site avec les redirections `/api/*` actives (nécessaire pour l'annuaire : associations, nomenclature, entreprises — et pour le composeur d'entreprises : `/api/ent`).
 
 Pour la recherche étendue, les fonctions Netlify et les redirections /ft/* sont actives avec « netlify dev » ; les secrets vont dans .env local (gitignoré) : FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY — et dans l'interface Netlify pour la production.
+
+Import French Tech (listes curatées) : téléchargez le fichier depuis https://salesdorado.com/fichiers-prospection/frenchtech/ (export Google Sheet → convertir en CSV UTF-8), déposez-le en /tmp/frenchtech.csv, puis (dry-run par défaut, écriture avec --apply) : `node tools/import-frenchtech.mjs --apply`. Le script normalise les SIREN (9 chiffres), fusionne avec l'existant (union des listes + label « French Tech », site_web/LinkedIn conservé) et upserte via l'API REST Supabase (secrets en env, jamais dans le repo).
 
 ## Déploiement
 
