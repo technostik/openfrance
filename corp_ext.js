@@ -14,6 +14,10 @@
 // ROME (cases à cocher, tout coché par défaut). Marqueurs colorés par potentiel
 // d'embauche (dégradé colorFor de app.js : rouge = faible → vert = fort ; les
 // entreprises curatées gardent une bordure orange épaisse).
+// Marqueurs exactement co-localisés (annuaire FT : plusieurs entreprises d'une
+// même commune partagent le centroïde ; LBB : établissements aux mêmes
+// coordonnées) écartés en spirale autour du point réel, à l'échelle du zoom
+// courant (repositionnés à chaque zoomend).
 //
 // ⚠️ Contraintes (vérifiées le 10/10/2026, voir docs/ETAT-PROJET.md) :
 //  - La Bonne Boite v2 : GET /partenaire/labonneboite/v2/recherche — le token doit porter
@@ -326,19 +330,25 @@ function extRenderFT() {
   extInfo('<span class="muted">✅ ' + data.rows.length + ' entreprise(s) French Tech' +
     (EXT.target ? ' autour de ' + esc(EXT.target.nom) + ' (' + EXT.radius + ' km)' : ' en base') +
     (data.noGeo ? ' · ' + data.noGeo + ' sans commune localisable' : '') +
-    ' · 📍 positions = centroïdes communaux (Base Adresse Nationale), pas les sièges exacts — fiche détaillée (Sirene) au clic.</span>');
+    ' · 📍 positions = centroïdes communaux (Base Adresse Nationale), pas les sièges exacts — fiche détaillée (Sirene) au clic.' +
+    (EXT.target ? extStackNote(rows.filter(function (r) { return !!r.pt; })
+      .map(function (r) { return [r.pt.lat, r.pt.lon]; })) : '') + '</span>');
   setStatus('Annuaire French Tech : ' + data.rows.length + ' entreprise(s)');
   if (!EXT.target) return; // sans cible : liste seule, pas de marqueurs
   EXT.markers = L.featureGroup();
+  var spreadItems = [];
   rows.forEach(function (row) {
     if (!row.pt) return;
-    var m = L.circleMarker([row.pt.lat, row.pt.lon], {
+    var base = [row.pt.lat, row.pt.lon];
+    var m = L.circleMarker(base, {
       radius: 6, weight: 2, color: '#0f172a', fillColor: '#f59e0b', fillOpacity: 0.9
     });
     m.bindPopup(extFTPopupHtml(row));
     m.addTo(EXT.markers);
     EXT.markerBySiren[row.rec.siren] = m;
+    spreadItems.push({ m: m, base: base });
   });
+  extSpreadApply(spreadItems); // même commune = même centroïde : écarte les marqueurs superposés
   EXT.markers.addTo(map);
 }
 
@@ -645,6 +655,9 @@ function extRenderResults(lbb, curated) {
   if (EXT.onlyFT) {
     comps = comps.filter(function (c) { return extIsFT(bySiren[c.siren]); });
   }
+  // Note d'étalement : groupes de marqueurs qui partageront le même point
+  var noteStack = extStackNote(comps.filter(function (c) { return c.lat != null && c.lon != null; })
+    .map(function (c) { return [c.lat, c.lon]; }));
   var checkedCount = 0;
   filterCodes.forEach(function (code) { if (EXT.romeFilter[code] !== false) checkedCount++; });
   var romeFilterNote = (checkedCount < filterCodes.length)
@@ -730,7 +743,7 @@ function extRenderResults(lbb, curated) {
       (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
       (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement, pas de marqueur)' : '') +
       (retryNote ? ' · 🔁 trouvées grâce à la relance avec tous les codes ROME' : '') +
-      ' · 🎨 couleur des marqueurs : potentiel d\u2019embauche (rouge = faible → vert = fort).</span>');
+      ' · 🎨 couleur des marqueurs : potentiel d\u2019embauche (rouge = faible → vert = fort).' + noteStack + '</span>');
     if (comps.length > EXT_MAX_LIST) {
       var p2 = document.createElement('p');
       p2.className = 'muted';
@@ -742,18 +755,85 @@ function extRenderResults(lbb, curated) {
   // marqueurs (uniquement les items avec coordonnées ; le reste reste dans la liste)
   if (!comps.length) return;
   EXT.markers = L.featureGroup();
+  var spreadItems = [];
   comps.slice(0, 600).forEach(function (c) {
     if (c.lat == null || c.lon == null) return; // sans coordonnées : pas de marqueur
     var cur = bySiren[c.siren];
-    var m = L.circleMarker([c.lat, c.lon], {
+    var base = [c.lat, c.lon];
+    var m = L.circleMarker(base, {
       radius: cur ? 7 : 5, weight: cur ? 2 : 1, color: cur ? '#f59e0b' : '#0f172a',
       fillColor: extScoreColor(c), fillOpacity: 0.85
     });
     m.bindPopup(extPopupHtml(c, cur));
     m.addTo(EXT.markers);
     EXT.markerBySiren[c.siren] = m;
+    spreadItems.push({ m: m, base: base });
   });
+  extSpreadApply(spreadItems); // coordonnées identiques : écarte les marqueurs superposés
   EXT.markers.addTo(map);
+}
+
+// ---------- Étalement des marqueurs co-localisés ----------
+// Plusieurs résultats peuvent tomber EXACTEMENT au même point : l'annuaire
+// French Tech place tous les marqueurs d'une commune sur son centroïde (BAN) —
+// ex. 11 entreprises toulousaines = 11 cercles parfaitement superposés, donc
+// 1 seul point visible (et seul le dernier ajouté est cliquable) — et La Bonne
+// Boite peut renvoyer plusieurs établissements aux mêmes coordonnées. On écarte
+// chaque groupe de marqueurs co-localisés en spirale (angle d'or) autour du
+// point réel, avec un pas proportionnel au zoom courant ; les positions sont
+// recalculées à chaque zoomend pour rester compactes à toutes les échelles.
+var EXT_SPREAD = { items: [], onZoom: null };
+function extMetersPerPixel(lat, zoom) {
+  // Résolution au sol des tuiles Web Mercator 256 px à la latitude donnée
+  return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+}
+function extPxToLatLng(base, dx, dy) {
+  var mpp = extMetersPerPixel(base[0], map.getZoom());
+  return [
+    base[0] - (dy * mpp) / 111320, // écran : dy vers le bas = vers le sud
+    base[1] + (dx * mpp) / (111320 * Math.cos(base[0] * Math.PI / 180))
+  ];
+}
+// items : [{ m: marker Leaflet, base: [lat, lon] réel }] — co-localisés si base
+// identiques à 4 décimales (~11 m). Un marqueur isolé garde sa position exacte.
+function extSpreadApply(items) {
+  var groups = {};
+  items.forEach(function (it) {
+    var key = it.base[0].toFixed(4) + ',' + it.base[1].toFixed(4);
+    (groups[key] = groups[key] || []).push(it);
+  });
+  for (var k in groups) {
+    var g = groups[k];
+    if (g.length === 1) continue;
+    for (var i = 0; i < g.length; i++) {
+      var r = 16 * Math.sqrt(i + 0.5); // px : marqueurs radius 5-7 → espacés sans se toucher
+      var a = i * 2.399963229728653; // angle d'or : répartition homogène sans alignement
+      g[i].dx = r * Math.cos(a);
+      g[i].dy = r * Math.sin(a);
+      g[i].m.setLatLng(extPxToLatLng(g[i].base, g[i].dx, g[i].dy));
+    }
+  }
+  EXT_SPREAD.items = items;
+  if (!EXT_SPREAD.onZoom) {
+    EXT_SPREAD.onZoom = function () { // zoom changé → pas en mètres recalculé
+      EXT_SPREAD.items.forEach(function (it) {
+        if (it.dx != null) it.m.setLatLng(extPxToLatLng(it.base, it.dx, it.dy));
+      });
+    };
+    map.on('zoomend', EXT_SPREAD.onZoom);
+  }
+}
+function extSpreadClear() { EXT_SPREAD.items = []; }
+// Note de transparence pour la zone détail : combien de groupes co-localisés ?
+function extStackNote(pairs) {
+  if (!pairs || !pairs.length) return '';
+  var groups = {}, stacked = 0;
+  pairs.forEach(function (p) {
+    var key = p[0].toFixed(4) + ',' + p[1].toFixed(4);
+    groups[key] = (groups[key] || 0) + 1;
+  });
+  for (var k in groups) if (groups[k] > 1) stacked++;
+  return stacked ? ' · 📍 ' + stacked + ' groupe(s) de marqueurs co-localisés écartés en spirale autour de la position réelle' : '';
 }
 
 // ---------- Carte ----------
@@ -771,6 +851,7 @@ function extFrameZone() {
   map.fitBounds(EXT.circle.getBounds(), { padding: [30, 30] });
 }
 function extClearMap() {
+  extSpreadClear(); // les marqueurs retirés n'ont plus d'offset à recalculer
   if (EXT.markers) { map.removeLayer(EXT.markers); EXT.markers = null; }
   EXT.markerBySiren = {};
   if (EXT.circle) { map.removeLayer(EXT.circle); EXT.circle = null; }
