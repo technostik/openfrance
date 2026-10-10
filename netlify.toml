@@ -173,3 +173,12 @@
   to = "https://api-adresse.data.gouv.fr/:splat"
   status = 200
   force = true
+
+# --- Favoris : recherche email/site web (fonction Netlify email.js, branche get_email) ---
+# Secrets optionnels : TAVILY_API_KEY (decouverte du site web), PROSPECTOR_TIER (quota
+# prospector-mcp, free = 50 verifications/jour). Le service worker ne met PAS /ft/* en cache.
+[[redirects]]
+  from = "/ft/email"
+  to = "/.netlify/functions/email"
+  status = 200
+  force = true

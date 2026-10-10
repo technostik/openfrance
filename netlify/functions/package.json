@@ -1,0 +1,8 @@
+{
+  "name": "openfrance-functions",
+  "private": true,
+  "description": "Dependances des fonctions Netlify OpenFrance. prospector-mcp : moteur de verification d'emails (MCP, MIT, tier gratuit 50/jour) utilise par email.js — moteur opt-in cote front, degrade proprement si absent. Supprimer cette dependance si le build Netlify echoue : la fonction email.js renverra 'prospector-mcp non installe'.",
+  "dependencies": {
+    "prospector-mcp": "^1.0.0"
+  }
+}
