@@ -15,6 +15,8 @@ app.js          — Logique générale (registre d'indicateurs, parsers CSV, req
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
 score31.js      — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (branche de test `score31`)
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
+corp_ext.js     — Mode Recherche étendue : ROMEO → ROME 4.0 → La Bonne Boite → croisement listes curatées Airtable (branche de test corp_ext)
+netlify/functions/ft.js, airtable.js — Fonctions Netlify : proxy France Travail (OAuth + cache token + throttle) et listes curatées Airtable
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
 netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises, /api/ent
 ```
@@ -66,6 +68,15 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - **Carte** : cercle du rayon (mode near), marqueurs par **établissement dans la zone** (`matching_etablissements`, fallback siège hors mode near), popup avec lien « Fiche détaillée » (`coOpenFiche`).
 - **Fiche détaillée** (modal `#coFicheDlg`) : identité (SIREN, NAF, création, catégorie, effectifs), siège (adresse + coordonnées cliquables → zoom), état administratif + labels en chips, dirigeants, établissements dans la zone (cliquables), lien officiel `annuaire-entreprises.data.gouv.fr/entreprise/<siren>`.
 
+### corp_ext.js — mode « Recherche étendue d'entreprises » (branche de test corp_ext)
+- **Pipeline** : texte libre métier → **ROMEO v2** (prédiction des codes ROME, POST /romeo/v2/predictionMetiers) → fiche **ROME 4.0** au clic sur un métier (/rome-fiches-metiers/v1/fiches-rome/fiche-metier/<code>) → **La Bonne Boite v2** (/labonneboite/v2/company/?rome_codes=…&latitude=…&longitude=…&distance=…) : entreprises recrutantes autour de la ville cible → croisement avec les **listes curatées Airtable** (ex. French Tech 2030, 80 lauréats, 72 SIREN résolus) → badge 🏆 + marqueurs verts (recrutantes) / orange (curatées).
+- **Fonctions Netlify** (netlify/functions/, servies sous /ft/* via redirects netlify.toml) :
+  - ft.js : proxy France Travail. OAuth client_credentials (FT_CLIENT_ID/FT_CLIENT_SECRET), **cache de token par scope** (TTL expires_in−60 s, par instance chaude), **throttle par famille** (ROME 1,1 s ; LBB 550 ms ; ROMEO 350 ms — file séquentielle). Paramètre op : romeo (texte→codes ROME), lbb (entreprises recrutantes), fiche (fiche métier). Erreurs applicatives en HTTP 200 {ok:false} pour les distinguer des erreurs transport.
+  - airtable.js : lit la table Entreprises de la base appWwsqEdveecO3gJ (PAT scope data.records:read), cache 1 h par instance. Champs utilisés : Nom, SIREN, Listes, Domaines, Ville, Site web.
+- **Dégradation gracieuse** : LBB non abonné → {ok:false, code:'lbb_unavailable'} → message + métiers ROME affichés quand même (le mode ne casse pas, s'activera seul dès provisionnement).
+- **Auto-câblage** comme corp.js : listener propre sur #categorySelect (extEnter/extLeave), aucune modification d'app.js. Réutilise esc/normTxt/annCentroids (annuaire.js), coDepLabel (corp.js), classes .co-row/.co-badge/.ann-obj/.sc-drop + .ext-* (style.css).
+- **Service worker** : /ft/* hors TTL → jamais mis en cache (données dynamiques fraîches) ; pas de bump de CACHE_NAME nécessaire (le SW ne cache pas les .js).
+
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
 - **IndexedDB** (`openfrance-annuaire`, store `assos`) : clés `assos-<dep>` ({v, date, rows}), `nomen` ({child}), `ent-<dep|terms|section>` (résultats de recherche entreprises) — **persistant entre sessions**
@@ -107,6 +118,10 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 ### Composeur d'entreprises
 - API Recherche d'entreprises (DINUM) : `https://recherche-entreprises.api.gouv.fr` via le proxy `/api/ent/*` (redirect `netlify.toml`). Deux endpoints : `/search` (filtres complets côté serveur, fonctionne sans `q`) et `/near_point` (lat/long/rayon km, seuls les filtres d'activité y passent — le reste filtré localement, voir architecture). Gratuit, sans clé ; cache disque SW `/api/` 7 j. Sources officielles : registre SIRENE + RNE (dirigeants).
 
+### Recherche étendue (corp_ext)
+- **France Travail** (francetravail.io, OAuth client_credentials via la fonction Netlify ft.js) : ROMEO v2 (texte→codes ROME), ROME 4.0 fiches métiers (compétences), La Bonne Boite v2 (entreprises recrutantes par zone — abonnement en cours de validation côté portail le 10/10/2026 : 403 insufficient_scope entre-temps, dégradation gracieuse).
+- **Listes curatées** : base Airtable personnelle (AIRTABLE_BASE_ID, table Entreprises tblYNSodXZlbygKN4 — ex. French Tech 2030 promotion 2025, source lafrenchtech.gouv.fr) via la fonction airtable.js. Seuls les signaux certains y sont stockés (~80 enregistrements, loin de la limite free de 1 000/base) ; jamais les résultats de recherche.
+
 ## 🐛 Bugs résolus / pièges connus (NE PAS RÉGRESSER)
 
 1. Parser CSV naïf → années NaN → maintenant regex robuste
@@ -122,6 +137,9 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 11. Échelle choroplèthe écrasée par les outliers (commune de 3 hab à 666 ‰) → bornes **P5–P95** avec saturation + mention dans la légende
 12. Connector GitHub : `get_file_contents` exige `ref: "refs/heads/work"` (PAS `branch`) ; `read_file` retourne un objet `{content, was_truncated…}` — **toujours** vérifier `was_truncated === false` avant un push (sinon fichier corrompu, incident réparé en 471da2d)
 13. **Pièges API Recherche d'entreprises** (vérifiés empiriquement) : `per_page` max 25 (100 → 0 résultat silencieux) ; `activite_principale` n'accepte **pas** de jokers (`62*` invalide) ; `nature_juridique` = valeur unique ; sur `/near_point` : `q` interdit + filtres non-activité ignorés silencieusement → d'où le filtrage local de corp.js en mode near.
+14. **Pièges France Travail** (vérifiés empiriquement le 10/10/2026 via tools/verify-ft.mjs + diagnostic dédié) : fiches ROME → chemin /rome-fiches-metiers/v1/fiches-rome/fiche-metier/<code> (segment /fiches-rome/ obligatoire, sinon 404 ; scope sans nomenclatureRome → 403) ; base sans numéro de version → 401 « TypeAuth invalide » + header errorcause: type_auth_invalide ; scope non souscrit → 400 invalid_scope (signature d'un abonnement absent — idem tous les scopes api_test* : le bac à sable n'est PAS souscrit sur cette app) ; LBB → 403 insufficient_scope tant que l'abonnement n'est pas provisionné (action portail francetravail.io, pas code) ; 429 après ~7 appels référentiels ROME à ~1/s → throttle 1,1 s dans ft.js.
+15. **Forme de la réponse LBB inconnue** : tant que l'abonnement LBB n'est pas actif, la forme exacte de /labonneboite/v2/company/ ne peut pas être vérifiée — ft.js (opLbb) normalise toléramment (companies|results|data|tableau, coordonnées optionnelles) ; à ajuster à la vraie forme dès l'ouverture.
+16. **Fonctions Netlify** : secrets uniquement en variables d'environnement (FT_CLIENT_ID, FT_CLIENT_SECRET, AIRTABLE_API_KEY, AIRTABLE_BASE_ID) — jamais dans le repo ; les erreurs applicatives arrivent en HTTP 200 {ok:false} pour rester distinguables des erreurs transport (502/500).
 
 ## 🚀 Deploys & workflow
 
@@ -129,6 +147,7 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - **Workflow** : travailler sur une branche dédiée (`work`), tester en local avec `netlify dev`, merger vers `main` seulement quand stable = 1 seul deploy
 - Branche de test **`score31`** (fork de `work`) : fonctionnalité « Composeur de critères » (généralisation du score perso). Tester en local (`netlify dev`, les proxys `/api/loyers/` y sont actifs), merger vers `work`/`main` ou abandonner librement.
 - Branche de test **`corp_search`** (fork de `work`) : fonctionnalité « Composeur d'entreprises » (corp.js). Tester en local (`netlify dev`, le proxy `/api/ent/` y est actif), merger vers `work`/`main` ou abandonner librement.
+- Branche de test **corp_ext** (fork de work) : fonctionnalité « Recherche étendue d'entreprises » (corp_ext.js + netlify/functions/). Variables d'env Netlify requises (mêmes contextes que FT_CLIENT_ID existant) : FT_CLIENT_ID, FT_CLIENT_SECRET, AIRTABLE_API_KEY, AIRTABLE_BASE_ID. Test local : clés dans .env puis netlify dev (fonctions + redirects /ft/* actifs).
 - Migration Vercel envisagée (100 deploys/jour) : traduire `netlify.toml` → `vercel.json` (rewrites), rien d'autre à changer
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 

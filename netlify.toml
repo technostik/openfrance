@@ -143,3 +143,21 @@
   to = "https://recherche-entreprises.api.gouv.fr/:splat"
   status = 200
   force = true
+
+# --- Recherche étendue d'entreprises (corp_ext.js) : fonctions Netlify ---
+# Proxys vers les APIs France Travail (ROMEO, ROME 4.0, La Bonne Boite — OAuth
+# client_credentials côté serveur) et Airtable (listes curatées).
+# Secrets requis (variables d'environnement Netlify, jamais dans le repo) :
+#   FT_CLIENT_ID, FT_CLIENT_SECRET, AIRTABLE_API_KEY, AIRTABLE_BASE_ID
+# Le service worker ne met PAS /ft/* en cache (données dynamiques fraîches).
+[[redirects]]
+  from = "/ft/ft"
+  to = "/.netlify/functions/ft"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/ft/airtable"
+  to = "/.netlify/functions/airtable"
+  status = 200
+  force = true

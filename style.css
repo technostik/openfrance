@@ -135,3 +135,20 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 .co-etab:hover { background: #3e4c63; }
 .co-official { display: inline-block; margin-top: 12px; background: #1d4ed8; color: #fff; border-radius: 6px; padding: 8px 12px; font-size: .82rem; text-decoration: none; }
 .co-official:hover { background: #2563eb; }
+
+/* --- Recherche étendue (France Travail : ROMEO, ROME 4.0, La Bonne Boite + Airtable) --- */
+#extControls { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+#extControls label { display: flex; flex-direction: column; font-size: .8rem; color: #94a3b8; gap: 4px; }
+#extControls select, #extControls input[type="text"] { min-width: 200px; }
+#extTargetWrap { position: relative; }
+#extTarget { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 8px 12px; font-size: .95rem; min-width: 220px; }
+#extSearchBtn { background: #1d4ed8; color: white; border: none; border-radius: 6px; padding: 10px 14px; font-size: .9rem; cursor: pointer; align-self: center; }
+#extSearchBtn:hover { background: #2563eb; }
+#extStatus { font-size: .8rem; color: #94a3b8; min-height: 1em; }
+#extMetiers { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.ext-chip { display: inline-flex; align-items: center; gap: 5px; background: #334155; border: 1px solid #475569; border-radius: 6px; padding: 6px 10px; font-size: .78rem; color: #e2e8f0; cursor: pointer; }
+.ext-chip:hover { background: #3e4c63; }
+.ext-chip-on { border-color: #2563eb; }
+#extFiche { background: #334155; border-radius: 6px; padding: 8px 10px; font-size: .8rem; margin: 6px 0; }
+#extResults { margin-top: 8px; }
+.ext-curated { color: #fbbf24; border-color: #b45309; }

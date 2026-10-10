@@ -4,3 +4,6 @@
 
 # Rapport de vérification API France Travail (généré en local, jamais commité)
 tools/ft-report.json
+
+# Rapport de diagnostic France Travail (généré en local par tools/ft-diagnostic.mjs, jamais commité)
+tools/ft-diagnostic.json

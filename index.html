@@ -29,6 +29,7 @@
       <option value="annuaire">Associations & entreprises</option>
       <option value="score31">Composeur de critères</option>
       <option value="corp">Composeur d'entreprises</option>
+      <option value="corp_ext">Recherche étendue d'entreprises</option>
     </select>
   </label>
   <label id="indicatorLabel">Indicateur
@@ -119,6 +120,29 @@
     </label>
     <div id="coLabels"></div>
   </div>
+  <div id="extControls" style="display:none">
+    <label>Département
+      <select id="extDep"></select>
+    </label>
+    <label id="extTargetWrap">Ville cible
+      <input id="extTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="extTargetDrop" class="sc-drop"></div>
+    </label>
+    <label>Rayon
+      <select id="extRadius" title="Zone de recherche autour de la ville cible">
+        <option value="2">2 km</option>
+        <option value="5">5 km</option>
+        <option value="10">10 km</option>
+        <option value="20">20 km</option>
+        <option value="30">30 km</option>
+        <option value="50">50 km</option>
+      </select>
+    </label>
+    <label>Métier (texte libre)
+      <input id="extText" type="text" placeholder="ex. intelligence artificielle">
+    </label>
+    <button id="extSearchBtn" type="button" title="Lancer la recherche étendue">🔎 Rechercher</button>
+  </div>
   <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
   <span id="status">⏳ Chargement des données…</span>
 </section>
@@ -148,8 +172,15 @@
       <div id="coResults"></div>
       <button id="coMore" type="button" hidden>＋ Charger plus</button>
     </div>
+    <div id="extPanel" style="display:none">
+      <h2>Recherche étendue</h2>
+      <p id="extStatus" class="muted"></p>
+      <div id="extMetiers"></div>
+      <div id="extFiche" style="display:none"></div>
+      <div id="extResults"></div>
+    </div>
     <p class="hint">💡 Cliquez sur un département pour voir ses communes (sauf sièges de députés, au niveau circonscription).</p>
-    <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF, RNA (associations), API Recherche d'entreprises (DINUM)</p>
+    <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF, RNA (associations), API Recherche d'entreprises (DINUM), France Travail (ROMEO, ROME 4.0, La Bonne Boite), listes curatées Airtable</p>
   </aside>
 </main>
 
@@ -181,6 +212,7 @@
 <script src="annuaire.js"></script>
 <script src="score31.js"></script>
 <script src="corp.js"></script>
+<script src="corp_ext.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
