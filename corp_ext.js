@@ -9,6 +9,11 @@
 //     tous les codes : UNE retentative automatique si 0 résultat, champ 'retried')
 //  4. croisement avec les listes curatées (Airtable via /ft/airtable, ex. French Tech
 //     2030) → badge 🏆 sur la carte et dans la liste (signal certain).
+// Chaque entreprise LBB porte le code ROME ayant matché (champ 'rome') : badge 🔖
+// cliquable (liste + popup) vers la fiche métier, et sous-filtre local par codes
+// ROME (cases à cocher, tout coché par défaut). Marqueurs colorés par potentiel
+// d'embauche (dégradé colorFor de app.js : rouge = faible → vert = fort ; les
+// entreprises curatées gardent une bordure orange épaisse).
 //
 // ⚠️ Contraintes (vérifiées le 10/10/2026, voir docs/ETAT-PROJET.md) :
 //  - La Bonne Boite v2 : GET /partenaire/labonneboite/v2/recherche — le token doit porter
@@ -41,7 +46,8 @@ var EXT = {
   geo: null, geoDep: null, cities: [], centroids: null,
   metiers: [],            // prédictions ROME en cours (dédoublonnées par code)
   curated: null,         // cache (promesse) des listes curatées Airtable
-  lastLbb: null, lastCurated: null, // dernière réponse (re-render local si filtre taille)
+  lastLbb: null, lastCurated: null, // dernière réponse (re-render local si filtre taille/ROME)
+  romeFilter: null,        // { codeROME: bool } — sous-filtre local par métier (null = tout coché)
   seq: 0,
   markers: null, markerBySiren: {}, circle: null, targetMk: null,
   uiReady: false
@@ -157,7 +163,7 @@ function extSearch() {
   var seq = ++EXT.seq;
   var status = document.getElementById('extStatus');
   extClearMap();
-  EXT.lastLbb = null; EXT.lastCurated = null;
+  EXT.lastLbb = null; EXT.lastCurated = null; EXT.romeFilter = null; // nouvelle recherche : filtres locaux réinitialisés
   document.getElementById('extMetiers').innerHTML = '';
   extInfo(null);
   document.getElementById('extResults').innerHTML = '';
@@ -315,12 +321,87 @@ function extSizePass(c) {
   if (!EXT.size) return true;
   return c.headcount != null && c.headcount >= parseInt(EXT.size, 10);
 }
+function extRomePass(c) {
+  if (!EXT.romeFilter) return true;
+  if (!c.rome) return true; // ROME inconnu : on garde (non attribuable)
+  return EXT.romeFilter[c.rome] !== false;
+}
+function extRomeLib(code) {
+  var lib = '';
+  (EXT.metiers || []).forEach(function (m) { if (m.codeRome === code) lib = m.libelleRome; });
+  return lib;
+}
+// Fiche métier depuis un code ROME (lien entreprise → métier) : libellé retrouvé
+// dans les prédictions ROMEO quand il y est, sinon le code seul.
+function extOpenMetier(code) {
+  extShowFiche({ codeRome: code, libelleRome: extRomeLib(code) || code });
+}
+// Barre de sous-filtre par codes ROME (re-render local, sans nouvel appel API)
+function extRomeFilterBar(filterCodes) {
+  var bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:6px 0;';
+  var title = document.createElement('span');
+  title.className = 'muted';
+  title.textContent = '🔖 Métiers (ROME) :';
+  bar.appendChild(title);
+  filterCodes.forEach(function (code) {
+    var lab = document.createElement('label');
+    lab.style.cssText = 'font-size:.78rem;color:#e2e8f0;cursor:pointer;white-space:nowrap;';
+    lab.title = extRomeLib(code) || code;
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = EXT.romeFilter[code] !== false;
+    cb.addEventListener('change', function () {
+      EXT.romeFilter[code] = cb.checked;
+      if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated);
+    });
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(' ' + code));
+    bar.appendChild(lab);
+  });
+  var all = document.createElement('a');
+  all.href = '#';
+  all.className = 'muted';
+  all.textContent = 'Tout';
+  all.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    filterCodes.forEach(function (code) { EXT.romeFilter[code] = true; });
+    if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated);
+  });
+  var none = document.createElement('a');
+  none.href = '#';
+  none.className = 'muted';
+  none.textContent = 'Rien';
+  none.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    filterCodes.forEach(function (code) { EXT.romeFilter[code] = false; });
+    if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated);
+  });
+  var sep = document.createElement('span');
+  sep.className = 'muted';
+  sep.textContent = '·';
+  bar.appendChild(all);
+  bar.appendChild(sep);
+  bar.appendChild(none);
+  return bar;
+}
+// Couleur d'un marqueur selon le potentiel d'embauche : vert (fort) → rouge
+// (faible), via le dégradé global colorFor de app.js (0 = vert, 1 = rouge).
+function extScoreColor(c) {
+  var s = (c && c.score != null) ? c.score : ((c && c.stars != null) ? c.stars / 5 : 0);
+  if (typeof colorFor === 'function') return colorFor(1 - s);
+  return s >= 0.66 ? '#22c55e' : (s >= 0.33 ? '#eab308' : '#ef4444');
+}
 function extPopupHtml(c, cur) {
   var html = '<b>' + esc(c.name || c.siren) + '</b>';
   if (c.city) html += '<br>' + esc(c.city) + (c.zipcode ? ' (' + esc(c.zipcode) + ')' : '');
   html += '<br><i>⭐ ' + c.stars + '/5 — potentiel d\'embauche' +
     (c.headcountText ? ' · 👥 ' + esc(c.headcountText) : '') + '</i>';
   if (c.nafText) html += '<br>' + esc(c.nafText);
+  if (c.rome) {
+    html += '<br>🔖 ROME ' + esc(c.rome) +
+      ' — <a href="#" onclick="extOpenMetier(\'' + c.rome + '\');return false;">Fiche métier</a>';
+  }
   if (cur && (cur.listes || []).length) html += '<br>🏆 ' + esc(cur.listes.join(', '));
   html += '<br><a href="#" onclick="extOpenFiche(\'' + c.siren + '\');return false;">📋 Fiche détaillée</a>';
   html += ' · <a href="https://labonneboite.francetravail.fr/entreprises/siret/' + encodeURIComponent(c.siret || c.siren) + '" target="_blank" rel="noopener">La Bonne Boite</a>';
@@ -334,12 +415,32 @@ function extRenderResults(lbb, curated) {
   var total = (lbb && lbb.total != null) ? lbb.total : all.length;
   var noCoords = (lbb && lbb.noCoords) || 0;
   var comps = all.filter(extSizePass);
-  var bySiren = (curated && curated.bySiren) || {};
-  var curatedCount = 0;
-  comps.forEach(function (c) { if (bySiren[c.siren]) curatedCount++; });
   var romesUsed = (lbb && lbb.romes && lbb.romes.length)
     ? lbb.romes
     : EXT.metiers.slice(0, EXT_TOP_ROME).map(function (m) { return m.codeRome; });
+  // Sous-filtre ROME : par défaut tout est coché (init à la 1re présentation des résultats)
+  if (!EXT.romeFilter) {
+    EXT.romeFilter = {};
+    romesUsed.forEach(function (code) { EXT.romeFilter[code] = true; });
+  }
+  // Codes proposés en cases à cocher : romes utilisés + éventuels codes rapportés
+  // par les entreprises mais hors liste (toujours affichés par défaut)
+  var filterCodes = romesUsed.slice();
+  all.forEach(function (c) {
+    if (c.rome && filterCodes.indexOf(c.rome) === -1) {
+      filterCodes.push(c.rome);
+      if (EXT.romeFilter[c.rome] === undefined) EXT.romeFilter[c.rome] = true;
+    }
+  });
+  comps = comps.filter(extRomePass);
+  var checkedCount = 0;
+  filterCodes.forEach(function (code) { if (EXT.romeFilter[code] !== false) checkedCount++; });
+  var romeFilterNote = (checkedCount < filterCodes.length)
+    ? ' · 🔖 filtre ROME : ' + checkedCount + '/' + filterCodes.length + ' codes'
+    : '';
+  var bySiren = (curated && curated.bySiren) || {};
+  var curatedCount = 0;
+  comps.forEach(function (c) { if (bySiren[c.siren]) curatedCount++; });
   var retryNote = (lbb && lbb.retried)
     ? ' · 🔁 0 résultat avec les ' + EXT_TOP_ROME + ' premiers codes → relance automatique avec les ' + romesUsed.length + ' codes ROME'
     : '';
@@ -347,8 +448,10 @@ function extRenderResults(lbb, curated) {
     comps.length + ' entreprise(s) recrutante(s)</b>' + (comps.length < total ? ' sur ' + total : '') +
     (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement)' : '') +
     (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
-    ' · ROME : ' + esc(romesUsed.join(', ')) + retryNote;
+    ' · ROME : ' + esc(romesUsed.join(', ')) + retryNote + romeFilterNote;
   extFrameZone();
+  // Sous-filtre par codes ROME (cases à cocher, tout coché par défaut ; re-render local)
+  box.appendChild(extRomeFilterBar(filterCodes));
   // liste : les entreprises des listes curatées en premier
   var sorted = comps.slice().sort(function (a, b) {
     return (bySiren[b.siren] ? 1 : 0) - (bySiren[a.siren] ? 1 : 0);
@@ -363,6 +466,8 @@ function extRenderResults(lbb, curated) {
       ' <span class="co-badge" title="Potentiel d\'embauche (La Bonne Boite)">⭐ ' + c.stars + '</span>' +
       (c.headcountText ? ' <span class="co-badge">👥 ' + esc(c.headcountText) + '</span>' : '') +
       (c.city ? ' <span class="co-badge">' + esc(c.city) + '</span>' : '') +
+      (c.rome ? ' <a class="co-badge" href="#" title="' + esc((extRomeLib(c.rome) ? extRomeLib(c.rome) + ' — ' : '') + 'clic : fiche métier') +
+        '" onclick="extOpenMetier(\'' + c.rome + '\');return false;">🔖 ' + esc(c.rome) + '</a>' : '') +
       (cur ? ' <span class="co-badge ext-curated">🏆 ' + esc((cur.listes || []).join(', ')) + '</span>' : '');
     var sub = document.createElement('div');
     sub.className = 'ann-obj';
@@ -402,7 +507,8 @@ function extRenderResults(lbb, curated) {
       (comps.length < total ? ' affichée(s) sur ' + total : '') +
       (curatedCount ? ' · 🏆 ' + curatedCount + ' dans les listes curatées' : '') +
       (noCoords ? ' · ' + noCoords + ' sans coordonnées GPS (liste et fiche seulement, pas de marqueur)' : '') +
-      (retryNote ? ' · 🔁 trouvées grâce à la relance avec tous les codes ROME' : '') + '.</span>');
+      (retryNote ? ' · 🔁 trouvées grâce à la relance avec tous les codes ROME' : '') +
+      ' · 🎨 couleur des marqueurs : potentiel d\u2019embauche (rouge = faible → vert = fort).</span>');
     if (comps.length > EXT_MAX_LIST) {
       var p2 = document.createElement('p');
       p2.className = 'muted';
@@ -418,8 +524,8 @@ function extRenderResults(lbb, curated) {
     if (c.lat == null || c.lon == null) return; // sans coordonnées : pas de marqueur
     var cur = bySiren[c.siren];
     var m = L.circleMarker([c.lat, c.lon], {
-      radius: cur ? 7 : 5, weight: 1, color: '#0f172a',
-      fillColor: cur ? '#f59e0b' : '#22c55e', fillOpacity: 0.85
+      radius: cur ? 7 : 5, weight: cur ? 2 : 1, color: cur ? '#f59e0b' : '#0f172a',
+      fillColor: extScoreColor(c), fillOpacity: 0.85
     });
     m.bindPopup(extPopupHtml(c, cur));
     m.addTo(EXT.markers);

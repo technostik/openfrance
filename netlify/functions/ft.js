@@ -177,9 +177,13 @@ function normalizeCompany(item) {
   let lon = toNum(loc.longitude != null ? loc.longitude : (loc.lon != null ? loc.lon : loc.lng));
   if (lon == null) lon = toNum(c.longitude != null ? c.longitude : (c.lon != null ? c.lon : c.lng));
   if (lon == null && typeof c.location === 'string') lon = toNum(c.location.split(',')[1]);
-  const potential = Number(c.hiring_potential);
+  const potential = Number(c.hiring_potential != null ? c.hiring_potential : (c.potential != null ? c.potential : c.score_potentiel));
   const hcMin = intOrNull(c.headcount_min);
   const hcMax = intOrNull(c.headcount_max);
+  // Code ROME ayant matché l'entreprise côté LBB (v2 : champ 'rome' par item) —
+  // sert au sous-filtre local par métier et au lien vers la fiche ROME.
+  const romeRaw = String(c.rome || c.codeRome || c.code_rome || c.rome_code || '').trim().toUpperCase();
+  const score01 = isFinite(potential) ? Math.min(Math.max(potential, 0), 100) / 100 : 0;
   return {
     siren: siren,
     siret: siret,
@@ -192,8 +196,10 @@ function normalizeCompany(item) {
     headcount: hcMin,
     headcountMax: hcMax,
     headcountText: headcountText(hcMin, hcMax),
+    rome: /^[A-Z]\d{4}$/.test(romeRaw) ? romeRaw : '',
+    score: Math.round(score01 * 1000) / 1000, // potentiel 0-1 (couleur marqueur : 0 rouge → 1 vert)
     // hiring_potential 0-100 → étoiles 0-5 (arrondi au dixième)
-    stars: isFinite(potential) ? Math.round(Math.min(Math.max(potential, 0), 100) / 20 * 10) / 10 : 0
+    stars: Math.round(score01 * 5 * 10) / 10
   };
 }
 
