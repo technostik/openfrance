@@ -9,8 +9,13 @@
 // dans le repo). Chemins/scopes vérifiés empiriquement le 10/10/2026 (docs/ETAT-PROJET.md) :
 //  - ROME fiches : /partenaire/rome-fiches-metiers/v1/fiches-rome/fiche-metier/<code>
 //    (segment /fiches-rome/ obligatoire — sinon 404 ; scope sans nomenclatureRome → 403)
-//  - LBB v2 : GET /partenaire/labonneboite/v2/recherche — le token doit porter le scope
-//    'search office api_labonneboitev2' (api_labonneboitev2 SEUL → 403 insufficient_scope).
+//  - LBB v2 : GET /partenaire/labonneboite/v2/recherche — le token doit idéalement porter
+//    le scope 'search office api_labonneboitev2' (api_labonneboitev2 SEUL → 403
+//    insufficient_scope selon l'implémentation de référence testée en prod). MAIS si les
+//    scopes 'search'/'office' ne sont pas souscrits sur le portail, le serveur OAuth refuse
+//    le scope combiné (400 invalid_scope) → repli automatique sur 'api_labonneboitev2'
+//    seul, mémorisé pour les appels suivants. Aucun token émissible → {ok:false,
+//    code:'lbb_unavailable'} : le front dégrade proprement (métiers ROME affichés).
 //    Paramètres : rome répétés (rome=A&rome=B, pas de rome_codes), job (texte libre),
 //    latitude/longitude/distance (]0;200[ km), page/page_size (max 100, LBB plafonne à 100).
 //    Réponse : {hits, items:[{siret, office_name, company_name, naf, naf_label,
@@ -27,6 +32,9 @@ const SCOPES = {
   fiches: 'api_rome-fiches-metiersv1 nomenclatureRome',
   lbb: 'search office api_labonneboitev2'
 };
+// Candidats de scope LBB, essayés dans l'ordre (repli si le combiné est refusé par l'OAuth).
+const LBB_SCOPES = ['search office api_labonneboitev2', 'api_labonneboitev2'];
+let lbbScope = null; // scope qui a produit un token (mémorisé)
 
 // Cache de tokens par scope (par instance chaude de fonction) — expires_in ~ 25 min
 const TOKENS = {};
@@ -72,7 +80,7 @@ function waitTurn(family) {
 
 async function apiCall(path, family, opts) {
   await waitTurn(family);
-  const token = await getToken(SCOPES[family]);
+  const token = await getToken((opts && opts.scope) || SCOPES[family]);
   const init = { method: (opts && opts.method) || 'GET', headers: { Authorization: 'Bearer ' + token } };
   if (opts && opts.payload) {
     init.headers['Content-Type'] = 'application/json';
@@ -132,10 +140,35 @@ async function opLbb(params) {
   qs.set('page_size', '100'); // max LBB v2 ; la carte en affiche jusqu'à 600 mais 100 suffisent
   rome.forEach(function (c) { qs.append('rome', c); });
   if (job) qs.set('job', job);
-  const r = await apiCall('/labonneboite/v2/recherche?' + qs.toString(), 'lbb');
+  // Appel avec repli de scope : le combiné 'search office api_labonneboitev2' d'abord ;
+  // s'il est refusé par l'OAuth (400 invalid_scope), on retente api_labonneboitev2 seul.
+  // Un refus de scope n'est PAS une erreur transport : il devient lbb_unavailable.
+  const path = '/labonneboite/v2/recherche?' + qs.toString();
+  const candidates = lbbScope ? [lbbScope] : LBB_SCOPES.slice();
+  let r = null;
+  const refused = [];
+  for (let i = 0; i < candidates.length; i++) {
+    try {
+      r = await apiCall(path, 'lbb', { scope: candidates[i] });
+      lbbScope = candidates[i]; // token émis : on mémorise ce scope pour les appels suivants
+      break;
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      refused.push(msg.slice(0, 160));
+      if (!/invalid_scope|Unknown\/invalid scope/i.test(msg)) throw e; // transport : on propage
+    }
+  }
+  if (!r) {
+    return {
+      ok: false,
+      code: 'lbb_unavailable',
+      message: 'La Bonne Boite indisponible — token refusé pour les scopes essayés (' +
+        refused.join(' / ') + '). Abonnement à valider sur francetravail.io.'
+    };
+  }
   if (r.status === 204) return { ok: true, companies: [], total: 0 };
   if (r.status === 403) {
-    // Abonnement non provisionné OU scope incomplet (v2 : 'search office api_labonneboitev2')
+    // Abonnement non provisionné OU scope incomplet pour cette passerelle
     return {
       ok: false,
       code: 'lbb_unavailable',
