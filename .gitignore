@@ -7,3 +7,6 @@ tools/ft-report.json
 
 # Rapport de diagnostic France Travail (généré en local par tools/ft-diagnostic.mjs, jamais commité)
 tools/ft-diagnostic.json
+
+# Sorties locales des scripts tools/* (collectes, résolutions SIREN — jamais commitées)
+tools/*.json

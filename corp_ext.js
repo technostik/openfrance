@@ -32,8 +32,9 @@
 //  - Filtre « Taille » : appliqué LOCALEMENT (headcount_min de la réponse LBB).
 //  - Critère « 🇫🇷 French Tech uniquement » (case #extFTOnly) : filtre LOCAL sur le
 //    croisement SIREN (listes curatées contenant 'French Tech', base alimentée par
-//    tools/import-frenchtech.mjs depuis le fichier Salesdorado). Le bandeau d'état
-//    affiche toujours le total French Tech en base ; si le filtre vide la liste,
+//    tools/collect-numeum.mjs + tools/resolve-sirens.mjs depuis les listes officielles
+//    de lauréats — Next40/FT120, Green20/Agri20/DeepNum20/Health20, FT2030). Le bandeau
+//    d'état affiche toujours le total French Tech en base ; si le filtre vide la liste,
 //    #extFiche explique (total en base, 0 dans le rayon → élargir ou décocher).
 //  - Les fonctions Netlify sont servies sous /ft/* : le service worker ne les met PAS
 //    en cache (seuls /api/, /data/, /geo/ le sont) → résultats frais à chaque recherche.
