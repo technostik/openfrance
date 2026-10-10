@@ -136,7 +136,7 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 .co-official { display: inline-block; margin-top: 12px; background: #1d4ed8; color: #fff; border-radius: 6px; padding: 8px 12px; font-size: .82rem; text-decoration: none; }
 .co-official:hover { background: #2563eb; }
 
-/* --- Recherche étendue (France Travail : ROMEO, ROME 4.0, La Bonne Boite + Airtable) --- */
+/* --- Recherche étendue (France Travail : ROMEO, ROME 4.0, La Bonne Boite + Supabase) --- */
 #extControls { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
 #extControls label { display: flex; flex-direction: column; font-size: .8rem; color: #94a3b8; gap: 4px; }
 #extControls select, #extControls input[type="text"] { min-width: 200px; }

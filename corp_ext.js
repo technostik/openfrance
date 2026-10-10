@@ -7,7 +7,7 @@
 //     #coFicheDlg, avec lien « 🔗 Source » vers /ft/ft?op=fiche (données officielles) ;
 //  3. La Bonne Boite v2 (via /ft/ft?op=lbb, rome = 3 premiers codes + rome_all =
 //     tous les codes : UNE retentative automatique si 0 résultat, champ 'retried')
-//  4. croisement avec les listes curatées (Airtable via /ft/airtable, ex. French Tech
+//  4. croisement avec les listes curatées (Supabase via /ft/curated, ex. French Tech
 //     2030) → badge 🏆 sur la carte et dans la liste (signal certain).
 // Chaque entreprise LBB porte le code ROME ayant matché (champ 'rome') : badge 🔖
 // cliquable (liste + popup) vers la fiche métier, et sous-filtre local par codes
@@ -45,7 +45,7 @@ var EXT = {
   size: '',              // filtre local headcount_min : '' | '10' | '50' | '100'
   geo: null, geoDep: null, cities: [], centroids: null,
   metiers: [],            // prédictions ROME en cours (dédoublonnées par code)
-  curated: null,         // cache (promesse) des listes curatées Airtable
+  curated: null,         // cache (promesse) des listes curatées Supabase
   lastLbb: null, lastCurated: null, // dernière réponse (re-render local si filtre taille/ROME)
   romeFilter: null,        // { codeROME: bool } — sous-filtre local par métier (null = tout coché)
   seq: 0,
@@ -138,11 +138,11 @@ function extSetTarget(code, nom) {
   extFrameZone(); // feedback immédiat : cercle de la zone sur la carte
 }
 
-// ---------- Listes curatées (Airtable, via fonction Netlify) ----------
+// ---------- Listes curatées (Supabase, via fonction Netlify) ----------
 function extCurated() {
   if (!EXT.curated) {
-    EXT.curated = fetch('/ft/airtable').then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status + ' sur /ft/airtable');
+    EXT.curated = fetch('/ft/curated').then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' sur /ft/curated');
       return r.json();
     }).then(function (j) {
       var bySiren = {};

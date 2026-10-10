@@ -146,9 +146,9 @@
 
 # --- Recherche étendue d'entreprises (corp_ext.js) : fonctions Netlify ---
 # Proxys vers les APIs France Travail (ROMEO, ROME 4.0, La Bonne Boite — OAuth
-# client_credentials côté serveur) et Airtable (listes curatées).
+# client_credentials côté serveur) et Supabase (listes curatées d'entreprises, table public.entreprises — API REST, clé anonyme).
 # Secrets requis (variables d'environnement Netlify, jamais dans le repo) :
-#   FT_CLIENT_ID, FT_CLIENT_SECRET, AIRTABLE_API_KEY, AIRTABLE_BASE_ID
+#   FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY
 # Le service worker ne met PAS /ft/* en cache (données dynamiques fraîches).
 [[redirects]]
   from = "/ft/ft"
@@ -157,7 +157,7 @@
   force = true
 
 [[redirects]]
-  from = "/ft/airtable"
-  to = "/.netlify/functions/airtable"
+  from = "/ft/curated"
+  to = "/.netlify/functions/curated"
   status = 200
   force = true

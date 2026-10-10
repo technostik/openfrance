@@ -37,3 +37,4 @@ Si l'information existe déjà ailleurs dans le repo (URLs dans `netlify.toml`, 
 - API tabulaire : `page_size` max 200, **ne pas suivre `links.next`** (hors proxy → 404)
 - Les fichiers statiques data.gouv ne sont PAS lisibles par certains outils d'agents → utiliser l'API tabulaire (`tabular-api.data.gouv.fr/api/resources/<id>/data/`) pour explorer les colonnes
 - GeoJSON communes : `raw.githubusercontent.com`, pas le site github.io (mort)
+- Connector GitHub (MCP) : le contenu texte retourné par get_file_contents peut revenir altéré (double encodage UTF-8) selon le canal d'affichage — vérifier le SHA ou la cohérence du contenu avant de réécrire un fichier existant
