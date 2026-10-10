@@ -155,6 +155,7 @@
     <button id="extSearchBtn" type="button" title="Lancer la recherche étendue">🔎 Rechercher</button>
   </div>
   <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
+  <button id="favBtn" type="button" title="Favoris : entités suivies + recherche email/site web">⭐ Favoris</button>
   <span id="status">⏳ Chargement des données…</span>
 </section>
 <p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département).</p>
@@ -207,6 +208,26 @@
   </div>
 </div>
 
+<!-- Favoris et contacts (tous modes) -->
+<div id="favDlg" style="display:none">
+  <div class="cache-card">
+    <div class="cache-head">
+      <b>⭐ Favoris et contacts</b>
+      <button id="favClose" type="button" title="Fermer">✕</button>
+    </div>
+    <p class="muted">Ajoutez en favori des villes, associations et entreprises (étoile ☆ dans les listes, popups et fiches ; étoile de ville cible ; champ ci-dessous), puis cherchez leur email et site web avec les moteurs cochés. Résultats conservés localement (IndexedDB) ; « 🔎 » par favori ou « Chercher tout » pour la file complète.</p>
+    <div id="favEngines" class="fav-engines"></div>
+    <label id="favCityWrap">Ajouter une ville
+      <input id="favCity" type="text" placeholder="Commencez à taper un nom de commune…" autocomplete="off">
+      <div id="favCityDrop" class="sc-drop"></div>
+    </label>
+    <div id="favList"></div>
+    <div class="cache-actions" style="margin-top:10px">
+      <button id="favAllBtn" class="cache-btn" type="button">🔎 Chercher tout (emails manquants)</button>
+    </div>
+  </div>
+</div>
+
 <!-- Fiche entreprise (composeur d'entreprises) -->
 <div id="coFicheDlg" style="display:none">
   <div class="co-fiche">
@@ -224,6 +245,7 @@
 <script src="score31.js"></script>
 <script src="corp.js"></script>
 <script src="corp_ext.js"></script>
+<script src="favoris.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {

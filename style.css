@@ -152,3 +152,21 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 #extFiche { background: #334155; border-radius: 6px; padding: 8px 10px; font-size: .8rem; margin: 6px 0; }
 #extResults { margin-top: 8px; }
 .ext-curated { color: #fbbf24; border-color: #b45309; }
+
+/* --- Favoris et contacts (branche get_email) --- */
+#favBtn { background: #1d4ed8; color: white; border: none; border-radius: 6px; padding: 10px 14px; font-size: .95rem; cursor: pointer; align-self: center; }
+#favBtn:hover { background: #2563eb; }
+#favDlg { position: fixed; inset: 0; background: rgba(15,23,42,.7); display: flex; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
+#favClose { background: #334155; color: #e2e8f0; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: .9rem; }
+#favClose:hover { background: #475569; }
+.fav-star { cursor: pointer; font-size: .95rem; margin-left: 6px; display: inline-block; }
+.fav-star:hover { transform: scale(1.25); }
+.fav-city { position: absolute; right: 6px; bottom: 6px; cursor: pointer; font-size: 1rem; z-index: 10; background: none; border: none; padding: 2px; }
+.fav-engines { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.fav-engines label { display: flex; flex-direction: row; align-items: center; gap: 6px; background: #334155; border-radius: 6px; padding: 6px 10px; font-size: .78rem; color: #e2e8f0; cursor: pointer; }
+#favCityWrap { position: relative; display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: #94a3b8; margin: 10px 0; }
+#favCity { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 8px 12px; font-size: .95rem; }
+#favList { margin-top: 8px; }
+.fav-sub { color: #94a3b8; font-size: .72rem; margin-top: 2px; }
+.fav-status { font-size: .75rem; margin-top: 3px; line-height: 1.35; word-break: break-all; }
+.fav-status a { color: #93c5fd; }
