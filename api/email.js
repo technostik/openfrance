@@ -458,6 +458,23 @@ async function engDdg(ent, budgetMs) {
   return out;
 }
 
+// Bing encapsule les URLs de résultats dans des redirections
+// https://www.bing.com/ck/a?...&u=a1<base64url de la cible> — on décode pour obtenir
+// le site réel (sinon tout résultat a pour hôte bing.com, filtré comme agrégateur).
+function bingRealUrl(href) {
+  let u;
+  try { u = new URL(href); } catch (e) { return href; }
+  if (u.hostname.indexOf('bing.com') === -1 || u.pathname.indexOf('/ck/') !== 0) return href;
+  const v = u.searchParams.get('u') || '';
+  if (!v || v.length < 4) return null;
+  let b = v.replace(/^a[0-9]/, '').replace(/-/g, '+').replace(/_/g, '/');
+  while (b.length % 4) b += '=';
+  try {
+    const dec = Buffer.from(b, 'base64').toString('utf8');
+    return /^https?:\/\//i.test(dec) ? dec : null;
+  } catch (e) { return null; }
+}
+
 // Bing : repli de engDdg quand DuckDuckGo bloque les IP datacenter (html.duckduckgo.com
 // renvoie 403/fetch failed depuis Vercel). Bing accepte les IP serverless — snippets +
 // découverte du site officiel, annuaires exclus via DDG_SNIPPET_BLOCK/TAVILY_BLOCK.
@@ -475,11 +492,12 @@ async function engBing(ent, budgetMs) {
     const reLi = /<li class="b_algo"[\s\S]*?<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>([\s\S]*?)<\/li>/g;
     let m;
     while ((m = reLi.exec(html)) !== null && items.length < 10) {
-      let url = m[1];
-      if (url.indexOf('http') !== 0) continue;
+      let url = bingRealUrl(m[1]);
+      if (!url || url.indexOf('http') !== 0) continue;
       const title = ddgStrip(m[2]);
       let snippet = '';
-      const mp = m[3].match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+      let mp = m[3].match(/<p class="b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
+      if (!mp) mp = m[3].match(/<p[^>]*>([\s\S]*?)<\/p>/i);
       if (mp) snippet = ddgStrip(mp[1]);
       if (title) items.push({ url: url, title: title, snippet: snippet });
     }
