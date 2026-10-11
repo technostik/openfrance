@@ -40,7 +40,7 @@ var CO = {
   pagesLoaded: 0, maxPages: 0, total: 0,
   seq: 0,
   // carte
-  markers: null, markerBySiret: {}, circle: null, targetMk: null,
+  markers: null, markerBySiret: {}, circle: null, targetMk: null, spread: null,
   uiReady: false
 };
 
@@ -342,6 +342,7 @@ function coStatusLine() {
   parts.push(CO.rows.length.toLocaleString('fr-FR') + ' chargée(s)');
   if (mode === 'near') parts.push('<b>' + CO.shown.length.toLocaleString('fr-FR') + ' retenue(s)</b> — critères filtrés sur les résultats chargés');
   else parts.push('<b>' + CO.shown.length.toLocaleString('fr-FR') + ' résultat(s)</b>');
+  if (CO.spread && CO.spread.groups) parts.push('📍 ' + CO.spread.groups + ' groupe(s) de marqueurs co-localisés écartés en spirale');
   el.innerHTML = parts.join(' · ');
   var more = document.getElementById('coMore');
   more.hidden = !(CO.pagesLoaded < CO.maxPages);
@@ -397,6 +398,8 @@ function coClearMap() {
   CO.markerBySiret = {};
   if (CO.circle) { map.removeLayer(CO.circle); CO.circle = null; }
   if (CO.targetMk) { map.removeLayer(CO.targetMk); CO.targetMk = null; }
+  CO.spread = null;
+  mkSpreadClear(); // les marqueurs retirés ne sont plus recalculés au zoom
 }
 
 function coPopupHtml(e, et) {
@@ -429,8 +432,9 @@ function coSyncMarkers() {
       if (ll2) entries.push({ key: 'c:' + ((e.siege && e.siege.siret) || e.siren), latlng: ll2, e: e, et: null });
     }
   });
-  if (!entries.length) return;
+  if (!entries.length) { CO.spread = null; return; }
   CO.markers = L.featureGroup();
+  var spreadItems = [];
   entries.forEach(function (en) {
     var m = L.circleMarker(en.latlng, {
       radius: 5, weight: 1, color: '#0f172a', fillColor: coEntColor(en.e), fillOpacity: 0.85
@@ -438,7 +442,11 @@ function coSyncMarkers() {
     m.bindPopup(coPopupHtml(en.e, en.et));
     m.addTo(CO.markers);
     CO.markerBySiret[en.key.slice(2)] = m;
+    // des établissements peuvent partager des coordonnées identiques (même
+    // adresse, géolocalisation approximative) : base de l'étalement spirale
+    spreadItems.push({ m: m, base: en.latlng });
   });
+  CO.spread = mkSpreadApply(spreadItems); // écarte en spirale les co-localisés (app.js)
   CO.markers.addTo(map);
 }
 
