@@ -11,7 +11,7 @@ Application web **100 % statique** (pas de backend) affichant des cartes choropl
 ```
 index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (recherche/type/catégorie), composeur d'entreprises (ciblage + critères), page cache globale, favoris (bouton ⭐ + panneau), bandeau d'erreur, bouton retour
 style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*), composeur d'entreprises (.co-*), cache (.cache-*) et favoris (.fav-*)
-app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI)
+app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI) + utilitaires partagés : étalement spirale des marqueurs co-localisés (MK_SPREAD), distance haversine (distKm)
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
 score.js        — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (ex-score31.js, renommé 10/2026)
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
