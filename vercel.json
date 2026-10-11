@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "trailingSlash": false,
   "rewrites": [
     {
       "source": "/data/delinquance-dep.csv",
@@ -10,8 +11,16 @@
       "destination": "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements-version-simplifiee.geojson"
     },
     {
+      "source": "/api/communes",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/44ef4323-1097-48d5-8719-3c544b55d294/data/"
+    },
+    {
       "source": "/api/communes/:path*",
       "destination": "https://tabular-api.data.gouv.fr/api/resources/44ef4323-1097-48d5-8719-3c544b55d294/data/:path*"
+    },
+    {
+      "source": "/api/loyers",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/55b34088-0964-415f-9df7-d87dd98a09be/data/"
     },
     {
       "source": "/api/loyers/:path*",
@@ -50,8 +59,16 @@
       "destination": "https://static.data.gouv.fr/resources/resultats-des-elections-europeennes-du-9-juin-2024/20240613-154909/resultats-definitifs-par-departement.csv"
     },
     {
+      "source": "/api/elect-gen",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/b8703c69-a18f-46ab-9e7f-3a8368dcb891/data/"
+    },
+    {
       "source": "/api/elect-gen/:path*",
       "destination": "https://tabular-api.data.gouv.fr/api/resources/b8703c69-a18f-46ab-9e7f-3a8368dcb891/data/:path*"
+    },
+    {
+      "source": "/api/elect-cand",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/52a11762-45b4-414f-b6a2-eaa290217dc6/data/"
     },
     {
       "source": "/api/elect-cand/:path*",
@@ -59,7 +76,7 @@
     },
     {
       "source": "/api/assos",
-      "destination": "https://tabular-api.data.gouv.fr/api/resources/91fd139b-4c2a-4d36-b05b-8607b41f1202/data"
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/91fd139b-4c2a-4d36-b05b-8607b41f1202/data/"
     },
     {
       "source": "/api/assos/:path*",
@@ -67,7 +84,7 @@
     },
     {
       "source": "/api/nomen",
-      "destination": "https://tabular-api.data.gouv.fr/api/resources/2b618348-cdb1-4d1b-a60c-26f5213b0f58/data"
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/2b618348-cdb1-4d1b-a60c-26f5213b0f58/data/"
     },
     {
       "source": "/api/nomen/:path*",
