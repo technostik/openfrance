@@ -458,87 +458,66 @@ async function engDdg(ent, budgetMs) {
   return out;
 }
 
-// Bing encapsule les URLs de résultats dans des redirections
-// https://www.bing.com/ck/a?...&u=a1<base64url de la cible> — on décode pour obtenir
-// le site réel (sinon tout résultat a pour hôte bing.com, filtré comme agrégateur).
-function bingRealUrl(href) {
-  let u;
-  try { u = new URL(href); } catch (e) { return href; }
-  if (u.hostname.indexOf('bing.com') === -1 || u.pathname.indexOf('/ck/') !== 0) return href;
-  const v = u.searchParams.get('u') || '';
-  if (!v || v.length < 4) return null;
-  let b = v.replace(/^a[0-9]/, '').replace(/-/g, '+').replace(/_/g, '/');
-  while (b.length % 4) b += '=';
-  try {
-    const dec = Buffer.from(b, 'base64').toString('utf8');
-    return /^https?:\/\//i.test(dec) ? dec : null;
-  } catch (e) { return null; }
-}
-
-// Bing : repli de engDdg quand DuckDuckGo bloque les IP datacenter (html.duckduckgo.com
-// renvoie 403/fetch failed depuis Vercel). Bing accepte les IP serverless — snippets +
-// découverte du site officiel, annuaires exclus via DDG_SNIPPET_BLOCK/TAVILY_BLOCK.
-async function engBing(ent, budgetMs) {
-  const out = { engine: 'bing', source: 'bing' };
+// Tavily (op describe) : repli API officielle quand DuckDuckGo bloque les IP datacenter
+// (Vercel : html.duckduckgo.com fetch failed/403 ; Bing, lui, sert des résultats hors
+// sujet aux IP datacenter). TAVILY_API_KEY requise — désactivé proprement si absente.
+// Même philosophie que engDdg : snippet descriptif + découverte du site officiel,
+// annuaires/agrégateurs exclus via DDG_SNIPPET_BLOCK/TAVILY_BLOCK.
+async function engTavilyDesc(ent, budgetMs) {
+  const out = { engine: 'tavily', source: 'tavily' };
+  if (!process.env.TAVILY_API_KEY) { out.note = 'TAVILY_API_KEY absente (variable d\'environnement serveur)'; return out; }
   const name = String(ent.nom || '').replace(/[, ]+\s*(SASU|SAS|SARL|EURL|SELAS|SELARL|SCOP|SCI|SNC|GIE|SCA|SA)\s*$/i, '').trim();
   if (!name) { out.note = 'nom absent'; return out; }
   const q = [name, ent.ville || '', 'entreprise'].filter(Boolean).join(' ');
+  const ctrl = new AbortController();
+  const t = setTimeout(function () { ctrl.abort(); }, Math.max(1200, Math.min(budgetMs, 5000)));
   try {
-    const r = await fetchText('https://www.bing.com/search?q=' + encodeURIComponent(q) + '&setlang=fr&cc=fr', Math.min(budgetMs, 5000), 300000);
-    if (!r.ok) { out.note = 'Bing : ' + r.note; return out; }
-    const html = r.html;
-    // résultats organiques Bing : <li class="b_algo"><h2><a href="URL">titre</a></h2>…<p>snippet</p>…</li>
-    const items = [];
-    const reLi = /<li class="b_algo"[\s\S]*?<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>([\s\S]*?)<\/li>/g;
-    let m;
-    while ((m = reLi.exec(html)) !== null && items.length < 10) {
-      let url = bingRealUrl(m[1]);
-      if (!url || url.indexOf('http') !== 0) continue;
-      const title = ddgStrip(m[2]);
-      let snippet = '';
-      let mp = m[3].match(/<p class="b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
-      if (!mp) mp = m[3].match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-      if (mp) snippet = ddgStrip(mp[1]);
-      if (title) items.push({ url: url, title: title, snippet: snippet });
-    }
-    if (!items.length) { out.note = 'Bing : aucun résultat parsé'; return out; }
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: process.env.TAVILY_API_KEY,
+        query: String(q).slice(0, 300),
+        max_results: 8,
+        search_depth: 'basic'
+      })
+    });
+    if (!res.ok) { out.note = 'Tavily HTTP ' + res.status; return out; }
+    const j = await res.json();
     const nameTok = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
-    let site = null, snippet = null, snippetHost = '';
-    for (let i = 0; i < items.length && !site; i++) {
-      const host = hostOf(items[i].url);
-      const compact = host.replace(/[^a-z0-9]/g, '');
-      if (nameTok && compact.indexOf(nameTok) !== -1 && !TAVILY_BLOCK.test(host)) site = items[i].url;
-    }
+    let site = null;
     const cands = [];
-    for (let i = 0; i < items.length; i++) {
-      const s = items[i].snippet;
-      if (!s || s.length < 30) continue;
-      const host = hostOf(items[i].url);
-      if (DDG_SNIPPET_BLOCK.test(host)) continue;
+    ((j && j.results) || []).forEach(function (r) {
+      if (!r || !r.url) return;
+      let u;
+      try { u = new URL(r.url); } catch (e) { return; }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      const host = u.hostname.replace(/^www\./, '');
       const compact = host.replace(/[^a-z0-9]/g, '');
-      cands.push({
-        s: s, host: host,
-        related: (nameTok && compact.indexOf(nameTok) !== -1) || host.indexOf('wikipedia') !== -1
-      });
-    }
+      if (!site && nameTok && compact.indexOf(nameTok) !== -1 && !TAVILY_BLOCK.test(host)) site = u.origin + '/';
+      const s = String(r.content || '').trim();
+      if (s && s.length > 40 && !DDG_SNIPPET_BLOCK.test(host)) {
+        cands.push({
+          s: s, host: host,
+          related: (nameTok && compact.indexOf(nameTok) !== -1) || host.indexOf('wikipedia') !== -1
+        });
+      }
+    });
+    if (site) { out.website = site; out.note = 'site repéré via Tavily'; }
     if (cands.length) {
       cands.sort(function (a, b) {
         if (a.related !== b.related) return a.related ? -1 : 1;
         return b.s.length - a.s.length;
       });
-      snippet = cands[0].s;
-      snippetHost = cands[0].host;
+      out.description = cands[0].s.slice(0, 320);
+      out.descSource = cands[0].host || 'tavily';
+      out.descConfidence = (cands[0].host.indexOf('wikipedia') !== -1) ? 45 : 32;
     }
-    if (site) { out.website = site; out.note = 'site repéré via Bing'; }
-    if (snippet) {
-      out.description = snippet.slice(0, 320);
-      out.descSource = snippetHost || 'bing';
-      out.descConfidence = (snippetHost.indexOf('wikipedia') !== -1) ? 45 : 32;
-    }
-    if (!site && !snippet) out.note = 'Bing : aucun résultat exploitable';
+    if (!site && !cands.length) out.note = 'Tavily : aucun résultat exploitable';
   } catch (e) {
-    out.note = 'Bing : ' + String((e && e.message) || e).slice(0, 120);
-  }
+    out.note = 'Tavily : ' + String((e && e.message) || e).slice(0, 120);
+  } finally { clearTimeout(t); }
   return out;
 }
 
@@ -589,8 +568,8 @@ async function opDescribe(body) {
   // 1. site déjà connu -> meta directe ; sinon DDG découvre le site + un snippet
   if (ctx.website && wants('meta') && left() > 2000) { metaTried = ctx.website; absorb(await engMeta(ctx.website, left() - 300)); }
   if (!ctx.description && wants('ddg') && left() > 2500) absorb(await engDdg(ent, Math.min(left() - 800, 5000)));
-  // Repli Bing : DDG bloque souvent les IP datacenter (Vercel) -> Bing prend le relais
-  if (!ctx.description && !ctx.website && wants('ddg') && left() > 3000) absorb(await engBing(ent, Math.min(left() - 800, 5000)));
+  // Repli Tavily (API officielle, clé serveur) : DDG bloque les IP datacenter (Vercel)
+  if (!ctx.description && !ctx.website && left() > 3000) absorb(await engTavilyDesc(ent, Math.min(left() - 800, 5000)));
   // 2. DDG a repéré un site -> meta de ce site, MÊME si DDG a déjà donné un snippet :
   //    la voix de l'entreprise prime (confiance 68 > snippet 32/45, fusion par absorb())
   if (ctx.website && ctx.website !== metaTried && wants('meta') && left() > 2000) {
