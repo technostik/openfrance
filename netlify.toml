@@ -100,7 +100,7 @@
 # Filtres utilisés côté client : date_disso__exact=-infinity (actives) + adrs_codeinsee__in=<communes du dept>
 [[redirects]]
   from = "/api/assos"
-  to = "https://tabular-api.data.gouv.fr/api/resources/91fd139b-4c2a-4d36-b05b-8607b41f1202/data"
+  to = "https://tabular-api.data.gouv.fr/api/resources/91fd139b-4c2a-4d36-b05b-8607b41f1202/data/"
   status = 200
   force = true
 
@@ -113,7 +113,7 @@
 # Nomenclature WALDEC (thèmes des objets sociaux : code -> libellé + thème parent)
 [[redirects]]
   from = "/api/nomen"
-  to = "https://tabular-api.data.gouv.fr/api/resources/2b618348-cdb1-4d1b-a60c-26f5213b0f58/data"
+  to = "https://tabular-api.data.gouv.fr/api/resources/2b618348-cdb1-4d1b-a60c-26f5213b0f58/data/"
   status = 200
   force = true
 
