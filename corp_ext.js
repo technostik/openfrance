@@ -1,6 +1,6 @@
 // OpenFrance — Recherche étendue d'entreprises : ROMEO → ROME 4.0 → La Bonne Boite → listes curatées
 //
-// Principe : l'utilisateur décrit un métier en texte libre (« intelligence artificielle »),
+// Principe : lutilisateur décrit un métier en texte libre (« boulanger »),
 // choisit une ville cible et un rayon. Pipeline :
 //  1. ROMEO (France Travail, via /ft/ft?op=romeo) prédit les codes ROME du texte ;
 //  2. clic sur un métier → fiche ROME 4.0 (compétences) dans le MODAL partagé
@@ -54,7 +54,7 @@
 
 var EXT = {
   active: false,
-  dep: '31',
+  dep: null,           // département choisi (restauré depuis le localStorage)
   target: null,          // { code, nom, latlng } — ville cible
   radius: 10,            // km
   size: '',              // filtre local headcount_min : '' | '10' | '50' | '100'
@@ -160,6 +160,7 @@ function extSetTarget(code, nom) {
   EXT.target = { code: code, nom: nom, latlng: c };
   document.getElementById('extTarget').value = nom;
   extFrameZone(); // feedback immédiat : cercle de la zone sur la carte
+  extPrefsSave();
 }
 
 // ---------- Listes curatées (Supabase, via fonction Netlify) ----------
@@ -371,7 +372,7 @@ function extSearch() {
       extShowFTAround();
       return;
     }
-    status.textContent = 'Entrez un métier en texte libre (ex. « intelligence artificielle ») — ou cochez « 🇫🇷 French Tech uniquement » puis Rechercher (ville = autour, champ ville effacé = toute la base).';
+    status.textContent = 'Entrez un métier en texte libre (ex. « boulanger ») — ou cochez « 🇫🇷 French Tech uniquement » puis Rechercher (ville = autour, champ ville effacé = toute la base).';
     return;
   }
   if (!EXT.target) {
@@ -874,7 +875,7 @@ function extInitUI() {
 
   var radSel = document.getElementById('extRadius');
   radSel.value = String(EXT.radius);
-  radSel.addEventListener('change', function () { EXT.radius = parseInt(radSel.value, 10); });
+  radSel.addEventListener('change', function () { EXT.radius = parseInt(radSel.value, 10); extPrefsSave(); });
 
   var sizeSel = document.getElementById('extSize');
   sizeSel.addEventListener('change', function () {
@@ -918,7 +919,8 @@ function extInitUI() {
   });
 
   var txt = document.getElementById('extText');
-  if (!txt.value.trim()) txt.value = 'intelligence artificielle'; // valeur par défaut à l'entrée du mode
+  txt.value = extPrefs().text || ''; // dernier métier saisi, restauré
+  txt.addEventListener('input', function () { extPrefsSave(); });
   txt.addEventListener('keydown', function (ev) {
     if (ev.key === 'Enter') { ev.preventDefault(); extSearch(); }
   });
@@ -932,10 +934,33 @@ function extInitUI() {
   });
 }
 
+// ---------- Préférences persistantes (localStorage) ----------
+// Derniers département / rayon / ville cible / texte métier : aucune valeur
+// personnelle en dur, les choix persistent d'une session à l'autre.
+var EXT_PREF_KEY = 'openfrance-ext-prefs';
+function extPrefs() {
+  try {
+    var p = JSON.parse(localStorage.getItem(EXT_PREF_KEY) || 'null');
+    if (!p || typeof p !== 'object') return {};
+    return p;
+  } catch (e) { return {}; }
+}
+function extPrefsSave() {
+  var t = document.getElementById('extText');
+  try {
+    localStorage.setItem(EXT_PREF_KEY, JSON.stringify({
+      dep: EXT.dep, target: EXT.target, radius: EXT.radius,
+      text: t ? t.value : ''
+    }));
+  } catch (e) {}
+}
+
 function extSetDep(dep) {
+  var saved = extPrefs();
   EXT.dep = dep;
   EXT.geo = null; EXT.target = null;
   EXT.lastLbb = null; EXT.lastCurated = null; EXT.lastFT = null;
+  extPrefsSave(); // changement de département : la ville cible repart à zéro
   document.getElementById('extTarget').value = '';
   extClearMap();
   extEnsureGeo().then(function () {
@@ -944,6 +969,9 @@ function extSetDep(dep) {
       'Recherche étendue — ' + coDepLabel(dep) + ' (' + dep + ')';
     document.getElementById('extStatus').textContent =
       'Entrez un métier en texte libre, choisissez une ville, puis « 🔎 Rechercher ».';
+    if (saved && saved.dep === dep && saved.target && (EXT.centroids || {})[saved.target.code]) {
+      extSetTarget(saved.target.code, saved.target.nom); // restauration de la dernière ville cible
+    }
   }).catch(function (err) {
     console.error('[OpenFrance] Recherche étendue :', err);
     showError('Impossible de charger le département.', err.message);
@@ -953,6 +981,10 @@ function extSetDep(dep) {
 // ---------- Entrée / sortie du mode ----------
 function extEnter() {
   EXT.active = true;
+  var saved = extPrefs();
+  if (!EXT.dep) EXT.dep = (saved.dep && DEP_FOLDERS[saved.dep]) ? saved.dep
+                       : Object.keys(DEP_FOLDERS).sort()[0];
+  if (saved.radius !== undefined && saved.radius !== null) EXT.radius = saved.radius;
   extInitUI();
   document.getElementById('indicatorLabel').style.display = 'none';
   document.getElementById('yearLabel').style.display = 'none';

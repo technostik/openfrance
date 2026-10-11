@@ -1,5 +1,5 @@
 // OpenFrance — Composeur de critères : indice ad hoc généralisé
-// (généralisation de l'ancien « Score perso (31) »)
+// (généralisation de l'ancien « Score perso »)
 //
 // Principe : l'utilisateur choisit un département, une ville cible (autocomplete sur
 // les communes du département), puis compose librement son indice : ajout/retrait de
@@ -14,7 +14,7 @@
 //   💶 revenus   — niveau de vie médian (Filosofi 2021, Geoptis)
 //   🏠 dvf       — prix moyen au m² (DVF 2015-2025, appartements ou maisons)
 //   🥋 annuaire  — nombre d'associations RNA correspondant à une requête
-//                  multi-opérateurs (ex. « mma + systema + ninjutsu »)
+//                  multi-opérateurs (ex. « théâtre + danse - opéra »)
 //   🗳 politiq   — indicateur politique numérique par commune (abstention, voix d'un
 //                  candidat/nuance/liste : Présidentielle 22, Législatives 24,
 //                  Européennes 24) via le REGISTRY de app.js
@@ -27,7 +27,7 @@
 
 var SC = {
   active: false,
-  dep: '31',
+  dep: null,           // département choisi (restauré depuis le localStorage au 1er passage)
   target: null,          // { code, nom } — ville cible (critère distance)
   annee: null,           // année délinquance utilisée
   geo: null, geoDep: null, centroids: null, cities: [],
@@ -40,6 +40,27 @@ var SC = {
 };
 
 var SC_BLUE = '#2563eb';
+
+// ---------- Préférences persistantes (localStorage) ----------
+// Derniers choix (département, ville cible, critères avec poids et sens) : aucune
+// valeur personnelle en dur, tout est restauré d'une session à l'autre.
+var SC_PREF_KEY = 'openfrance-score-prefs';
+function scLoadPrefs() {
+  try {
+    var p = JSON.parse(localStorage.getItem(SC_PREF_KEY) || 'null');
+    if (!p || typeof p !== 'object' || !Array.isArray(p.crits)) return null;
+    return p;
+  } catch (e) { return null; }
+}
+function scSavePrefs() {
+  try {
+    localStorage.setItem(SC_PREF_KEY, JSON.stringify({
+      dep: SC.dep,
+      target: SC.target,
+      crits: SC.crits.map(function (c) { return { type: c.type, cfg: c.cfg, w: c.w, dir: c.dir }; })
+    }));
+  } catch (e) {}
+}
 
 function scoreIsActive() { return SC.active; }
 
@@ -214,9 +235,9 @@ var SC_TYPES = {
   },
   ann: {
     icon: '🥋', label: 'Associations (requête RNA)', dir: 'max', cfg: 'text',
-    defCfg: function () { return { q: '"mma" + "systema" + ninjutsu' }; },
+    defCfg: function () { return { q: '' }; }, // vide = toutes les associations
     key: function (cfg) { return 'ann|' + cfg.q; },
-    describe: function (cfg) { return 'Assos « ' + cfg.q + ' »'; },
+    describe: function (cfg) { return cfg.q ? 'Assos « ' + cfg.q + ' »' : 'Associations RNA (toutes)'; },
     ensure: function () { return scEnsureAssos(); },
     vals: function (cfg) { return scAnnCounts(cfg.q); },
     fmt: function (v) { return fmt(v) + ' asso(s)'; }
@@ -438,10 +459,12 @@ function scDraw() {
 
 // ---------- Département / ville cible ----------
 function scSetDep(dep) {
+  var saved = scLoadPrefs();
   SC.dep = dep;
   SC.geo = null; SC.data = {}; SC.best = null;
   if (SC.layer) { map.removeLayer(SC.layer); SC.layer = null; }
   SC.target = null;
+  scSavePrefs(); // changement de département : la ville cible repart à zéro
   document.getElementById('scTarget').value = '';
   document.getElementById('levelTitle').textContent = 'Composeur — ' + scDepLabel(dep) + ' (' + dep + ')';
   var delinqP = DELINQ.loaded ? Promise.resolve() : loadDelinquance();
@@ -449,7 +472,10 @@ function scSetDep(dep) {
     SC.annee = scLatestYear();
     return scEnsureGeo();
   }).then(function () {
-    if (dep === '31') scSetTarget('31555', 'Toulouse'); // continuité avec l'ancien score perso
+    var t = null;
+    if (SC._savedTarget && SC._savedTarget.code) { t = SC._savedTarget; SC._savedTarget = null; }
+    else if (saved && saved.dep === dep && saved.target && saved.target.code) t = saved.target;
+    if (t) scSetTarget(t.code, t.nom); // restauration de la dernière ville cible choisie
     scRenderCrits();
     return scEnsureAll();
   }).then(function () { scDraw(); }).catch(function (err) {
@@ -507,6 +533,7 @@ function scRenderCrits() {
   if (!box) return;
   box.innerHTML = '';
   SC.crits.forEach(function (crit) { box.appendChild(scCritRow(crit)); });
+  scSavePrefs(); // ajout/retrait/config d'un critère : persistance
 }
 
 function scCritRow(crit) {
@@ -567,6 +594,7 @@ function scCritRow(crit) {
     crit.dir = crit.dir === 'min' ? 'max' : 'min';
     paintDir();
     scDraw();
+    scSavePrefs();
   });
   row.appendChild(dir);
 
@@ -580,6 +608,7 @@ function scCritRow(crit) {
     crit.w = parseInt(w.value, 10);
     wv.textContent = crit.w;
     scDraw();
+    scSavePrefs();
   });
   row.appendChild(w);
   row.appendChild(wv);
@@ -656,12 +685,23 @@ function scoreEnter() {
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   hideError();
   if (!SC.seeded) {
-    // Critères par défaut : reproduction de l'ancien « Score perso (31) »
     SC.seeded = true;
-    scAddCrit('dist', null, 5, null, true);
-    scAddCrit('delinq', null, 5, null, true);
-    scAddCrit('loyers', null, 5, null, true);
-    scAddCrit('ann', null, 3, null, true);
+    var saved = scLoadPrefs();
+    SC.dep = (saved && saved.dep && DEP_FOLDERS[saved.dep]) ? saved.dep
+             : Object.keys(DEP_FOLDERS).sort()[0];
+    SC.crits = []; SC.nextId = 1;
+    if (saved && saved.crits.length) {
+      saved.crits.forEach(function (c) {
+        if (SC_TYPES[c.type]) {
+          scAddCrit(c.type, (c.cfg && typeof c.cfg === 'object') ? c.cfg : null, c.w, c.dir, true);
+        }
+      });
+    } else {
+      scAddCrit('delinq', null, 5, null, true); // critère neutre au premier passage
+    }
+    SC._savedTarget = (saved && saved.dep === SC.dep && saved.target && saved.target.code) ? saved.target : null;
+    var depSel = document.getElementById('scDep');
+    if (depSel) depSel.value = SC.dep;
   }
   scSetDep(SC.dep);
 }

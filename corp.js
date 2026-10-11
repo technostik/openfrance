@@ -27,7 +27,7 @@
 
 var CO = {
   active: false,
-  dep: '31',
+  dep: null,           // département choisi (restauré depuis le localStorage)
   target: null,          // { code, nom, latlng } — ville cible (zone rayon/commune)
   radius: 10,             // km ; -1 = département entier, 0 = commune seulement
   geo: null, geoDep: null, cities: [], centroids: null,
@@ -490,15 +490,38 @@ function coApply() {
   coLoad();
 }
 
+// ---------- Préférences persistantes (localStorage) ----------
+// Derniers département / rayon / ville cible : aucune valeur personnelle en dur,
+// les choix persistent d'une session à l'autre.
+var CO_PREF_KEY = 'openfrance-corp-prefs';
+function coPrefs() {
+  try {
+    var p = JSON.parse(localStorage.getItem(CO_PREF_KEY) || 'null');
+    if (!p || typeof p !== 'object') return {};
+    return p;
+  } catch (e) { return {}; }
+}
+function coPrefsSave() {
+  try {
+    localStorage.setItem(CO_PREF_KEY, JSON.stringify({ dep: CO.dep, target: CO.target, radius: CO.radius }));
+  } catch (e) {}
+}
+
 function coSetDep(dep) {
+  var saved = coPrefs();
   CO.dep = dep;
   CO.geo = null; CO.target = null;
+  coPrefsSave(); // changement de département : la ville cible repart à zéro
   document.getElementById('coTarget').value = '';
   coClearMap();
   coEnsureGeo().then(function () {
     document.getElementById('levelTitle').textContent =
       'Entreprises — ' + coDepLabel(dep) + ' (' + dep + ')';
-    coApply();
+    if (saved && saved.dep === dep && saved.target && (CO.centroids || {})[saved.target.code]) {
+      coSetTarget(saved.target.code, saved.target.nom); // restauration de la dernière ville cible
+    } else {
+      coApply();
+    }
   }).catch(function (err) {
     console.error('[OpenFrance] Composeur d\'entreprises :', err);
     showError('Impossible de charger le département.', err.message);
@@ -542,6 +565,7 @@ function coSetTarget(code, nom) {
   CO.target = { code: code, nom: nom, latlng: c };
   document.getElementById('coTarget').value = nom;
   coApply();
+  coPrefsSave();
 }
 
 // ---------- Fiche entreprise ----------
@@ -666,6 +690,7 @@ function coInitUI() {
   radSel.addEventListener('change', function () {
     CO.radius = parseInt(radSel.value, 10);
     coApply();
+    coPrefsSave();
   });
 
   // ville cible (autocomplete)
@@ -782,6 +807,10 @@ function coInitUI() {
 // ---------- Entrée / sortie du mode ----------
 function corpEnter() {
   CO.active = true;
+  var saved = coPrefs();
+  if (!CO.dep) CO.dep = (saved.dep && DEP_FOLDERS[saved.dep]) ? saved.dep
+                       : Object.keys(DEP_FOLDERS).sort()[0];
+  if (saved.radius !== undefined && saved.radius !== null) CO.radius = saved.radius;
   coInitUI();
   document.getElementById('indicatorLabel').style.display = 'none';
   document.getElementById('yearLabel').style.display = 'none';

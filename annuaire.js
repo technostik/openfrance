@@ -9,11 +9,11 @@
 //    → résultats mis en cache IndexedDB (une entrée par requête).
 //
 // Recherche multi-mots-clés (locale, sur les données du département en cache) :
-//   ninjutsu mma          → les deux requis (ET)
-//   ninjutsu + mma        → ninjutsu OU mma (dès qu'il y a un +, les mots deviennent des OU)
-//   ninjutsu + mma - boxe → ninjutsu OU mma, sans boxe
-//   "mma"                 → mot exact (frontières de mot, n'exclut pas HAMMAM... si, il l'exclut)
-//   Les espaces autour des + et - sont tolérés : « ninjutsu + mma - boxe » ≡ « ninjutsu +mma -boxe »
+//   théâtre danse            → les deux requis (ET)
+//   théâtre + danse          → théâtre OU danse (dès qu'il y a un +, les mots deviennent des OU)
+//   théâtre + danse - opéra  → théâtre OU danse, sans opéra
+//   "football"               → mot exact (frontières de mot)
+//   Les espaces autour des + et - sont tolérés : « théâtre + danse - opéra » ≡ « théâtre +danse -opéra »
 
 var ANN = {
   active: false,
