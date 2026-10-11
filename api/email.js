@@ -458,6 +458,72 @@ async function engDdg(ent, budgetMs) {
   return out;
 }
 
+// Bing : repli de engDdg quand DuckDuckGo bloque les IP datacenter (html.duckduckgo.com
+// renvoie 403/fetch failed depuis Vercel). Bing accepte les IP serverless — snippets +
+// découverte du site officiel, annuaires exclus via DDG_SNIPPET_BLOCK/TAVILY_BLOCK.
+async function engBing(ent, budgetMs) {
+  const out = { engine: 'bing', source: 'bing' };
+  const name = String(ent.nom || '').replace(/[, ]+\s*(SASU|SAS|SARL|EURL|SELAS|SELARL|SCOP|SCI|SNC|GIE|SCA|SA)\s*$/i, '').trim();
+  if (!name) { out.note = 'nom absent'; return out; }
+  const q = [name, ent.ville || '', 'entreprise'].filter(Boolean).join(' ');
+  try {
+    const r = await fetchText('https://www.bing.com/search?q=' + encodeURIComponent(q) + '&setlang=fr&cc=fr', Math.min(budgetMs, 5000), 300000);
+    if (!r.ok) { out.note = 'Bing : ' + r.note; return out; }
+    const html = r.html;
+    // résultats organiques Bing : <li class="b_algo"><h2><a href="URL">titre</a></h2>…<p>snippet</p>…</li>
+    const items = [];
+    const reLi = /<li class="b_algo"[\s\S]*?<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>([\s\S]*?)<\/li>/g;
+    let m;
+    while ((m = reLi.exec(html)) !== null && items.length < 10) {
+      let url = m[1];
+      if (url.indexOf('http') !== 0) continue;
+      const title = ddgStrip(m[2]);
+      let snippet = '';
+      const mp = m[3].match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+      if (mp) snippet = ddgStrip(mp[1]);
+      if (title) items.push({ url: url, title: title, snippet: snippet });
+    }
+    if (!items.length) { out.note = 'Bing : aucun résultat parsé'; return out; }
+    const nameTok = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    let site = null, snippet = null, snippetHost = '';
+    for (let i = 0; i < items.length && !site; i++) {
+      const host = hostOf(items[i].url);
+      const compact = host.replace(/[^a-z0-9]/g, '');
+      if (nameTok && compact.indexOf(nameTok) !== -1 && !TAVILY_BLOCK.test(host)) site = items[i].url;
+    }
+    const cands = [];
+    for (let i = 0; i < items.length; i++) {
+      const s = items[i].snippet;
+      if (!s || s.length < 30) continue;
+      const host = hostOf(items[i].url);
+      if (DDG_SNIPPET_BLOCK.test(host)) continue;
+      const compact = host.replace(/[^a-z0-9]/g, '');
+      cands.push({
+        s: s, host: host,
+        related: (nameTok && compact.indexOf(nameTok) !== -1) || host.indexOf('wikipedia') !== -1
+      });
+    }
+    if (cands.length) {
+      cands.sort(function (a, b) {
+        if (a.related !== b.related) return a.related ? -1 : 1;
+        return b.s.length - a.s.length;
+      });
+      snippet = cands[0].s;
+      snippetHost = cands[0].host;
+    }
+    if (site) { out.website = site; out.note = 'site repéré via Bing'; }
+    if (snippet) {
+      out.description = snippet.slice(0, 320);
+      out.descSource = snippetHost || 'bing';
+      out.descConfidence = (snippetHost.indexOf('wikipedia') !== -1) ? 45 : 32;
+    }
+    if (!site && !snippet) out.note = 'Bing : aucun résultat exploitable';
+  } catch (e) {
+    out.note = 'Bing : ' + String((e && e.message) || e).slice(0, 120);
+  }
+  return out;
+}
+
 // Meta du site : og:description / meta description / JSON-LD — la description que
 // l'entreprise écrit elle-même (confiance la plus haute, ~70).
 async function engMeta(siteUrl, budgetMs) {
@@ -505,6 +571,8 @@ async function opDescribe(body) {
   // 1. site déjà connu -> meta directe ; sinon DDG découvre le site + un snippet
   if (ctx.website && wants('meta') && left() > 2000) { metaTried = ctx.website; absorb(await engMeta(ctx.website, left() - 300)); }
   if (!ctx.description && wants('ddg') && left() > 2500) absorb(await engDdg(ent, Math.min(left() - 800, 5000)));
+  // Repli Bing : DDG bloque souvent les IP datacenter (Vercel) -> Bing prend le relais
+  if (!ctx.description && !ctx.website && wants('ddg') && left() > 3000) absorb(await engBing(ent, Math.min(left() - 800, 5000)));
   // 2. DDG a repéré un site -> meta de ce site, MÊME si DDG a déjà donné un snippet :
   //    la voix de l'entreprise prime (confiance 68 > snippet 32/45, fusion par absorb())
   if (ctx.website && ctx.website !== metaTried && wants('meta') && left() > 2000) {

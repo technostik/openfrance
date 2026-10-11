@@ -1,25 +1,27 @@
-// OpenFrance — probe.js : sonde diagnostique TEMPORAIRE (à supprimer).
-// Teste la joignabilité des moteurs de description depuis le runtime.
-async function tryGet(url, ua) {
+// Sonde temporaire (à supprimer après validation) : exécute la chaîne describe de
+// email.js côté Vercel pour vérifier DDG vs Bing — GET /api/probe?nom=...&ville=...[&site=...][&type=ent|asso]
+module.exports = async function (req, res) {
+  const q = (req && req.query) || {};
+  const email = require('./email.js');
+  const entity = {
+    type: q.type || 'ent',
+    nom: q.nom || 'IKTOS',
+    siren: q.siren || '',
+    insee: q.insee || '',
+    ville: q.ville || 'Paris',
+    dep: q.dep || '',
+    siteWeb: q.site || ''
+  };
+  const mock = {
+    _status: 0, _body: null,
+    status: function (s) { this._status = s; return this; },
+    json: function (o) { this._body = o; return this; }
+  };
   const t0 = Date.now();
   try {
-    const r = await fetch(url, { headers: { 'User-Agent': ua || 'Mozilla/5.0 (compatible; OpenFrance/1.0; +https://github.com/johannoriel)' } });
-    const txt = await r.text();
-    return { ok: r.ok, status: r.status, ms: Date.now() - t0, len: txt.length, excerpt: txt.slice(0, 120).replace(/\s+/g, ' ') };
+    await email({ method: 'POST', body: { op: 'describe', entity: entity }, query: {} }, mock);
+    return res.status(200).json({ ok: true, ms: Date.now() - t0, status: mock._status, response: mock._body });
   } catch (e) {
-    return { ok: false, err: String((e && e.message) || e).slice(0, 120), ms: Date.now() - t0 };
+    return res.status(200).json({ ok: false, ms: Date.now() - t0, error: String((e && e.message) || e) });
   }
-}
-module.exports = async (req, res) => {
-  const q = encodeURIComponent(req.query.q || 'IKTOS Paris entreprise');
-  const tests = {
-    ddg_html: await tryGet('https://html.duckduckgo.com/html/?q=' + q),
-    ddg_api: await tryGet('https://api.duckduckgo.com/?q=' + q + '&format=json&no_html=1'),
-    ddg_lite: await tryGet('https://lite.duckduckgo.com/lite/?q=' + q),
-    wikipedia_fr: await tryGet('https://fr.wikipedia.org/w/api.php?action=query&list=search&srsearch=' + q + '&format=json&srlimit=3'),
-    wikidata_api: await tryGet('https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&language=fr&limit=3&search=' + q),
-    site_direct: await tryGet('https://iktos.ai/'),
-    bing: await tryGet('https://www.bing.com/search?q=' + q)
-  };
-  res.status(200).json(tests);
 };
