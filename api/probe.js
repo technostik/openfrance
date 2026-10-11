@@ -1,5 +1,5 @@
 // Sonde temporaire (à supprimer après validation).
-// GET /api/probe?nom=...&ville=...[&site=...][&type=ent|asso]  → chaîne describe de email.js
+// GET /api/probe?nom=...&ville=...[&site=...][&type=ent|asso]  → chaîne describe de email.js (ddg → tavily → meta)
 // GET /api/probe?raw=1&nom=...&ville=...                       → debug : parse Bing HTML + RSS
 module.exports = async function (req, res) {
   const q = (req && req.query) || {};
