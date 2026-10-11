@@ -25,6 +25,9 @@ var ANN = {
   markers: null,      // featureGroup des marqueurs courants
   markerIndex: {},    // clé marqueur ('a:<id>' / 'e:<siren>') -> marker Leaflet (mise à jour par différence)
   spread: null,       // stats de l'étalement spirale des marqueurs co-localisés (mkSpreadApply, app.js)
+  cities: null, cityDep: null, // communes du département pour l'autocomplete du filtre ville
+  target: null,       // ville cible du filtre { code, nom, latlng } (null = pas de filtre)
+  circle: null, cityMk: null,   // cercle du rayon + marqueur de la ville cible
   showing: [],        // résultats affichés (assos + entreprises)
   seq: 0              // jeton anti-course pour les recherches asynchrones
 };
@@ -336,6 +339,104 @@ function annCentroids(code) {
   return out;
 }
 
+
+// ---------- Filtre ville (commune ou rayon autour d'une ville) ----------
+// Un département entier affiche trop de marqueurs superposés : ce filtre
+// restreint l'affichage à une commune (« Dans la ville ») ou à un rayon
+// autour d'une ville cible (même mécanique que le composeur d'entreprises).
+// Associations : placées au centroïde de leur commune, le rayon s'applique
+// donc au centroïde de leur commune. Entreprises : coordonnées précises du
+// siège (rayon exact ; « dans la ville » = code INSEE du siège).
+function annCityList(code) {
+  if (ANN.cityDep === code && ANN.cities) return ANN.cities;
+  var centroids = annCentroids(code);
+  var geo = state.communesGeo[code];
+  ANN.cities = ((geo && geo.features) || []).map(function (f) {
+    var c = centroids[f.properties.code];
+    if (!c) return null;
+    return { code: f.properties.code, nom: f.properties.nom, n: normTxt(f.properties.nom), latlng: c };
+  }).filter(Boolean);
+  ANN.cityDep = code;
+  return ANN.cities;
+}
+function annCitySearch(q) {
+  q = normTxt(q);
+  if (!q) return [];
+  var out = [];
+  for (var i = 0; i < (ANN.cities || []).length && out.length < 10; i++) {
+    if (ANN.cities[i].n.indexOf(q) !== -1) out.push(ANN.cities[i]);
+  }
+  return out;
+}
+function annCityDropEl(show) {
+  var d = document.getElementById('annCityDrop');
+  d.style.display = show ? 'block' : 'none';
+  if (!show) d.innerHTML = '';
+}
+function annCityRender(matches) {
+  var d = document.getElementById('annCityDrop');
+  d.innerHTML = '';
+  matches.forEach(function (m) {
+    var row = document.createElement('div');
+    row.innerHTML = esc(m.nom) + ' <span class="muted">(' + m.code + ')</span>';
+    row.addEventListener('mousedown', function (ev) { // mousedown : avant le blur
+      ev.preventDefault();
+      annSetTarget(m.code, m.nom);
+      annCityDropEl(false);
+    });
+    d.appendChild(row);
+  });
+  d.style.display = matches.length ? 'block' : 'none';
+}
+function annSetTarget(code, nom) {
+  var c = (annCentroids(state.dep.code) || {})[code];
+  if (!c) return;
+  ANN.target = { code: code, nom: nom, latlng: c };
+  document.getElementById('annCity').value = nom;
+  annFrameZone();
+  annApplySearch();
+}
+function annClearTarget() {
+  if (ANN.circle) { map.removeLayer(ANN.circle); ANN.circle = null; }
+  if (ANN.cityMk) { map.removeLayer(ANN.cityMk); ANN.cityMk = null; }
+  if (!ANN.target) return;
+  ANN.target = null;
+  annApplySearch();
+}
+// Cercle du rayon + marqueur de la ville cible, avec recadrage de la carte
+function annFrameZone() {
+  if (ANN.circle) { map.removeLayer(ANN.circle); ANN.circle = null; }
+  if (ANN.cityMk) { map.removeLayer(ANN.cityMk); ANN.cityMk = null; }
+  if (!ANN.target) return;
+  var radius = parseInt(document.getElementById('annRadius').value, 10) || 0;
+  ANN.cityMk = L.circleMarker(ANN.target.latlng, {
+    radius: 6, weight: 2, color: '#ffffff', fillColor: '#2563eb', fillOpacity: 1
+  }).addTo(map);
+  ANN.cityMk.bindTooltip(esc(ANN.target.nom) + (radius ? ' — rayon ' + radius + ' km' : ''));
+  if (radius > 0) {
+    ANN.circle = L.circle(ANN.target.latlng, {
+      radius: radius * 1000, weight: 1.5, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.06
+    }).addTo(map);
+    map.fitBounds(ANN.circle.getBounds(), { padding: [30, 30] });
+  } else {
+    map.setView(ANN.target.latlng, 12);
+  }
+}
+// Entreprise dans la zone ? « Dans la ville » : code INSEE du siège (repli :
+// distance au centroïde ≤ 2 km) ; rayon : distance des coordonnées du siège.
+function annEntInZone(e, target, radius) {
+  var s = e.siege || {};
+  var latlng = null;
+  if (s.coordonnees) {
+    var parts = String(s.coordonnees).split(',');
+    var lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+    if (!isNaN(lat) && !isNaN(lon)) latlng = [lat, lon];
+  }
+  if (radius > 0) return !!latlng && distKm(latlng, target.latlng) <= radius;
+  if (s.commune) return String(s.commune) === target.code;
+  return !!latlng && distKm(latlng, target.latlng) <= 2;
+}
+
 // ---------- Entreprises (API Recherche d'entreprises, recherche texte) ----------
 // L'API ne permet pas de lister toutes les entreprises d'un département :
 // seule la recherche texte est disponible. Les résultats sont mis en cache
@@ -421,6 +522,8 @@ function searchEntreprises(dep, q, section) {
 // ---------- Rendu carte ----------
 function clearAnnMarkers() {
   if (ANN.markers) { map.removeLayer(ANN.markers); ANN.markers = null; }
+  if (ANN.circle) { map.removeLayer(ANN.circle); ANN.circle = null; }
+  if (ANN.cityMk) { map.removeLayer(ANN.cityMk); ANN.cityMk = null; }
   ANN.showing = [];
   ANN.markerIndex = {};
   ANN.spread = null;
@@ -583,6 +686,9 @@ function annApplySearch() {
   var type = document.getElementById('annType').value;
   var cat = document.getElementById('annCat').value;
   var code = state.dep.code;
+  // Filtre ville (facultatif) : commune seule ou rayon autour de la ville cible
+  var target = ANN.target;
+  var radius = target ? (parseInt(document.getElementById('annRadius').value, 10) || 0) : 0;
 
   // PAS de clearAnnMarkers ici : les marqueurs sont mis à jour par différence
   // (annSyncMarkers) pour éviter le scintillement de la carte à chaque frappe.
@@ -597,6 +703,12 @@ function annApplySearch() {
       if (cat) {
         var th = annTheme(a);
         if (!th || th.p !== cat) return false;
+      }
+      if (target) { // filtre ville : code INSEE ou rayon au centroïde de la commune
+        if (radius > 0) {
+          var cc = centroids[a.n];
+          if (!cc || distKm(cc, target.latlng) > radius) return false;
+        } else if (a.n !== target.code) return false;
       }
       return annMatch(annHaystack(a), q);
     });
@@ -626,6 +738,9 @@ function annApplySearch() {
   (entPromise || Promise.resolve(null)).then(function (res) {
     if (token !== ANN.seq) return; // une recherche plus récente a pris la dessus
     var ents = res && res.ents, entErr = res && res.err;
+    if (target && ents && ents.length) { // filtre ville sur le siège
+      ents = ents.filter(function (e) { return annEntInZone(e, target, radius); });
+    }
     if (ents && ents.length) {
       entCount = ents.length;
       ents.slice(0, 2000).forEach(function (e) { ANN.showing.push({ kind: 'ent', e: e }); });
@@ -634,6 +749,9 @@ function annApplySearch() {
     annSyncMarkers(entries);
     renderAnnList();
     var parts = [];
+    if (target) {
+      parts.push('🎯 ' + esc(target.nom) + (radius > 0 ? ' — rayon ' + radius + ' km' : ' — dans la ville'));
+    }
     if (ANN.spread && ANN.spread.groups) {
       parts.unshift('📍 ' + ANN.spread.groups + ' groupe(s) de marqueurs co-localisés écartés en spirale');
     }
@@ -677,12 +795,19 @@ function annRefresh() {
   setStatus('⏳ Chargement des associations…', 'loading');
   Promise.all([geoPromise, loadNomen()]).then(function (res) {
     return loadAssosDept(code).then(function (rows) {
+      annCityList(code); // communes du département pour l'autocomplete du filtre ville
+      if (ANN.target && !(ANN.centroids[code] || {})[ANN.target.code]) {
+        // ville cible hors du département courant : filtre réinitialisé
+        ANN.target = null;
+        document.getElementById('annCity').value = '';
+      }
       annRebuildCat();
+      if (ANN.target) annFrameZone(); // recadre la carte après clearAnnMarkers
       annApplySearch();
       // cadrage sur le département
       var cs = annCentroids(code), xs = [], ys = [];
       for (var k in cs) { xs.push(cs[k][1]); ys.push(cs[k][0]); }
-      if (xs.length) map.fitBounds([[Math.min.apply(null, ys), Math.min.apply(null, xs)], [Math.max.apply(null, ys), Math.max.apply(null, xs)]], { padding: [30, 30] });
+      if (xs.length && !ANN.target) map.fitBounds([[Math.min.apply(null, ys), Math.min.apply(null, xs)], [Math.max.apply(null, ys), Math.max.apply(null, xs)]], { padding: [30, 30] });
       var cached = ANN.assos[code] && ANN.assos[code].length;
       setStatus(cached.toLocaleString('fr-FR') + ' associations dans ' + state.dep.nom + ' (en cache)');
       // si la page cache est ouverte, la rafraîchir
@@ -1058,6 +1183,30 @@ function annInitUI() {
   });
   document.getElementById('annCat').addEventListener('change', annApplySearch);
 
+  // Filtre ville (autocomplete, même mécanique que corp.js)
+  var cityIn = document.getElementById('annCity');
+  var cityDeb = null;
+  cityIn.addEventListener('input', function () {
+    clearTimeout(cityDeb);
+    if (!cityIn.value.trim()) { annCityDropEl(false); annClearTarget(); return; } // champ vidé : filtre retiré
+    cityDeb = setTimeout(function () { annCityRender(annCitySearch(cityIn.value)); }, 120);
+  });
+  cityIn.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var m = annCitySearch(cityIn.value);
+      if (m.length) { annSetTarget(m[0].code, m[0].nom); annCityDropEl(false); }
+    } else if (e.key === 'Escape') annCityDropEl(false);
+  });
+  cityIn.addEventListener('blur', function () { setTimeout(function () { annCityDropEl(false); }, 150); });
+  cityIn.addEventListener('focus', function () {
+    if (cityIn.value.trim()) annCityRender(annCitySearch(cityIn.value));
+  });
+  document.getElementById('annRadius').addEventListener('change', function () {
+    if (ANN.target) annFrameZone(); // cercle et cadrage au nouveau rayon
+    annApplySearch();
+  });
+
   // Page de gestion du cache (globale, disponible dans tous les modes)
   document.getElementById('annCacheBtn').addEventListener('click', function () { annToggleCache(); });
   document.getElementById('annCacheClose').addEventListener('click', function () { annToggleCache(false); });
@@ -1075,3 +1224,4 @@ if (document.readyState === 'loading') {
 } else {
   annInitUI();
 }
+
