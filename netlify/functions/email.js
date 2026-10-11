@@ -5,6 +5,11 @@
 //                                            insee, ville, dep, siteWeb },
 //                     engines:[ 'officiel'|'tavily'|'scrape'|'prospector' ] }
 //   → { ok:true, best:{ email, website, source, confidence }, results:[{ engine, ... }] }
+//   POST /ft/email  { op:'describe', entity:{ type, nom, siren, ville, siteWeb } }
+//   → { ok:true, best:{ description, source, confidence, siteUrl }, results:[{ engine, ... }] }
+//   Moteurs describe : ddg (snippets DuckDuckGo + découverte du site officiel), meta
+//   (og:description / meta description / JSON-LD du site). Budget 9 s, dégradation en note.
+
 //
 // Chaîne de moteurs (système de plugins : ajouter un moteur = une fonction engXxx +
 // une entrée dans opLookup ; le front déclare les moteurs dans FAV_ENGINES de favoris.js
@@ -70,7 +75,7 @@ async function fetchText(url, ms, maxLen) {
     const res = await fetch(url, {
       signal: ctrl.signal,
       redirect: 'follow',
-      headers: { 'User-Agent': FETCH_UA, 'Accept': 'text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.5' }
+      headers: { 'User-Agent': FETCH_UA, 'Accept': 'text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.5', 'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.5' }
     });
     if (!res.ok) return { ok: false, status: res.status, note: 'HTTP ' + res.status };
     const txt = (await res.text()).slice(0, maxLen || 400000);
@@ -358,6 +363,142 @@ async function engProspector(siteUrl, budgetMs) {
   return out;
 }
 
+// ---------- Moteurs de description (op describe : « que fait cette entreprise ? ») ----------
+// DuckDuckGo : endpoint HTML non officiel (html.duckduckgo.com/html), gratuit, sans clé —
+// snippets web + découverte du site officiel. Peu de requêtes (1 par clic ✨ Enrich, résultat
+// mis en cache côté client) mais rate-limit possible depuis des IP serverless : dégradation
+// propre (note), jamais bloquant.
+
+const DDG_SNIPPET_BLOCK = /(facebook|linkedin|twitter|x\.com|instagram|tiktok|youtube|pinterest|amazon\.|leboncoin|tripadvisor|glassdoor|indeed|hellowork|regionsjob|welcomekit|malt\.fr|societe\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|bfmtv|usinenouvelle|google\.|bing\.|duckduckgo\.)/i;
+
+function ddgStrip(html) {
+  return String(html)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, function (m, d) { return String.fromCharCode(parseInt(d, 10)); })
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Liens DDG : //duckduckgo.com/l/?uddg=<url encodée>&rut=... (ou URL directe)
+function ddgRealUrl(href) {
+  let s = String(href || '').replace(/&amp;/g, '&');
+  const m = s.match(/[?&]uddg=([^&]+)/);
+  if (m) { try { s = decodeURIComponent(m[1]); } catch (e) { return null; } }
+  if (s.indexOf('//') === 0) s = 'https:' + s;
+  try { const u = new URL(s); return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null; }
+  catch (e) { return null; }
+}
+
+async function engDdg(ent, budgetMs) {
+  const out = { engine: 'ddg', source: 'duckduckgo' };
+  const name = String(ent.nom || '').replace(/[, ]+\s*(SASU|SAS|SARL|EURL|SELAS|SELARL|SCOP|SCI|SNC|GIE|SCA|SA)\s*$/i, '').trim();
+  if (!name) { out.note = 'nom absent'; return out; }
+  const q = [name, ent.ville || '', 'entreprise'].filter(Boolean).join(' ');
+  try {
+    const r = await fetchText('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q), Math.min(budgetMs, 5000), 200000);
+    if (!r.ok) { out.note = 'DuckDuckGo : ' + r.note + ' (endpoint non officiel — peut être rate-limité)'; return out; }
+    const html = r.html;
+    const reA = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    const reS = /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+    const links = [], snippets = [];
+    let m;
+    while ((m = reA.exec(html)) !== null && links.length < 10) {
+      const url = ddgRealUrl(m[1]);
+      const title = ddgStrip(m[2]);
+      if (url && title) links.push({ url: url, title: title });
+    }
+    while ((m = reS.exec(html)) !== null && snippets.length < 10) {
+      const s = ddgStrip(m[1]);
+      if (s && s.length > 30) snippets.push(s);
+    }
+    if (!links.length) { out.note = 'DuckDuckGo : aucun résultat parsé'; return out; }
+    const nameTok = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    let site = null, snippet = null, snippetHost = '';
+    for (let i = 0; i < links.length && (!site || !snippet); i++) {
+      const host = hostOf(links[i].url);
+      const compact = host.replace(/[^a-z0-9]/g, '');
+      // site officiel : domaine apparenté au nom, hors annuaires/réseaux sociaux
+      if (!site && nameTok && compact.indexOf(nameTok) !== -1 && !TAVILY_BLOCK.test(host)) site = links[i].url;
+      // snippet : résultat apparenté (ou Wikipédia, bonne source de description)
+      if (!snippet && snippets[i] && (compact.indexOf(nameTok) !== -1 || host.indexOf('wikipedia') !== -1)) {
+        snippet = snippets[i];
+        snippetHost = host;
+      }
+    }
+    if (!snippet) { // repli : premier snippet non bloqué
+      for (let i = 0; i < links.length && i < snippets.length; i++) {
+        if (!DDG_SNIPPET_BLOCK.test(hostOf(links[i].url))) { snippet = snippets[i]; snippetHost = hostOf(links[i].url); break; }
+      }
+    }
+    if (site) { out.website = site; out.note = 'site repéré via DuckDuckGo'; }
+    if (snippet) {
+      out.description = snippet.slice(0, 320);
+      out.descSource = snippetHost || 'duckduckgo';
+      out.descConfidence = (snippetHost.indexOf('wikipedia') !== -1) ? 45 : 32;
+    }
+    if (!site && !snippet) out.note = 'DuckDuckGo : aucun résultat exploitable';
+  } catch (e) {
+    out.note = 'DuckDuckGo : ' + String((e && e.message) || e).slice(0, 120);
+  }
+  return out;
+}
+
+// Meta du site : og:description / meta description / JSON-LD — la description que
+// l'entreprise écrit elle-même (confiance la plus haute, ~70).
+async function engMeta(siteUrl, budgetMs) {
+  const out = { engine: 'meta', source: hostOf(siteUrl) || 'site' };
+  const r = await fetchText(siteUrl, Math.min(budgetMs, PAGE_TIMEOUT), 300000);
+  if (!r.ok) { out.note = 'site injoignable (' + r.note + ')'; return out; }
+  const html = r.html;
+  let desc = '';
+  const mj = html.match(/"description"\s*:\s*"([^"]{25,500})"/i); // JSON-LD (schema.org)
+  if (mj) desc = mj[1];
+  if (!desc) {
+    const m1 = html.match(/<meta[^>]+content="([^"]{25,500})"[^>]+(?:name|property)="(?:og:)?description"/i) ||
+      html.match(/<meta[^>]+(?:name|property)="(?:og:)?description"[^>]+content="([^"]{25,500})"/i);
+    if (m1) desc = m1[1];
+  }
+  desc = ddgStrip(desc);
+  if (!desc) { out.note = 'aucune description (meta/JSON-LD) sur ' + out.source; return out; }
+  out.description = desc.slice(0, 320);
+  out.descConfidence = 68;
+  return out;
+}
+
+// op=describe : chaîne « que fait cette entreprise ? » — DDG (site + snippet) puis meta
+// du site découvert ; le front ajoute Wikidata côté client avant l'appel.
+async function opDescribe(body) {
+  const ent = (body && body.entity) || {};
+  const engines = (Array.isArray(body && body.engines) && body.engines.length)
+    ? body.engines : ['ddg', 'meta'];
+  const wants = function (id) { return engines.indexOf(id) !== -1; };
+  const started = Date.now();
+  const left = function () { return DEADLINE_MS - (Date.now() - started); };
+  const ctx = { website: cleanUrl(ent.siteWeb) || null, description: null, source: null, confidence: 0 };
+  const results = [];
+  function absorb(r) {
+    if (!r) return;
+    results.push(r);
+    if (r.website && !ctx.website) ctx.website = r.website;
+    if (r.description && (r.descConfidence || 0) > ctx.confidence) {
+      ctx.description = r.description;
+      ctx.source = r.descSource || r.source || r.engine;
+      ctx.confidence = r.descConfidence || 0;
+    }
+  }
+  // 1. site déjà connu -> meta directe ; sinon DDG découvre le site + un snippet
+  if (ctx.website && wants('meta') && left() > 2000) absorb(await engMeta(ctx.website, left() - 300));
+  if (!ctx.description && wants('ddg') && left() > 2500) absorb(await engDdg(ent, Math.min(left() - 800, 5000)));
+  // 2. DDG a repéré un site -> meta de ce site (la voix de l'entreprise prime sur le snippet)
+  if (!ctx.description && ctx.website && wants('meta') && left() > 2000) absorb(await engMeta(ctx.website, left() - 300));
+  const best = (ctx.description || ctx.website)
+    ? { description: ctx.description, website: ctx.website, source: ctx.source, confidence: ctx.confidence }
+    : null;
+  return { ok: true, best: best, results: results };
+}
+
 // ---------- Orchestration ----------
 async function opLookup(body) {
   const ent = (body && body.entity) || {};
@@ -397,7 +538,8 @@ exports.handler = async function (event) {
   const op = body.op || (event && event.queryStringParameters && event.queryStringParameters.op);
   try {
     if (op === 'lookup') return json(await opLookup(body));
-    return json({ ok: false, error: 'op inconnu (lookup)' }, 400);
+    if (op === 'describe') return json(await opDescribe(body));
+    return json({ ok: false, error: 'op inconnu (lookup, describe)' }, 400);
   } catch (err) {
     return json({ ok: false, error: String((err && err.message) || err) }, 502);
   }

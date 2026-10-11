@@ -17,7 +17,9 @@ score31.js      — Mode Composeur de critères : indice ad hoc généralisé, d
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
 corp_ext.js     — Mode Recherche étendue : ROMEO → ROME 4.0 → La Bonne Boite → croisement listes curatées Supabase (branche de test corp_ext)
 favoris.js      — Mode transversal Favoris : étoiles sur toutes les entités (assos, entreprises, villes), IndexedDB dédié + panneau, moteurs de recherche email/site web (branche de test get_email)
-netlify/functions/ft.js, curated.js, email.js — Fonctions Netlify : proxy France Travail (OAuth + cache token + throttle), listes curatées Supabase, recherche email/site web des favoris (chaîne de moteurs, budget 9 s)
+naf.js          — Données : libellés NAF rév. 2 (INSEE, 732 sous-classes, Licence Ouverte) — code APE → activité en clair, zéro appel réseau (branche de test get_email)
+enrich.js       — Mode transversal Enrich : libellés NAF dans popups/fiches, tooltip de survol, bouton ✨ Enrich (description : Wikidata + DuckDuckGo + meta du site) (branche de test get_email)
+netlify/functions/ft.js, curated.js, email.js — Fonctions Netlify : proxy France Travail (OAuth + cache token + throttle), listes curatées Supabase, recherche email/site web des favoris (chaîne de moteurs, budget 9 s) ; op describe : description d'activité (DuckDuckGo + meta du site)
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
 netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises, /api/ent
 ```
@@ -85,6 +87,11 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - **Recherche email + site web automatisée** (🔎 par favori, « Chercher tout » pour les favoris sans email) : moteur **Wikidata côté client** (P856 site officiel / P968 email — wbsearchentities + wbgetentities avec origin=*, suffixes légaux SAS/SARL… retirés du nom, homonymes écartés par racine du libellé), puis **POST /ft/email** (fonction email.js) avec les moteurs cochés : officiel (mairies), tavily (découverte du site), scrape (extraction d'emails), prospector (opt-in). Fusion dans le favori : email + source + confiance %, site web, note d'échec, date du dernier lookup.
 - **Système de plugins découplé** : registre déclaratif FAV_ENGINES côté front (id / client-serveur / types concernés / label) ; côté serveur un moteur = une fonction engXxx + une entrée dans opLookup (email.js). Ajouter un moteur ne touche à rien d'autre. Moteurs cochables dans le panneau, config en localStorage « openfrance-fav-engines » (prospector décoché par défaut : quota gratuit 50 vérifs/jour).
 
+### enrich.js + naf.js — mode transversal « Enrich » (branche de test get_email)
+- **naf.js** : table statique NAF_LABELS (732 sous-classes NAF rév. 2, INSEE Licence Ouverte, ~50 Ko) → libellé d'activité en clair depuis le code APE, zéro appel réseau. Libellés insérés dans popups, fiches et tooltip de survol.
+- **enrich.js** : 3e couche d'enveloppement (par-dessus favoris.js, aucun .js existant modifié) : libellés NAF dans annuaire / recherche étendue / La Bonne Boite / fiche entreprise, tooltip HTML #enrTip au survol des lignes de liste, bouton ✨ Enrich.
+- **✨ Enrich** : Wikidata côté client (description) puis POST /ft/email {op:'describe'} — DuckDuckGo (snippets + découverte du site officiel, liens uddg décodés) puis meta du site (og:description / meta description / JSON-LD). Budget 9 s, dégradation propre si DDG rate-limité. Cache localStorage « openfrance-enrich » (clé type:id, cap 300 FIFO) ; si la ligne est en favori, le site web découvert complète le favori (favDbPut + FAV.refresh).
+
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
 - **IndexedDB** (`openfrance-annuaire`, store `assos`) : clés `assos-<dep>` ({v, date, rows}), `nomen` ({child}), `ent-<dep|terms|section>` (résultats de recherche entreprises) — **persistant entre sessions**
@@ -139,6 +146,8 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - **Tavily** : découverte du site web officiel (annuaires, réseaux sociaux et agrégateurs écartés par liste de blocage) ; clé de l'utilisateur en variable d'environnement Netlify TAVILY_API_KEY (jamais dans le repo) — moteur sauté proprement si absente.
 - **prospector-mcp** (npm prospector-mcp, github.com/JosieBot26/prospector-mcp-email-finder, MIT) : recherche + vérification des emails (DNS/SMTP sans envoi), lancé par email.js en sous-processus MCP stdio (outil find_emails) ; tier gratuit 50 vérifs/jour, opt-in.
 - **Base Adresse Nationale** : autocomplete « Ajouter une ville » du panneau favoris (proxy /api/adr/ existant, type=municipality).
+- **DuckDuckGo** (endpoint HTML html.duckduckgo.com/html, non officiel) : snippets de description + découverte du site officiel (liens uddg décodés), gratuit sans clé — 1 requête par clic Enrich, résultat caché ; dégradation propre si bloqué.
+- **Nomenclature NAF rév. 2** (INSEE, Licence Ouverte 2.0) : 732 sous-classes embarquées dans naf.js (~50 Ko statique, zéro appel réseau) ; en vigueur jusqu'à fin 2026, NAF 2025 en janvier 2027.
 
 ## 🐛 Bugs résolus / pièges connus (NE PAS RÉGRESSER)
 
@@ -170,6 +179,8 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 
 23. **Favoris : l'email d'entreprise est le cas difficile, pas l'identifiant** (10/2026) : avec SIREN/SIRET on identifie une entreprise mais aucun annuaire officiel gratuit ne donne son email (les annuaires payants agrègent du scraping). Chaîne retenue : Wikidata → Tavily (site officiel) → scraping du site (mailto, regex, JSON-LD, déobfuscation [at]/(at)/[dot], protection Cloudflare data-cfemail XOR, pages contact, contrôle MX dns.promises — emails de prestataires hors domaine pénalisés, domaines sans MX écartés) → prospector-mcp (vérif SMTP opt-in, 50/jour). Les mairies ont elles une source officielle (annuaire service-public, champ adresse_courriel). Pièges : fonctions Netlify synchrones ~10 s → budget 9 s réparti entre moteurs (moteurs suivants sautés si le temps manque) ; Tavily sans TAVILY_API_KEY → moteur sauté proprement ; erreurs applicatives en HTTP 200 {ok:false} ; écriture des fichiers JS par l'agent → backslashes des regex mangés dans les template literals, écrire sur disque + new Function() en garde avant tout push.
 
+24. **Enrich : DDG non officiel + NAF rév. 2 périssable** (10/2026) : l'endpoint HTML de DuckDuckGo n'est pas une API contractuelle — parse par classes CSS (result__a / result__snippet), décodage des redirections uddg, rate-limit possible depuis les IP serverless → budget 4-5 s, 1 requête par clic, cache client définitif, dégradation en note sans casser la réponse. La NAF rév. 2 (732 codes embarqués dans naf.js) cesse d'être la nomenclature de référence au 1er janvier 2027 (NAF 2025) — naf.js à régénérer alors depuis les fichiers INSEE.
+
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
@@ -177,7 +188,7 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Branche de test **`score31`** (fork de `work`) : fonctionnalité « Composeur de critères » (généralisation du score perso). Tester en local (`netlify dev`, les proxys `/api/loyers/` y sont actifs), merger vers `work`/`main` ou abandonner librement.
 - Branche de test **`corp_search`** (fork de `work`) : fonctionnalité « Composeur d'entreprises » (corp.js). Tester en local (`netlify dev`, le proxy `/api/ent/` y est actif), merger vers `work`/`main` ou abandonner librement.
 - Branche de test **corp_ext** (fork de work) : fonctionnalité « Recherche étendue d'entreprises » (corp_ext.js + netlify/functions/). Variables d'env Netlify requises (mêmes contextes que FT_CLIENT_ID existant) : FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY. Test local : clés dans .env puis netlify dev (fonctions + redirects /ft/* actifs).
-- Branche de test **get_email** (fork de work) : fonctionnalité « Favoris et contacts » (favoris.js + netlify/functions/email.js). Variable d'env Netlify OPTIONNELLE : TAVILY_API_KEY (découverte des sites web — moteur sauté proprement si absente) ; prospector-mcp (dépendance npm netlify/functions/package.json) pour la vérification SMTP opt-in. Test local : netlify dev (fonction + redirect /ft/email actifs).
+- Branche de test **get_email** (fork de work) : fonctionnalité « Favoris et contacts » (favoris.js, enrich.js, naf.js + netlify/functions/email.js). Variable d'env Netlify OPTIONNELLE : TAVILY_API_KEY (découverte des sites web — moteur sauté proprement si absente) ; prospector-mcp (dépendance npm netlify/functions/package.json) pour la vérification SMTP opt-in. Test local : netlify dev (fonction + redirect /ft/email actifs).
 - Migration Vercel envisagée (100 deploys/jour) : traduire `netlify.toml` → `vercel.json` (rewrites), rien d'autre à changer
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 
