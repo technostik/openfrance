@@ -108,6 +108,67 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 var geoLayer = null;
 
+// ============================================================
+// ÉTALONNAGE SPIRAL DES MARQUEURS CO-LOCALISÉS (généralisé)
+// ============================================================
+// Mécanisme généralisé depuis la recherche étendue (corp_ext.js) : plusieurs
+// marqueurs sans géolocalisation précise placés au même point (centroïde de
+// commune pour les associations RNA, coordonnées identiques pour des
+// établissements d'une même adresse) sont écartés en spirale (angle d'or)
+// autour de la position réelle, avec un pas proportionnel au zoom courant —
+// recalculés à chaque zoom. Un marqueur isolé reste exactement à sa position
+// d'origine. Utilisé par annuaire.js (assos + entreprises) et corp.js (composeur).
+var MK_SPREAD = { items: [], onZoom: null };
+function mkMetersPerPixel(lat, zoom) {
+  // Résolution au sol des tuiles Web Mercator 256 px à la latitude donnée
+  return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+}
+function mkPxToLatLng(base, dx, dy) {
+  var mpp = mkMetersPerPixel(base[0], map.getZoom());
+  return [
+    base[0] - (dy * mpp) / 111320, // écran : dy vers le bas = vers le sud
+    base[1] + (dx * mpp) / (111320 * Math.cos(base[0] * Math.PI / 180))
+  ];
+}
+// items : [{ m: marqueur Leaflet, base: [lat, lng] position réelle }] — les items
+// dont la base est identique (≈11 m) sont écartés en spirale.
+function mkSpreadApply(items) {
+  var groups = {};
+  items.forEach(function (it) {
+    var key = it.base[0].toFixed(4) + ',' + it.base[1].toFixed(4);
+    (groups[key] = groups[key] || []).push(it);
+  });
+  var stats = { groups: 0, spread: 0 };
+  for (var k in groups) {
+    var g = groups[k];
+    if (g.length === 1) {
+      // isolé : retour à la position réelle (il a pu être écarté au rendu précédent)
+      g[0].dx = null; g[0].dy = null;
+      g[0].m.setLatLng(g[0].base);
+      continue;
+    }
+    stats.groups++; stats.spread += g.length;
+    for (var i = 0; i < g.length; i++) {
+      var r = 16 * Math.sqrt(i + 0.5); // px : marqueurs rayon 5-7 ⟵ espacés sans se toucher
+      var a = i * 2.399963229728653; // angle d'or : répartition homogène sans alignement
+      g[i].dx = r * Math.cos(a);
+      g[i].dy = r * Math.sin(a);
+      g[i].m.setLatLng(mkPxToLatLng(g[i].base, g[i].dx, g[i].dy));
+    }
+  }
+  MK_SPREAD.items = items;
+  if (!MK_SPREAD.onZoom) {
+    MK_SPREAD.onZoom = function () { // zoom changé : pas recalculés en mètres
+      MK_SPREAD.items.forEach(function (it) {
+        if (it.dx != null) it.m.setLatLng(mkPxToLatLng(it.base, it.dx, it.dy));
+      });
+    };
+    map.on('zoomend', MK_SPREAD.onZoom);
+  }
+  return stats;
+}
+function mkSpreadClear() { MK_SPREAD.items = []; }
+
 var state = {
   view: 'france', dep: null,
   category: 'delinquance',

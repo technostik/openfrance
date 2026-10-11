@@ -24,6 +24,7 @@ var ANN = {
   entCache: {},       // "dep|q|section" -> rows
   markers: null,      // featureGroup des marqueurs courants
   markerIndex: {},    // clé marqueur ('a:<id>' / 'e:<siren>') -> marker Leaflet (mise à jour par différence)
+  spread: null,       // stats de l'étalement spirale des marqueurs co-localisés (mkSpreadApply, app.js)
   showing: [],        // résultats affichés (assos + entreprises)
   seq: 0              // jeton anti-course pour les recherches asynchrones
 };
@@ -422,6 +423,8 @@ function clearAnnMarkers() {
   if (ANN.markers) { map.removeLayer(ANN.markers); ANN.markers = null; }
   ANN.showing = [];
   ANN.markerIndex = {};
+  ANN.spread = null;
+  mkSpreadClear(); // les marqueurs retirés ne sont plus recalculés au zoom
 }
 function assoPopup(a, th) {
   var html = '<b>' + esc(a.t) + '</b>';
@@ -461,16 +464,24 @@ function annSyncMarkers(entries) {
     if (!wanted[k]) { group.removeLayer(ANN.markerIndex[k]); delete ANN.markerIndex[k]; }
   }
   // 2. crée uniquement les marqueurs manquants
+  var spreadItems = [];
   entries.forEach(function (en) {
-    if (ANN.markerIndex[en.key]) { en.rec._marker = ANN.markerIndex[en.key]; return; }
-    var m = L.circleMarker(en.latlng, {
-      radius: 5, weight: 1, color: '#0f172a', fillColor: en.color, fillOpacity: 0.85
-    });
-    m.bindPopup(en.popup);
-    m.addTo(group);
-    ANN.markerIndex[en.key] = m;
-    en.rec._marker = m;
+    if (ANN.markerIndex[en.key]) { en.rec._marker = ANN.markerIndex[en.key]; }
+    else {
+      var m = L.circleMarker(en.latlng, {
+        radius: 5, weight: 1, color: '#0f172a', fillColor: en.color, fillOpacity: 0.85
+      });
+      m.bindPopup(en.popup);
+      m.addTo(group);
+      ANN.markerIndex[en.key] = m;
+      en.rec._marker = m;
+    }
+    // associations RNA : centroïde de commune ; entreprises : siège — plusieurs
+    // entités sans géolocalisation précise peuvent partager la même position.
+    spreadItems.push({ m: ANN.markerIndex[en.key], base: en.latlng });
   });
+  // 3. écarte en spirale les marqueurs co-localisés (mécanisme généralisé, app.js)
+  ANN.spread = mkSpreadApply(spreadItems);
 }
 // Construit les entrées marqueur des associations (cap 2000)
 function assoEntries(list, centroids, cap) {
@@ -623,6 +634,9 @@ function annApplySearch() {
     annSyncMarkers(entries);
     renderAnnList();
     var parts = [];
+    if (ANN.spread && ANN.spread.groups) {
+      parts.unshift('📍 ' + ANN.spread.groups + ' groupe(s) de marqueurs co-localisés écartés en spirale');
+    }
     if (type !== 'ent' && assoCount) parts.push(assoCount.toLocaleString('fr-FR') + ' association(s)');
     if ((type === 'ent' || type === 'both') && res !== null) parts.push(entCount.toLocaleString('fr-FR') + ' entreprise(s)');
     if (entErr) parts.push('<span class="ann-warn">⚠️ Entreprises : ' + esc(entErr) + '</span>');
