@@ -1,0 +1,105 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/data/delinquance-dep.csv",
+      "destination": "https://static.data.gouv.fr/resources/bases-statistiques-communale-departementale-et-regionale-de-la-delinquance-enregistree-par-la-police-et-la-gendarmerie-nationales/20260709-120038/donnee-dep-data.gouv-2025-geographie2026-produit-le2026-06-25.csv"
+    },
+    {
+      "source": "/data/departements.json",
+      "destination": "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements-version-simplifiee.geojson"
+    },
+    {
+      "source": "/api/communes/:path*",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/44ef4323-1097-48d5-8719-3c544b55d294/data/:path*"
+    },
+    {
+      "source": "/api/loyers/:path*",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/55b34088-0964-415f-9df7-d87dd98a09be/data/:path*"
+    },
+    {
+      "source": "/geo/communes/:path*",
+      "destination": "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/:path*"
+    },
+    {
+      "source": "/data/revenus.csv",
+      "destination": "https://static.data.gouv.fr/resources/revenu-des-francais-a-la-commune/20251210-134014/revenu-des-francais-a-la-commune-1765372688826.csv"
+    },
+    {
+      "source": "/data/dvf-stats.csv",
+      "destination": "https://data-pipeline-open.s3.sbg.io.cloud.ovh.net/dvf/stats_whole_period.csv"
+    },
+    {
+      "source": "/data/pres2022-t1.txt",
+      "destination": "https://static.data.gouv.fr/resources/election-presidentielle-des-10-et-24-avril-2022-resultats-definitifs-du-1er-tour/20220414-152356/resultats-par-niveau-dpt-t1-france-entiere.txt"
+    },
+    {
+      "source": "/data/pres2022-t2.txt",
+      "destination": "https://static.data.gouv.fr/resources/election-presidentielle-des-10-et-24-avril-2022-resultats-definitifs-du-2nd-tour/20220428-142127/resultats-par-niveau-dpt-t2-france-entiere.txt"
+    },
+    {
+      "source": "/data/leg2024-t1.csv",
+      "destination": "https://static.data.gouv.fr/resources/resultats-du-1er-tour-des-elections-legislatives-2024-par-circonscription/20240701-162320/lg2024-resultats-circonscriptions-une-ligne-par-candidat2.csv"
+    },
+    {
+      "source": "/data/leg2024-t2.csv",
+      "destination": "https://static.data.gouv.fr/resources/elections-legislatives-des-30-juin-et-7-juillet-2024-resultats-definitifs-du-2nd-tour/20240710-170728/resultats-definitifs-par-circonscription.csv"
+    },
+    {
+      "source": "/data/euro2024-dep.csv",
+      "destination": "https://static.data.gouv.fr/resources/resultats-des-elections-europeennes-du-9-juin-2024/20240613-154909/resultats-definitifs-par-departement.csv"
+    },
+    {
+      "source": "/api/elect-gen/:path*",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/b8703c69-a18f-46ab-9e7f-3a8368dcb891/data/:path*"
+    },
+    {
+      "source": "/api/elect-cand/:path*",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/52a11762-45b4-414f-b6a2-eaa290217dc6/data/:path*"
+    },
+    {
+      "source": "/api/assos",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/91fd139b-4c2a-4d36-b05b-8607b41f1202/data"
+    },
+    {
+      "source": "/api/assos/:path*",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/91fd139b-4c2a-4d36-b05b-8607b41f1202/data/:path*"
+    },
+    {
+      "source": "/api/nomen",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/2b618348-cdb1-4d1b-a60c-26f5213b0f58/data"
+    },
+    {
+      "source": "/api/nomen/:path*",
+      "destination": "https://tabular-api.data.gouv.fr/api/resources/2b618348-cdb1-4d1b-a60c-26f5213b0f58/data/:path*"
+    },
+    {
+      "source": "/api/entreprises",
+      "destination": "https://recherche-entreprises.api.gouv.fr/search"
+    },
+    {
+      "source": "/api/entreprises/:path*",
+      "destination": "https://recherche-entreprises.api.gouv.fr/search/:path*"
+    },
+    {
+      "source": "/api/ent/:path*",
+      "destination": "https://recherche-entreprises.api.gouv.fr/:path*"
+    },
+    {
+      "source": "/api/adr/:path*",
+      "destination": "https://api-adresse.data.gouv.fr/:path*"
+    },
+    {
+      "source": "/ft/ft",
+      "destination": "/api/ft"
+    },
+    {
+      "source": "/ft/curated",
+      "destination": "/api/curated"
+    },
+    {
+      "source": "/ft/email",
+      "destination": "/api/email"
+    }
+  ]
+}

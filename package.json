@@ -1,0 +1,8 @@
+{
+  "name": "openfrance",
+  "private": true,
+  "description": "OpenFrance — dépendances des fonctions Vercel (api/). prospector-mcp : moteur de vérification d'emails utilisé par api/email.js (opt-in, dégrade proprement si absent). Équivalent Netlify : netlify/functions/package.json.",
+  "dependencies": {
+    "prospector-mcp": "^1.0.0"
+  }
+}
