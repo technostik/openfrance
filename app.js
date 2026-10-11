@@ -109,15 +109,15 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 var geoLayer = null;
 
 // ============================================================
-// ÉTALONNAGE SPIRAL DES MARQUEURS CO-LOCALISÉS (généralisé)
+// ÉTALONNAGE SPIRAL DES MARQUEURS CO-LOCALISÉS (commun)
 // ============================================================
-// Mécanisme généralisé depuis la recherche étendue (corp_ext.js) : plusieurs
-// marqueurs sans géolocalisation précise placés au même point (centroïde de
-// commune pour les associations RNA, coordonnées identiques pour des
-// établissements d'une même adresse) sont écartés en spirale (angle d'or)
+// Plusieurs marqueurs sans géolocalisation précise placés au même point
+// (centroïde de commune pour les associations RNA, coordonnées identiques pour
+// des établissements d'une même adresse) sont écartés en spirale (angle d'or)
 // autour de la position réelle, avec un pas proportionnel au zoom courant —
 // recalculés à chaque zoom. Un marqueur isolé reste exactement à sa position
-// d'origine. Utilisé par annuaire.js (assos + entreprises) et corp.js (composeur).
+// d'origine. Utilisé par annuaire.js (assos + entreprises), corp.js (composeur)
+// et corp_ext.js (recherche étendue) : mécanisme commun.
 var MK_SPREAD = { items: [], onZoom: null };
 function mkMetersPerPixel(lat, zoom) {
   // Résolution au sol des tuiles Web Mercator 256 px à la latitude donnée
@@ -149,7 +149,7 @@ function mkSpreadApply(items) {
     }
     stats.groups++; stats.spread += g.length;
     for (var i = 0; i < g.length; i++) {
-      var r = 16 * Math.sqrt(i + 0.5); // px : marqueurs rayon 5-7 ⟵ espacés sans se toucher
+      var r = 12 * Math.sqrt(i + 0.5); // px : marqueurs rayon 5-7 ⟵ espacés sans se toucher
       var a = i * 2.399963229728653; // angle d'or : répartition homogène sans alignement
       g[i].dx = r * Math.cos(a);
       g[i].dy = r * Math.sin(a);
@@ -168,6 +168,14 @@ function mkSpreadApply(items) {
   return stats;
 }
 function mkSpreadClear() { MK_SPREAD.items = []; }
+
+// Distance haversine en km entre deux points [lat, lng] (utilitaire partagé)
+function distKm(a, b) {
+  var R = 6371, dLa = (b[0] - a[0]) * Math.PI / 180, dLo = (b[1] - a[1]) * Math.PI / 180;
+  var s = Math.sin(dLa / 2) * Math.sin(dLa / 2) +
+    Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
 
 var state = {
   view: 'france', dep: null,
@@ -1313,8 +1321,8 @@ function initUI() {
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
 
-    // Mode « Score perso (31) » (score31.js) : hors REGISTRY, gestion dédiée.
-    // Les scripts annuaire.js/score31.js se chargent après app.js : appel par typeof guard.
+    // Mode « Score perso (31) » (score.js) : hors REGISTRY, gestion dédiée.
+    // Les scripts annuaire.js/score.js se chargent après app.js : appel par typeof guard.
     if (state.category === 'score31') {
       if (typeof scoreEnter === 'function') scoreEnter();
       return;
@@ -1369,3 +1377,4 @@ Promise.all([
   console.error('[OpenFrance] Échec du démarrage :', err);
   showError('Impossible de charger les données. Détails dans la console (F12).', err.message);
 });
+

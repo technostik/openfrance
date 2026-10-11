@@ -722,3 +722,4 @@ function scoreLeave() {
     }
   }
 }
+
