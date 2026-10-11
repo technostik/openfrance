@@ -349,7 +349,7 @@ function extRenderFT() {
     EXT.markerBySiren[row.rec.siren] = m;
     spreadItems.push({ m: m, base: base });
   });
-  extSpreadApply(spreadItems); // même commune = même centroïde : écarte les marqueurs superposés
+  mkSpreadApply(spreadItems); // même commune = même centroïde : écarte les marqueurs superposés
   EXT.markers.addTo(map);
 }
 
@@ -770,61 +770,16 @@ function extRenderResults(lbb, curated) {
     EXT.markerBySiren[c.siren] = m;
     spreadItems.push({ m: m, base: base });
   });
-  extSpreadApply(spreadItems); // coordonnées identiques : écarte les marqueurs superposés
+  mkSpreadApply(spreadItems); // coordonnées identiques : écarte les marqueurs superposés
   EXT.markers.addTo(map);
 }
 
 // ---------- Étalement des marqueurs co-localisés ----------
-// Plusieurs résultats peuvent tomber EXACTEMENT au même point : l'annuaire
-// French Tech place tous les marqueurs d'une commune sur son centroïde (BAN) —
-// ex. 11 entreprises toulousaines = 11 cercles parfaitement superposés, donc
-// 1 seul point visible (et seul le dernier ajouté est cliquable) — et La Bonne
-// Boite peut renvoyer plusieurs établissements aux mêmes coordonnées. On écarte
-// chaque groupe de marqueurs co-localisés en spirale (angle d'or) autour du
-// point réel, avec un pas proportionnel au zoom courant ; les positions sont
-// recalculées à chaque zoomend pour rester compactes à toutes les échelles.
-var EXT_SPREAD = { items: [], onZoom: null };
-function extMetersPerPixel(lat, zoom) {
-  // Résolution au sol des tuiles Web Mercator 256 px à la latitude donnée
-  return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
-}
-function extPxToLatLng(base, dx, dy) {
-  var mpp = extMetersPerPixel(base[0], map.getZoom());
-  return [
-    base[0] - (dy * mpp) / 111320, // écran : dy vers le bas = vers le sud
-    base[1] + (dx * mpp) / (111320 * Math.cos(base[0] * Math.PI / 180))
-  ];
-}
-// items : [{ m: marker Leaflet, base: [lat, lon] réel }] — co-localisés si base
-// identiques à 4 décimales (~11 m). Un marqueur isolé garde sa position exacte.
-function extSpreadApply(items) {
-  var groups = {};
-  items.forEach(function (it) {
-    var key = it.base[0].toFixed(4) + ',' + it.base[1].toFixed(4);
-    (groups[key] = groups[key] || []).push(it);
-  });
-  for (var k in groups) {
-    var g = groups[k];
-    if (g.length === 1) continue;
-    for (var i = 0; i < g.length; i++) {
-      var r = 16 * Math.sqrt(i + 0.5); // px : marqueurs radius 5-7 → espacés sans se toucher
-      var a = i * 2.399963229728653; // angle d'or : répartition homogène sans alignement
-      g[i].dx = r * Math.cos(a);
-      g[i].dy = r * Math.sin(a);
-      g[i].m.setLatLng(extPxToLatLng(g[i].base, g[i].dx, g[i].dy));
-    }
-  }
-  EXT_SPREAD.items = items;
-  if (!EXT_SPREAD.onZoom) {
-    EXT_SPREAD.onZoom = function () { // zoom changé → pas en mètres recalculé
-      EXT_SPREAD.items.forEach(function (it) {
-        if (it.dx != null) it.m.setLatLng(extPxToLatLng(it.base, it.dx, it.dy));
-      });
-    };
-    map.on('zoomend', EXT_SPREAD.onZoom);
-  }
-}
-function extSpreadClear() { EXT_SPREAD.items = []; }
+// Mécanisme commun (app.js : mkSpreadApply / mkSpreadClear) : l'annuaire French
+// Tech place tous les marqueurs d'une commune sur son centroïde (BAN) et La
+// Bonne Boite peut renvoyer plusieurs établissements aux mêmes coordonnées —
+// les groupes co-localisés sont écartés en spirale autour du point réel, à
+// l'échelle du zoom courant (repositionnés à chaque zoomend).
 // Note de transparence pour la zone détail : combien de groupes co-localisés ?
 function extStackNote(pairs) {
   if (!pairs || !pairs.length) return '';
@@ -852,7 +807,7 @@ function extFrameZone() {
   map.fitBounds(EXT.circle.getBounds(), { padding: [30, 30] });
 }
 function extClearMap() {
-  extSpreadClear(); // les marqueurs retirés n'ont plus d'offset à recalculer
+  mkSpreadClear(); // les marqueurs retirés n'ont plus d'offset à recalculer
   if (EXT.markers) { map.removeLayer(EXT.markers); EXT.markers = null; }
   EXT.markerBySiren = {};
   if (EXT.circle) { map.removeLayer(EXT.circle); EXT.circle = null; }

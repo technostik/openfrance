@@ -52,6 +52,19 @@
     <label>Catégorie
       <select id="annCat"><option value="">Toutes catégories</option></select>
     </label>
+    <label id="annCityWrap">Ville
+      <input id="annCity" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="annCityDrop" class="sc-drop"></div>
+    </label>
+    <label>Zone
+      <select id="annRadius" title="Périmètre du filtre ville : la commune seule ou un rayon autour de la ville">
+        <option value="0">Dans la ville</option>
+        <option value="5">± 5 km</option>
+        <option value="10">± 10 km</option>
+        <option value="20">± 20 km</option>
+        <option value="50">± 50 km</option>
+      </select>
+    </label>
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
   </div>
   <div id="scoreControls" style="display:none">
@@ -158,7 +171,7 @@
   <button id="favBtn" type="button" title="Favoris : entités suivies + recherche email/site web">⭐ Favoris</button>
   <span id="status">⏳ Chargement des données…</span>
 </section>
-<p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département).</p>
+<p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département). Ville : tapez un nom de commune pour filtrer « dans la ville » ou par rayon.</p>
 <p id="annQueryExp" class="muted" style="display:none"></p>
 <p id="coModeHint" class="muted" style="display:none"></p>
 
@@ -243,7 +256,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 <script src="annuaire.js"></script>
-<script src="score31.js"></script>
+<script src="score.js"></script>
 <script src="corp.js"></script>
 <script src="corp_ext.js"></script>
 <script src="favoris.js"></script>
@@ -262,3 +275,4 @@ if ('serviceWorker' in navigator) {
 </script>
 </body>
 </html>
+
