@@ -369,7 +369,7 @@ async function engProspector(siteUrl, budgetMs) {
 // Snippets d'annuaires/agrégateurs d'entreprises (annuaire-entreprises, societe.com,
 // pappers…) : génériques et inutiles (« Retrouvez toutes les informations sur X… »)
 // — jamais retenus comme description, on prend le résultat suivant.
-const DDG_SNIPPET_BLOCK = /(facebook|linkedin|twitter|x\.com|instagram|tiktok|youtube|pinterest|amazon\.|leboncoin|tripadvisor|glassdoor|indeed|hellowork|regionsjob|welcomekit|malt\.fr|societe\.com|societes\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|bfmtv|usinenouvelle|google\.|bing\.|duckduckgo\.|annuaire-entreprises|data\.gouv|bodacc|lannuaire)/i;
+const DDG_SNIPPET_BLOCK = /(facebook|linkedin|twitter|x\.com|instagram|tiktok|youtube|pinterest|amazon\.|leboncoin|tripadvisor|glassdoor|indeed|hellowork|regionsjob|welcomekit|malt\.fr|societe\.com|societes\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|bfmtv|usinenouvelle|google\.|bing\.|duckduckgo\.|annuaire-entreprises|data\.gouv|bodacc|lannuaire|rocketreach|zoominfo|lusha|kaspr|contactout|signalhire|kompass|europages)/i;
 
 function ddgStrip(html) {
   return String(html)
