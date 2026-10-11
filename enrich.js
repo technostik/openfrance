@@ -14,19 +14,31 @@
 // ✨ Enrich (op describe de email.js) : Wikidata côté client (description en une
 // phrase via wbsearchentities) puis POST /ft/email {op:'describe'} — DuckDuckGo
 // (snippets + découverte du site, gratuit, sans clé, dégradation propre) puis
-// meta du site (og:description / JSON-LD). Résultat en cache localStorage
-// « openfrance-enrich » (clé type:id, cap 300 entrées, jamais re-demandé) ;
-// si l'entité est un favori, le site web découvert complète le favori
-// (FAV.all + favDbPut de favoris.js, sans le modifier).
+// meta du site (og:description / JSON-LD).
+//
+// Persistance (db) : le cache enrich vit dans IndexedDB « openfrance-enrich »
+// (store « enr », clé type:id, cap 300 FIFO) — même philosophie que les favoris.
+// localStorage « openfrance-enrich » reste utilisé pour un démarrage instantané
+// (lecture synchrone) ; la base fait foi, migration automatique de l'existant.
+// Si l'entité est un favori : le site web découvert complète le favori et la
+// description est aussi copiée dans son enregistrement (FAV.all + favDbPut de
+// favoris.js, sans le modifier).
+//
+// Tooltips de survol (#enrTip, évalués AU MOMENT du survol — pas au rendu) :
+//   - lignes des listes de résultats (annuaire, composeur, LBB, French Tech)
+//   - marqueurs de la carte (dots) : annuaire (ent/asso), composeur, LBB, FT
+// La description en cache s'affiche dès qu'elle existe (session courante ou
+// précédente). Le clic garde les popups natifs Leaflet (déjà enrichis).
 
 var ENR = {
   cache: {},     // clé type:id -> { desc, source, conf, site, date }
   running: {},   // clé -> true (Enrich en cours)
   tip: null,     // div #enrTip (tooltip de survol)
+  db: null,      // IndexedDB openfrance-enrich (store enr) — null si indisponible
   _inited: false
 };
 var ENR_KEY = 'openfrance-enrich';
-var ENR_MAX = 300; // entrées max en localStorage (les plus anciennes éliminées)
+var ENR_MAX = 300; // entrées max en cache (les plus anciennes éliminées, base incluse)
 
 function enrLoad() {
   try {
@@ -39,10 +51,84 @@ function enrSave() {
     var keys = Object.keys(ENR.cache);
     if (keys.length > ENR_MAX) {
       keys.sort(function (a, b) { return (ENR.cache[a].date || 0) - (ENR.cache[b].date || 0); });
-      for (var i = 0; i < keys.length - ENR_MAX; i++) delete ENR.cache[keys[i]];
+      for (var i = 0; i < keys.length - ENR_MAX; i++) {
+        delete ENR.cache[keys[i]];
+        enrDbDel(keys[i]); // éviction répercutée dans la base
+      }
     }
     localStorage.setItem(ENR_KEY, JSON.stringify(ENR.cache));
   } catch (e) { /* quota : best-effort, on ignore */ }
+}
+
+// ---------- Persistance IndexedDB (« openfrance-enrich », store « enr ») ----------
+function enrDbOpen() {
+  return new Promise(function (resolve) {
+    try {
+      var rq = indexedDB.open('openfrance-enrich', 1);
+      rq.onupgradeneeded = function (ev) {
+        var db = ev.target.result;
+        if (!db.objectStoreNames.contains('enr')) db.createObjectStore('enr', { keyPath: 'k' });
+      };
+      rq.onsuccess = function (ev) { ENR.db = ev.target.result; resolve(ENR.db); };
+      rq.onerror = function () { resolve(null); };
+      rq.onblocked = function () { resolve(null); };
+    } catch (e) { resolve(null); }
+  });
+}
+function enrDbPut(key, rec) {
+  if (!ENR.db || !rec) return;
+  try {
+    var tx = ENR.db.transaction('enr', 'readwrite');
+    tx.objectStore('enr').put({
+      k: key, desc: rec.desc || '', source: rec.source || '',
+      conf: rec.conf || 0, site: rec.site || '', date: rec.date || 0
+    });
+  } catch (e) { /* best-effort */ }
+}
+function enrDbDel(key) {
+  if (!ENR.db) return;
+  try {
+    var tx = ENR.db.transaction('enr', 'readwrite');
+    tx.objectStore('enr').delete(key);
+  } catch (e) { /* best-effort */ }
+}
+// Charge la base dans ENR.cache (l'entrée la plus récente gagne), renvoie la
+// liste des clés présentes en base (pour la migration localStorage -> base).
+function enrDbLoad() {
+  return new Promise(function (resolve) {
+    if (!ENR.db) return resolve({});
+    var seen = {};
+    try {
+      var tx = ENR.db.transaction('enr', 'readonly');
+      var rq = tx.objectStore('enr').openCursor();
+      rq.onsuccess = function (ev) {
+        var cur = ev.target.result;
+        if (!cur) return resolve(seen);
+        var v = cur.value;
+        if (v && v.k && v.desc) {
+          seen[v.k] = 1;
+          var old = ENR.cache[v.k];
+          if (!old || (v.date || 0) >= (old.date || 0)) {
+            ENR.cache[v.k] = { desc: v.desc, source: v.source, conf: v.conf, site: v.site, date: v.date };
+          } else {
+            enrDbPut(v.k, old); // localStorage plus récent -> réécrit en base
+          }
+        }
+        cur.continue();
+      };
+      rq.onerror = function () { resolve(seen); };
+    } catch (e) { resolve({}); }
+  });
+}
+function enrDbInit() {
+  return enrDbOpen().then(function () { return enrDbLoad(); }).then(function (seen) {
+    // migration : les entrées connues de localStorage seulement partent en base
+    var n = 0;
+    for (var k in ENR.cache) {
+      if (!seen[k]) { enrDbPut(k, ENR.cache[k]); n++; }
+    }
+    return n;
+  }).catch(function () { /* IndexedDB indisponible : localStorage suffit */ });
 }
 
 // ---------- Libellés NAF (naf.js) ----------
@@ -125,10 +211,13 @@ ENR.run = function (ent, key) {
       if (best.desc && best.desc !== prev.desc) {
         ENR.cache[key] = { desc: best.desc, source: best.source, conf: best.conf, site: best.site || '', date: Date.now() };
         enrSave();
-        // favori présent ? le site web découvert complète le favori (sans modifier favoris.js)
-        if (best.site && typeof FAV !== 'undefined' && FAV.all[key] && !FAV.all[key].siteWeb) {
-          FAV.all[key].siteWeb = best.site;
-          if (typeof favDbPut === 'function') favDbPut(key, FAV.all[key]);
+        enrDbPut(key, ENR.cache[key]); // persistance en base (IndexedDB)
+        // favori présent ? site web + description complètent le favori (sans modifier favoris.js)
+        if (typeof FAV !== 'undefined' && FAV.all[key]) {
+          var fav = FAV.all[key];
+          if (best.site && !fav.siteWeb) fav.siteWeb = best.site;
+          if (!fav.desc) { fav.desc = best.desc; fav.descSource = best.source || ''; }
+          if (typeof favDbPut === 'function') favDbPut(key, fav);
           FAV.refresh();
         }
       }
@@ -176,7 +265,7 @@ ENR.nafLine = function (raw) {
   return lab ? '<br><i>🧭 ' + esc(lab) + '</i>' : '';
 };
 
-// ---------- Tooltip de survol (listes) ----------
+// ---------- Tooltip de survol (listes + marqueurs carte) ----------
 ENR.tipShow = function (html, ev) {
   if (!ENR.tip) return;
   ENR.tip.innerHTML = html;
@@ -193,13 +282,24 @@ ENR.tipMove = function (ev) {
   ENR.tip.style.top = y + 'px';
 };
 ENR.tipHide = function () { if (ENR.tip) ENR.tip.style.display = 'none'; };
-function enrWireRow(row, html) {
-  row.addEventListener('mouseenter', function (ev) { ENR.tipShow(html, ev); });
+// Le contenu est évalué AU SURVOL (fonction builder + arguments) : la description
+// apparaît dès qu'elle est en cache, même enrichie après le rendu de la liste.
+function enrWireRow(row, builder, a, b) {
+  row.addEventListener('mouseenter', function (ev) { ENR.tipShow(builder(a, b), ev); });
   row.addEventListener('mousemove', function (ev) { ENR.tipMove(ev); });
   row.addEventListener('mouseleave', function () { ENR.tipHide(); });
 }
+// Marqueurs Leaflet (dots de la carte) : même tooltip au survol, au clic le popup
+// natif (déjà enrichi) s'ouvre comme avant.
+ENR.wireMarker = function (m, builder, a, b) {
+  if (!m || !m.on || m._enrTip) return;
+  m._enrTip = true;
+  m.on('mouseover', function (ev) { ENR.tipShow(builder(a, b), (ev && ev.originalEvent) || null); });
+  m.on('mousemove', function (ev) { ENR.tipMove((ev && ev.originalEvent) || null); });
+  m.on('mouseout', function () { ENR.tipHide(); });
+};
 
-// Contenus du tooltip : tout ce qu'on a déjà, sans appel réseau
+// Contenus du tooltip : tout ce qu'on a déjà (NAF + description en cache), sans appel réseau
 ENR.tipEnt = function (e) { // entreprises Sirene (annuaire + composeur)
   var s = e.siege || {};
   var parts = [];
@@ -214,7 +314,10 @@ ENR.tipEnt = function (e) { // entreprises Sirene (annuaire + composeur)
   var h = '<b>' + esc(e.nom_complet || e.nom_raison_sociale || e.siren) + '</b>';
   if (parts.length) h += '<br>' + parts.join(' · ');
   var c = ENR.cache['ent:' + e.siren];
+  var fav = (typeof FAV !== 'undefined' && FAV.all) ? FAV.all['ent:' + e.siren] : null;
   if (c && c.desc) h += '<br>💬 ' + esc(String(c.desc).slice(0, 180));
+  var site = (c && c.site) || (fav && fav.siteWeb) || '';
+  if (site) h += '<br>🌐 ' + esc(site);
   return h;
 };
 ENR.tipAsso = function (a) { // associations RNA : l'objet social EST la description
@@ -237,6 +340,7 @@ ENR.tipLbb = function (c, cur) { // La Bonne Boite
   if (parts.length) h += '<br>' + parts.join(' · ');
   var cc = ENR.cache['ent:' + c.siren];
   if (cc && cc.desc) h += '<br>💬 ' + esc(String(cc.desc).slice(0, 180));
+  if (cc && cc.site) h += '<br>🌐 ' + esc(cc.site);
   return h;
 };
 ENR.tipFT = function (rec) { // annuaire French Tech (curatées)
@@ -248,6 +352,7 @@ ENR.tipFT = function (rec) { // annuaire French Tech (curatées)
   if (parts.length) h += '<br>' + parts.join(' · ');
   var c = ENR.cache['ent:' + rec.siren];
   if (c && c.desc) h += '<br>💬 ' + esc(String(c.desc).slice(0, 180));
+  if (c && c.site) h += '<br>🌐 ' + esc(c.site);
   return h;
 };
 
@@ -256,19 +361,20 @@ function enrDecorate(boxId, rowsSel, items, htmlFor) {
   var box = document.getElementById(boxId);
   if (!box) return;
   var rows = box.querySelectorAll(rowsSel);
-  for (var i = 0; i < rows.length && i < items.length; i++) {
-    enrWireRow(rows[i], htmlFor(items[i]));
-  }
+  Array.prototype.forEach.call(rows, function (row, i) {
+    if (items[i]) enrWireRow(row, htmlFor, items[i]);
+  });
 }
 function enrDecorateAnn() {
   var box = document.getElementById('annResults');
   if (!box) return;
   var rows = box.querySelectorAll('.ann-row');
   var shown = ANN.showing.slice(0, 200); // même cap que renderAnnList
-  for (var i = 0; i < rows.length && i < shown.length; i++) {
+  Array.prototype.forEach.call(rows, function (row, i) {
     var r = shown[i];
-    enrWireRow(rows[i], r.kind === 'ent' ? ENR.tipEnt(r.e) : ENR.tipAsso(r.a));
-  }
+    if (!r) return;
+    enrWireRow(row, r.kind === 'ent' ? ENR.tipEnt : ENR.tipAsso, r.kind === 'ent' ? r.e : r.a);
+  });
 }
 // LBB : ordre trié non exposé -> SIREN relu dans le texte des lignes (même astuce que favoris.js)
 function enrDecorateExt(lbb, curated) {
@@ -277,13 +383,13 @@ function enrDecorateExt(lbb, curated) {
   var bySiren = {}, curBy = (curated && curated.bySiren) || {};
   (((lbb || {}).companies) || []).forEach(function (c) { if (c && c.siren) bySiren[c.siren] = c; });
   var rows = box.querySelectorAll('.co-row');
-  for (var i = 0; i < rows.length; i++) {
-    var sub = rows[i].querySelector('.ann-obj');
+  Array.prototype.forEach.call(rows, function (row) {
+    var sub = row.querySelector('.ann-obj');
     var m = sub && sub.textContent && sub.textContent.match(/SIREN (\d{9})/);
-    if (!m) continue;
+    if (!m) return;
     var c = bySiren[m[1]];
-    if (c) enrWireRow(rows[i], ENR.tipLbb(c, curBy[m[1]]));
-  }
+    if (c) enrWireRow(row, ENR.tipLbb, c, curBy[m[1]]);
+  });
 }
 function enrDecorateFT() {
   var data = EXT.lastFT;
@@ -316,6 +422,50 @@ function enrDecorateFiche(siren) {
       }
     }
     break;
+  }
+}
+
+// ---------- Marqueurs de carte : tooltip de survol (dots) ----------
+// Annuaire : les entrées portent le rec (ent ou asso), clé 'e:<siren>' / 'a:<id>'
+function enrWireAnnMarkers(entries) {
+  (entries || []).forEach(function (en) {
+    var m = (typeof ANN !== 'undefined' && ANN.markerIndex) ? ANN.markerIndex[en.key] : null;
+    if (!m) return;
+    if (en.key.charAt(0) === 'e') ENR.wireMarker(m, ENR.tipEnt, en.rec);
+    else ENR.wireMarker(m, ENR.tipAsso, en.rec);
+  });
+}
+// Composeur : CO.markerBySiret est indexé par SIRET (ou SIREN pour le siège) ->
+// on remappe vers l'unité légale correspondante dans CO.shown
+function enrWireCoMarkers() {
+  var byKey = {};
+  (CO.shown || []).forEach(function (e) {
+    var ets = e.matching_etablissements || [];
+    for (var i = 0; i < ets.length; i++) if (ets[i].siret) byKey[ets[i].siret] = e;
+    if (e.siren) byKey[e.siren] = e;
+  });
+  for (var siret in CO.markerBySiret) {
+    var e = byKey[siret];
+    if (e) ENR.wireMarker(CO.markerBySiret[siret], ENR.tipEnt, e);
+  }
+}
+// Recherche étendue : EXT.markerBySiren est indexé par SIREN
+function enrWireExtMarkers(lbb, curated) {
+  var bySiren = {}, curBy = (curated && curated.bySiren) || {};
+  (((lbb || {}).companies) || []).forEach(function (c) { if (c && c.siren) bySiren[c.siren] = c; });
+  for (var siren in EXT.markerBySiren) {
+    var c = bySiren[siren];
+    if (c) ENR.wireMarker(EXT.markerBySiren[siren], ENR.tipLbb, c, curBy[siren]);
+  }
+}
+function enrWireFTMarkers() {
+  var bySiren = {};
+  (((EXT.lastFT || {}).rows) || []).forEach(function (row) {
+    if (row && row.rec && row.rec.siren) bySiren[row.rec.siren] = row.rec;
+  });
+  for (var siren in EXT.markerBySiren) {
+    var rec = bySiren[siren];
+    if (rec) ENR.wireMarker(EXT.markerBySiren[siren], ENR.tipFT, rec);
   }
 }
 
@@ -366,11 +516,27 @@ ENR.wrapAll = function () {
   window.extRenderResults = function (lbb, curated) {
     _extRenderResults(lbb, curated);
     try { enrDecorateExt(lbb, curated); } catch (e) {}
+    try { enrWireExtMarkers(lbb, curated); } catch (e) {}
   };
   var _extRenderFT = extRenderFT;
   window.extRenderFT = function () {
     _extRenderFT();
     try { enrDecorateFT(); } catch (e) {}
+    try { enrWireFTMarkers(); } catch (e) {}
+  };
+
+  // marqueurs de carte (dots) : tooltip enrichi au survol (le clic ouvre le popup natif)
+  var _annSyncMarkers = annSyncMarkers;
+  window.annSyncMarkers = function (entries) {
+    var r = _annSyncMarkers(entries);
+    try { enrWireAnnMarkers(entries); } catch (e) { /* best-effort */ }
+    return r;
+  };
+  var _coSyncMarkers = coSyncMarkers;
+  window.coSyncMarkers = function () {
+    var r = _coSyncMarkers();
+    try { enrWireCoMarkers(); } catch (e) { /* best-effort */ }
+    return r;
   };
 };
 
@@ -381,7 +547,8 @@ document.addEventListener('DOMContentLoaded', function () {
   ENR.tip.id = 'enrTip';
   ENR.tip.style.display = 'none';
   document.body.appendChild(ENR.tip);
-  enrLoad();
+  enrLoad();           // localStorage : démarrage instantané
+  enrDbInit();         // IndexedDB : base de vérité + migration (asynchrone, best-effort)
   try { ENR.wrapAll(); }
   catch (e) { console.warn('[OpenFrance] Enrich : enveloppement impossible :', e); }
 });
