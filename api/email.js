@@ -369,7 +369,7 @@ async function engProspector(siteUrl, budgetMs) {
 // Snippets d'annuaires/agrégateurs d'entreprises (annuaire-entreprises, societe.com,
 // pappers…) : génériques et inutiles (« Retrouvez toutes les informations sur X… »)
 // — jamais retenus comme description, on prend le résultat suivant.
-const DDG_SNIPPET_BLOCK = /(facebook|linkedin|twitter|x\.com|instagram|tiktok|youtube|pinterest|amazon\.|leboncoin|tripadvisor|glassdoor|indeed|hellowork|regionsjob|welcomekit|malt\.fr|societe\.com|societes\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|bfmtv|usinenouvelle|google\.|bing\.|duckduckgo\.|annuaire-entreprises|data\.gouv|bodacc|lannuaire)/i;
+const DDG_SNIPPET_BLOCK = /(facebook|linkedin|twitter|x\.com|instagram|tiktok|youtube|pinterest|amazon\.|leboncoin|tripadvisor|glassdoor|indeed|hellowork|regionsjob|welcomekit|malt\.fr|societe\.com|societes\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|bfmtv|usinenouvelle|google\.|bing\.|duckduckgo\.|annuaire-entreprises|data\.gouv|bodacc|lannuaire|rocketreach|zoominfo|lusha|kaspr|contactout|signalhire|kompass|europages)/i;
 
 function ddgStrip(html) {
   return String(html)
@@ -458,6 +458,69 @@ async function engDdg(ent, budgetMs) {
   return out;
 }
 
+// Tavily (op describe) : repli API officielle quand DuckDuckGo bloque les IP datacenter
+// (Vercel : html.duckduckgo.com fetch failed/403 ; Bing, lui, sert des résultats hors
+// sujet aux IP datacenter). TAVILY_API_KEY requise — désactivé proprement si absente.
+// Même philosophie que engDdg : snippet descriptif + découverte du site officiel,
+// annuaires/agrégateurs exclus via DDG_SNIPPET_BLOCK/TAVILY_BLOCK.
+async function engTavilyDesc(ent, budgetMs) {
+  const out = { engine: 'tavily', source: 'tavily' };
+  if (!process.env.TAVILY_API_KEY) { out.note = 'TAVILY_API_KEY absente (variable d\'environnement serveur)'; return out; }
+  const name = String(ent.nom || '').replace(/[, ]+\s*(SASU|SAS|SARL|EURL|SELAS|SELARL|SCOP|SCI|SNC|GIE|SCA|SA)\s*$/i, '').trim();
+  if (!name) { out.note = 'nom absent'; return out; }
+  const q = [name, ent.ville || '', 'entreprise'].filter(Boolean).join(' ');
+  const ctrl = new AbortController();
+  const t = setTimeout(function () { ctrl.abort(); }, Math.max(1200, Math.min(budgetMs, 5000)));
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: process.env.TAVILY_API_KEY,
+        query: String(q).slice(0, 300),
+        max_results: 8,
+        search_depth: 'basic'
+      })
+    });
+    if (!res.ok) { out.note = 'Tavily HTTP ' + res.status; return out; }
+    const j = await res.json();
+    const nameTok = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    let site = null;
+    const cands = [];
+    ((j && j.results) || []).forEach(function (r) {
+      if (!r || !r.url) return;
+      let u;
+      try { u = new URL(r.url); } catch (e) { return; }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+      const host = u.hostname.replace(/^www\./, '');
+      const compact = host.replace(/[^a-z0-9]/g, '');
+      if (!site && nameTok && compact.indexOf(nameTok) !== -1 && !TAVILY_BLOCK.test(host)) site = u.origin + '/';
+      const s = String(r.content || '').trim();
+      if (s && s.length > 40 && !DDG_SNIPPET_BLOCK.test(host)) {
+        cands.push({
+          s: s, host: host,
+          related: (nameTok && compact.indexOf(nameTok) !== -1) || host.indexOf('wikipedia') !== -1
+        });
+      }
+    });
+    if (site) { out.website = site; out.note = 'site repéré via Tavily'; }
+    if (cands.length) {
+      cands.sort(function (a, b) {
+        if (a.related !== b.related) return a.related ? -1 : 1;
+        return b.s.length - a.s.length;
+      });
+      out.description = cands[0].s.slice(0, 320);
+      out.descSource = cands[0].host || 'tavily';
+      out.descConfidence = (cands[0].host.indexOf('wikipedia') !== -1) ? 45 : 32;
+    }
+    if (!site && !cands.length) out.note = 'Tavily : aucun résultat exploitable';
+  } catch (e) {
+    out.note = 'Tavily : ' + String((e && e.message) || e).slice(0, 120);
+  } finally { clearTimeout(t); }
+  return out;
+}
+
 // Meta du site : og:description / meta description / JSON-LD — la description que
 // l'entreprise écrit elle-même (confiance la plus haute, ~70).
 async function engMeta(siteUrl, budgetMs) {
@@ -505,6 +568,8 @@ async function opDescribe(body) {
   // 1. site déjà connu -> meta directe ; sinon DDG découvre le site + un snippet
   if (ctx.website && wants('meta') && left() > 2000) { metaTried = ctx.website; absorb(await engMeta(ctx.website, left() - 300)); }
   if (!ctx.description && wants('ddg') && left() > 2500) absorb(await engDdg(ent, Math.min(left() - 800, 5000)));
+  // Repli Tavily (API officielle, clé serveur) : DDG bloque les IP datacenter (Vercel)
+  if (!ctx.description && !ctx.website && left() > 3000) absorb(await engTavilyDesc(ent, Math.min(left() - 800, 5000)));
   // 2. DDG a repéré un site -> meta de ce site, MÊME si DDG a déjà donné un snippet :
   //    la voix de l'entreprise prime (confiance 68 > snippet 32/45, fusion par absorb())
   if (ctx.website && ctx.website !== metaTried && wants('meta') && left() > 2000) {
