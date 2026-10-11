@@ -14,7 +14,9 @@
 // ✨ Enrich (op describe de email.js) : Wikidata côté client (description en une
 // phrase via wbsearchentities) puis POST /ft/email {op:'describe'} — DuckDuckGo
 // (snippets + découverte du site, gratuit, sans clé, dégradation propre) puis
-// meta du site (og:description / JSON-LD).
+// meta du site (og:description / JSON-LD). Les annuaires/agrégateurs d'entreprises
+// (annuaire-entreprises, societe.com, pappers…) ne sont jamais retenus : leurs
+// textes sont génériques et inutiles (voir ENR_JUNK_SRC + email.js côté serveur).
 //
 // Persistance (db) : le cache enrich vit dans IndexedDB « openfrance-enrich »
 // (store « enr », clé type:id, cap 300 FIFO) — même philosophie que les favoris.
@@ -39,11 +41,15 @@ var ENR = {
 };
 var ENR_KEY = 'openfrance-enrich';
 var ENR_MAX = 300; // entrées max en cache (les plus anciennes éliminées, base incluse)
+// Sources inutiles (annuaires/agrégateurs d'entreprises : descriptions génériques)
+// — jamais affichées ni conservées. Les anciennes entrées de ce genre sont épurées
+// au chargement (localStorage + IndexedDB) et re-demandées au prochain ✨ Enrich.
+var ENR_JUNK_SRC = /(annuaire-entreprises|data\.gouv|bodacc|societe\.com|societes\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|lannuaire)/i;
 
 function enrLoad() {
   try {
     var saved = JSON.parse(localStorage.getItem(ENR_KEY) || '{}');
-    for (var k in saved) if (saved[k] && saved[k].desc) ENR.cache[k] = saved[k];
+    for (var k in saved) if (saved[k] && saved[k].desc && !ENR_JUNK_SRC.test(saved[k].source || '')) ENR.cache[k] = saved[k];
   } catch (e) { /* cache best-effort */ }
 }
 function enrSave() {
@@ -94,17 +100,23 @@ function enrDbDel(key) {
 }
 // Charge la base dans ENR.cache (l'entrée la plus récente gagne), renvoie la
 // liste des clés présentes en base (pour la migration localStorage -> base).
+// En passant : épure les entrées issues de sources inutiles (annuaires).
 function enrDbLoad() {
   return new Promise(function (resolve) {
     if (!ENR.db) return resolve({});
     var seen = {};
     try {
-      var tx = ENR.db.transaction('enr', 'readonly');
+      var tx = ENR.db.transaction('enr', 'readwrite'); // readwrite : épuration au passage
       var rq = tx.objectStore('enr').openCursor();
       rq.onsuccess = function (ev) {
         var cur = ev.target.result;
         if (!cur) return resolve(seen);
         var v = cur.value;
+        if (v && v.k && ENR_JUNK_SRC.test(v.source || '')) {
+          cur.delete(); // source inutile (annuaire/agrégateur) : épurée de la base
+          cur.continue();
+          return;
+        }
         if (v && v.k && v.desc) {
           seen[v.k] = 1;
           var old = ENR.cache[v.k];
@@ -150,7 +162,7 @@ ENR.blockHtml = function (ent) {
   if (!ent || !ent.id || ent.type === 'commune') return '';
   var c = ENR.cache[ENR.key(ent)];
   var h = '';
-  if (c && c.desc) {
+  if (c && c.desc && !ENR_JUNK_SRC.test(c.source || '')) {
     h += '<div class="enr-desc">💬 ' + esc(c.desc) +
       ' <span class="muted">(' + esc(c.source || '') + ')</span></div>';
   }
@@ -198,7 +210,7 @@ ENR.run = function (ent, key) {
         .then(function (j) {
           if (j && j.ok && j.best) {
             if (j.best.website && !best.site) best.site = j.best.website;
-            if (j.best.description && (Number(j.best.confidence) || 0) > best.conf) {
+            if (j.best.description && !ENR_JUNK_SRC.test(j.best.source || '') && (Number(j.best.confidence) || 0) > best.conf) {
               best.desc = j.best.description;
               best.source = j.best.source || 'web';
               best.conf = Number(j.best.confidence) || 0;
@@ -314,9 +326,8 @@ ENR.tipEnt = function (e) { // entreprises Sirene (annuaire + composeur)
   var h = '<b>' + esc(e.nom_complet || e.nom_raison_sociale || e.siren) + '</b>';
   if (parts.length) h += '<br>' + parts.join(' · ');
   var c = ENR.cache['ent:' + e.siren];
-  var fav = (typeof FAV !== 'undefined' && FAV.all) ? FAV.all['ent:' + e.siren] : null;
-  if (c && c.desc) h += '<br>💬 ' + esc(String(c.desc).slice(0, 180));
-  var site = (c && c.site) || (fav && fav.siteWeb) || '';
+  if (c && c.desc && !ENR_JUNK_SRC.test(c.source || '')) h += '<br>💬 ' + esc(String(c.desc).slice(0, 180));
+  var site = (c && c.site) || (typeof FAV !== 'undefined' && FAV.all && FAV.all['ent:' + e.siren] && FAV.all['ent:' + e.siren].siteWeb) || '';
   if (site) h += '<br>🌐 ' + esc(site);
   return h;
 };
@@ -339,7 +350,7 @@ ENR.tipLbb = function (c, cur) { // La Bonne Boite
   var h = '<b>' + esc(c.name || c.siren) + '</b>';
   if (parts.length) h += '<br>' + parts.join(' · ');
   var cc = ENR.cache['ent:' + c.siren];
-  if (cc && cc.desc) h += '<br>💬 ' + esc(String(cc.desc).slice(0, 180));
+  if (cc && cc.desc && !ENR_JUNK_SRC.test(cc.source || '')) h += '<br>💬 ' + esc(String(cc.desc).slice(0, 180));
   if (cc && cc.site) h += '<br>🌐 ' + esc(cc.site);
   return h;
 };
@@ -351,7 +362,7 @@ ENR.tipFT = function (rec) { // annuaire French Tech (curatées)
   var h = '<b>' + esc(rec.nom || rec.siren) + '</b>';
   if (parts.length) h += '<br>' + parts.join(' · ');
   var c = ENR.cache['ent:' + rec.siren];
-  if (c && c.desc) h += '<br>💬 ' + esc(String(c.desc).slice(0, 180));
+  if (c && c.desc && !ENR_JUNK_SRC.test(c.source || '')) h += '<br>💬 ' + esc(String(c.desc).slice(0, 180));
   if (c && c.site) h += '<br>🌐 ' + esc(c.site);
   return h;
 };

@@ -7,8 +7,9 @@
 //   → { ok:true, best:{ email, website, source, confidence }, results:[{ engine, ... }] }
 //   POST /ft/email  { op:'describe', entity:{ type, nom, siren, ville, siteWeb } }
 //   → { ok:true, best:{ description, source, confidence, siteUrl }, results:[{ engine, ... }] }
-//   Moteurs describe : ddg (snippets DuckDuckGo + découverte du site officiel), meta
-//   (og:description / meta description / JSON-LD du site). Budget 9 s, dégradation en note.
+//   Moteurs describe : ddg (snippets DuckDuckGo + découverte du site officiel, annuaires/
+//   agrégateurs exclus) puis meta du site (og:description / meta description / JSON-LD),
+//   toujours tentée — fusion par confiance, la meta du site prime. Budget 9 s, dégradation en note.
 
 //
 // Chaîne de moteurs (système de plugins : ajouter un moteur = une fonction engXxx +
@@ -369,7 +370,10 @@ async function engProspector(siteUrl, budgetMs) {
 // mis en cache côté client) mais rate-limit possible depuis des IP serverless : dégradation
 // propre (note), jamais bloquant.
 
-const DDG_SNIPPET_BLOCK = /(facebook|linkedin|twitter|x\.com|instagram|tiktok|youtube|pinterest|amazon\.|leboncoin|tripadvisor|glassdoor|indeed|hellowork|regionsjob|welcomekit|malt\.fr|societe\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|bfmtv|usinenouvelle|google\.|bing\.|duckduckgo\.)/i;
+// Snippets d'annuaires/agrégateurs d'entreprises (annuaire-entreprises, societe.com,
+// pappers…) : génériques et inutiles (« Retrouvez toutes les informations sur X… »)
+// — jamais retenus comme description, on prend le résultat suivant.
+const DDG_SNIPPET_BLOCK = /(facebook|linkedin|twitter|x\.com|instagram|tiktok|youtube|pinterest|amazon\.|leboncoin|tripadvisor|glassdoor|indeed|hellowork|regionsjob|welcomekit|malt\.fr|societe\.com|societes\.com|pappers|societe\.ninja|infogreffe|verif\.com|manageo|netpme|bfmtv|usinenouvelle|google\.|bing\.|duckduckgo\.|annuaire-entreprises|data\.gouv|bodacc|lannuaire)/i;
 
 function ddgStrip(html) {
   return String(html)
@@ -416,21 +420,34 @@ async function engDdg(ent, budgetMs) {
     if (!links.length) { out.note = 'DuckDuckGo : aucun résultat parsé'; return out; }
     const nameTok = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
     let site = null, snippet = null, snippetHost = '';
-    for (let i = 0; i < links.length && (!site || !snippet); i++) {
+    for (let i = 0; i < links.length && !site; i++) {
       const host = hostOf(links[i].url);
       const compact = host.replace(/[^a-z0-9]/g, '');
       // site officiel : domaine apparenté au nom, hors annuaires/réseaux sociaux
-      if (!site && nameTok && compact.indexOf(nameTok) !== -1 && !TAVILY_BLOCK.test(host)) site = links[i].url;
-      // snippet : résultat apparenté (ou Wikipédia, bonne source de description)
-      if (!snippet && snippets[i] && (compact.indexOf(nameTok) !== -1 || host.indexOf('wikipedia') !== -1)) {
-        snippet = snippets[i];
-        snippetHost = host;
-      }
+      if (nameTok && compact.indexOf(nameTok) !== -1 && !TAVILY_BLOCK.test(host)) site = links[i].url;
     }
-    if (!snippet) { // repli : premier snippet non bloqué
-      for (let i = 0; i < links.length && i < snippets.length; i++) {
-        if (!DDG_SNIPPET_BLOCK.test(hostOf(links[i].url))) { snippet = snippets[i]; snippetHost = hostOf(links[i].url); break; }
-      }
+    // agrégation : on collecte TOUS les snippets exploitables — les annuaires/agrégateurs
+    // (annuaire-entreprises, societe.com, pappers…) sont exclus (textes génériques sans
+    // valeur) ; priorité aux résultats apparentés au nom (ou Wikipédia), puis à richesse
+    // égale le snippet le plus informatif (le plus long).
+    const cands = [];
+    for (let i = 0; i < links.length; i++) {
+      if (!snippets[i]) continue;
+      const host = hostOf(links[i].url);
+      if (DDG_SNIPPET_BLOCK.test(host)) continue;
+      const compact = host.replace(/[^a-z0-9]/g, '');
+      cands.push({
+        s: snippets[i], host: host,
+        related: (nameTok && compact.indexOf(nameTok) !== -1) || host.indexOf('wikipedia') !== -1
+      });
+    }
+    if (cands.length) {
+      cands.sort(function (a, b) {
+        if (a.related !== b.related) return a.related ? -1 : 1;
+        return b.s.length - a.s.length;
+      });
+      snippet = cands[0].s;
+      snippetHost = cands[0].host;
     }
     if (site) { out.website = site; out.note = 'site repéré via DuckDuckGo'; }
     if (snippet) {
@@ -488,11 +505,16 @@ async function opDescribe(body) {
       ctx.confidence = r.descConfidence || 0;
     }
   }
+  let metaTried = ''; // URL déjà passée à engMeta (une seule fois par site)
   // 1. site déjà connu -> meta directe ; sinon DDG découvre le site + un snippet
-  if (ctx.website && wants('meta') && left() > 2000) absorb(await engMeta(ctx.website, left() - 300));
+  if (ctx.website && wants('meta') && left() > 2000) { metaTried = ctx.website; absorb(await engMeta(ctx.website, left() - 300)); }
   if (!ctx.description && wants('ddg') && left() > 2500) absorb(await engDdg(ent, Math.min(left() - 800, 5000)));
-  // 2. DDG a repéré un site -> meta de ce site (la voix de l'entreprise prime sur le snippet)
-  if (!ctx.description && ctx.website && wants('meta') && left() > 2000) absorb(await engMeta(ctx.website, left() - 300));
+  // 2. DDG a repéré un site -> meta de ce site, MÊME si DDG a déjà donné un snippet :
+  //    la voix de l'entreprise prime (confiance 68 > snippet 32/45, fusion par absorb())
+  if (ctx.website && ctx.website !== metaTried && wants('meta') && left() > 2000) {
+    metaTried = ctx.website;
+    absorb(await engMeta(ctx.website, left() - 300));
+  }
   const best = (ctx.description || ctx.website)
     ? { description: ctx.description, website: ctx.website, source: ctx.source, confidence: ctx.confidence }
     : null;
