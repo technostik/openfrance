@@ -215,8 +215,9 @@
       <b>⭐ Favoris et contacts</b>
       <button id="favClose" type="button" title="Fermer">✕</button>
     </div>
-    <p class="muted">Ajoutez en favori des villes, associations et entreprises (étoile ☆ dans les listes, popups et fiches ; étoile de ville cible ; champ ci-dessous), puis cherchez leur email et site web avec les moteurs cochés. Résultats conservés localement (IndexedDB) ; « 🔎 » par favori ou « Chercher tout » pour la file complète.</p>
+    <p class="muted">Ajoutez en favori des villes, associations et entreprises (étoile ☆ dans les listes, popups et fiches ; étoile de ville cible ; champ ci-dessous), puis cherchez leur email et site web avec les moteurs cochés. Résultats conservés localement (IndexedDB) ; « 🔎 » par favori ou « Chercher tout » pour la file complète. L'inverse existe aussi : bouton ⊘/🚫 à côté de l'étoile pour blacklister une entité — elle disparaît des listes et de la carte (section « Blacklistées » ci-dessous pour la ré-afficher).</p>
     <div id="favEngines" class="fav-engines"></div>
+    <label class="fav-blktoggle"><input type="checkbox" id="favBlkHide" checked> Masquer les entités 🚫 blacklistées (décoché : affichées grisées et barrées)</label>
     <label id="favCityWrap">Ajouter une ville
       <input id="favCity" type="text" placeholder="Commencez à taper un nom de commune…" autocomplete="off">
       <div id="favCityDrop" class="sc-drop"></div>

@@ -13,6 +13,14 @@
 // BAN du panneau), 'ent' (entreprises Sirene, La Bonne Boite, French Tech
 // curatées), 'asso' (RNA). Tout reste local au navigateur.
 //
+// Blacklist 🚫 : l'inverse des favoris — entités à ne plus voir. Même base
+// IndexedDB (store « blk »), miroir RAM FAV.bl. Une entité blacklistée est
+// retirée des favoris (et réciproquement), masquée des listes (classe CSS
+// .fav-blkrow, option « afficher grisées » dans le panneau) et de la carte
+// (marqueur détaché de sa couche sans être retiré de l'index : la synchro par
+// différence d'annuaire ne le recrée pas). Bouton ⊘/🚫 à côté de chaque
+// étoile ; gestion dans la section « Blacklistées » du panneau Favoris.
+//
 // Recherche email/site web = SYSTÈME DE PLUGINS (moteurs cochables, config en
 // localStorage « openfrance-fav-engines ») — registre déclaratif FAV_ENGINES :
 //   wikidata   (client)  : P856 site officiel + P968 email (wbsearchentities +
@@ -29,11 +37,15 @@
 var FAV = {
   db: null,
   all: {},        // clé -> favori {type,id,nom,siren,siret,insee,ville,dep,siteWeb,email,...}
+  bl: {},         // clé -> blacklistée 🚫 {type,id,nom,...} — l'inverse des favoris
   order: [],     // clés en ordre d'ajout
+  blOrder: [],   // clés blacklistées en ordre d'ajout
+  blHide: true,   // true = blacklistées masquées des listes, false = affichées grisées
   looking: {},   // clé -> true (recherche email en cours)
   _inited: false,
   _allRunning: false,
-  _cityTimer: null
+  _cityTimer: null,
+  blHideKey: 'openfrance-fav-blhide'
 };
 
 // Registre des moteurs (id, où il tourne, types concernés, label)
@@ -62,8 +74,12 @@ function favEngineSave(cfg) {
 function favDbOpen() {
   if (FAV.db) return Promise.resolve(FAV.db);
   return new Promise(function (res, rej) {
-    var rq = indexedDB.open('openfrance-favoris', 1);
-    rq.onupgradeneeded = function () { rq.result.createObjectStore('fav'); };
+    var rq = indexedDB.open('openfrance-favoris', 2); // v2 : + store « blk » (blacklist)
+    rq.onupgradeneeded = function () {
+      var db = rq.result;
+      if (!db.objectStoreNames.contains('fav')) db.createObjectStore('fav');
+      if (!db.objectStoreNames.contains('blk')) db.createObjectStore('blk');
+    };
     rq.onsuccess = function () { FAV.db = rq.result; res(rq.result); };
     rq.onerror = function () { rej(rq.error); };
   });
@@ -98,6 +114,47 @@ function favDbLoadAll() {
       var out = [];
       try {
         var rq = db.transaction('fav').objectStore('fav').openCursor();
+        rq.onsuccess = function () {
+          var cur = rq.result;
+          if (cur) { out.push({ key: cur.key, rec: cur.value }); cur.continue(); }
+          else res(out);
+        };
+        rq.onerror = function () { res(out); };
+      } catch (e) { res(out); }
+    });
+  }).catch(function () { return []; });
+}
+// Store « blk » (blacklist) — mêmes helpers que « fav », même base
+function blDbPut(key, val) {
+  return favDbOpen().then(function (db) {
+    return new Promise(function (res) {
+      try {
+        var tx = db.transaction('blk', 'readwrite');
+        tx.objectStore('blk').put(val, key);
+        tx.oncomplete = function () { res(); };
+        tx.onerror = function () { res(); };
+      } catch (e) { res(); }
+    });
+  }).catch(function () { /* best-effort */ });
+}
+function blDbDelete(key) {
+  return favDbOpen().then(function (db) {
+    return new Promise(function (res) {
+      try {
+        var tx = db.transaction('blk', 'readwrite');
+        tx.objectStore('blk').delete(key);
+        tx.oncomplete = function () { res(); };
+        tx.onerror = function () { res(); };
+      } catch (e) { res(); }
+    });
+  }).catch(function () { /* best-effort */ });
+}
+function blDbLoadAll() {
+  return favDbOpen().then(function (db) {
+    return new Promise(function (res) {
+      var out = [];
+      try {
+        var rq = db.transaction('blk').objectStore('blk').openCursor();
         rq.onsuccess = function () {
           var cur = rq.result;
           if (cur) { out.push({ key: cur.key, rec: cur.value }); cur.continue(); }
@@ -163,10 +220,30 @@ FAV.toggleStar = function (el, ev) {
   } catch (e) { /* clic invalide : ignoré */ }
 };
 
+// ---------- Bouton 🚫 blacklist (listes, popups, fiches) ----------
+FAV.blHtml = function (ent) {
+  if (!ent || !ent.id || ent.type === 'commune') return '';
+  var key = favKey(ent);
+  var on = !!FAV.bl[key];
+  return ' <span class="fav-blk' + (on ? ' blk-on' : '') + '" data-blkkey="' + esc(key) +
+    '" data-blk="' + esc(JSON.stringify(ent)) +
+    '" title="Blacklister : ne plus voir cette entité (listes + carte) — l\u2019inverse des favoris" onclick="FAV.toggleBlk(this,event)">' +
+    (on ? '🚫' : '⊘') + '</span>';
+};
+FAV.toggleBlk = function (el, ev) {
+  if (ev) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); }
+  try {
+    var ent = JSON.parse(el.getAttribute('data-blk') || '{}');
+    var key = el.getAttribute('data-blkkey');
+    if (FAV.bl[key]) FAV.blRemove(key); else FAV.blAdd(ent);
+  } catch (e) { /* clic invalide : ignoré */ }
+};
+
 // ---------- Ajout / retrait ----------
 FAV.add = function (ent) {
   if (!ent || !ent.id) return;
   var key = favKey(ent);
+  if (FAV.bl[key]) FAV.blRemove(key); // exclusivité : on ne suit pas ce qu'on ignore
   var isNew = !FAV.all[key];
   var rec = isNew ? { type: ent.type, id: ent.id } : FAV.all[key];
   var fields = ['nom', 'siren', 'siret', 'insee', 'ville', 'dep'];
@@ -187,6 +264,70 @@ FAV.remove = function (key) {
   if (i !== -1) FAV.order.splice(i, 1);
   favDbDelete(key);
   FAV.refresh();
+};
+
+// ---------- Blacklist 🚫 : ajout / retrait (l'inverse des favoris) ----------
+FAV.blAdd = function (ent) {
+  if (!ent || !ent.id || ent.type === 'commune') return;
+  var key = favKey(ent);
+  if (FAV.all[key]) FAV.remove(key); // exclusivité : on ne suit pas ce qu'on ignore
+  var isNew = !FAV.bl[key];
+  var rec = isNew ? { type: ent.type, id: ent.id } : FAV.bl[key];
+  var fields = ['nom', 'siren', 'siret', 'insee', 'ville', 'dep'];
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (ent[f] && !rec[f]) rec[f] = ent[f];
+  }
+  rec.key = key;
+  FAV.bl[key] = rec;
+  if (isNew) FAV.blOrder.push(key);
+  blDbPut(key, rec);
+  FAV.blApply(key); // masque les marqueurs immédiatement
+  FAV.refresh();
+};
+FAV.blRemove = function (key) {
+  delete FAV.bl[key];
+  var i = FAV.blOrder.indexOf(key);
+  if (i !== -1) FAV.blOrder.splice(i, 1);
+  blDbDelete(key);
+  FAV.blApply(key); // ré-affiche les marqueurs
+  FAV.refresh();
+};
+// Applique l'état blacklisté d'une clé aux marqueurs des 3 modes (best-effort) :
+// annuaire (ANN.markerIndex 'a:<id>' / 'e:<siren>'), composeur
+// (CO.markerBySiret — SIREN relu dans le popup de chaque marqueur) et étendue
+// (EXT.markerBySiren). Le marqueur est détaché de sa couche SANS être retiré
+// de l'index : la synchro par différence d'annuaire ne le recrée pas, et le
+// ré-affichage au retrait de la blacklist est immédiat.
+FAV.blApply = function (key) {
+  try {
+    var on = !!FAV.bl[key];
+    var sep = key.indexOf(':');
+    var type = key.slice(0, sep);
+    var id = key.slice(sep + 1);
+    if (typeof ANN !== 'undefined' && ANN.markerIndex && ANN.markers) {
+      var mk = (type === 'asso' ? 'a:' : 'e:') + id;
+      var m = ANN.markerIndex[mk];
+      if (m) { if (on) ANN.markers.removeLayer(m); else ANN.markers.addLayer(m); }
+    }
+    if (type === 'ent' && typeof EXT !== 'undefined' && EXT.markerBySiren && EXT.markers) {
+      var mx = EXT.markerBySiren[id];
+      if (mx) { if (on) EXT.markers.removeLayer(mx); else EXT.markers.addLayer(mx); }
+    }
+    if (type === 'ent' && typeof CO !== 'undefined' && CO.markerBySiret && CO.markers) {
+      var needle = "coOpenFiche('" + id + "')";
+      for (var st in CO.markerBySiret) {
+        var mm = CO.markerBySiret[st];
+        var pp = mm.getPopup && mm.getPopup();
+        if (pp && String(pp.getContent()).indexOf(needle) !== -1) {
+          if (on) CO.markers.removeLayer(mm); else CO.markers.addLayer(mm);
+        }
+      }
+    }
+  } catch (e) { /* best-effort : la carte n'est pas critique */ }
+};
+FAV.blApplyAll = function () {
+  for (var k in FAV.bl) FAV.blApply(k);
 };
 
 // ---------- Moteur client : Wikidata (P856 site officiel / P968 email) ----------
@@ -337,7 +478,8 @@ function favAddStar(row, ent) {
   if (!row || row.querySelector('.fav-star')) return;
   var head = row.children[0];
   if (!head) head = row;
-  head.insertAdjacentHTML('beforeend', FAV.starHtml(ent));
+  head.insertAdjacentHTML('beforeend', FAV.starHtml(ent) + FAV.blHtml(ent));
+  if (ent && FAV.bl[favKey(ent)]) row.classList.add('fav-blkrow');
 }
 function favDecorateAnn() {
   var box = document.getElementById('annResults');
@@ -386,7 +528,7 @@ function favDecorateFiche(siren) {
   var e = (typeof CO !== 'undefined' && CO.byId && CO.byId[siren]) || null;
   var title = document.getElementById('coFicheTitle');
   if (!e || !title || title.querySelector('.fav-star')) return;
-  title.insertAdjacentHTML('beforeend', FAV.starHtml(FAV.fromEnt(e)));
+  title.insertAdjacentHTML('beforeend', FAV.starHtml(FAV.fromEnt(e)) + FAV.blHtml(FAV.fromEnt(e)));
 }
 
 // ---------- Enveloppes des fonctions de rendu (aucune modification des .js existants) ----------
@@ -397,9 +539,9 @@ FAV.wrapAll = function () {
     try { favDecorateAnn(); } catch (e) { /* décoration best-effort */ }
   };
   var _assoPopup = assoPopup;
-  window.assoPopup = function (a, th) { return _assoPopup(a, th) + FAV.starHtml(FAV.fromAsso(a)); };
+  window.assoPopup = function (a, th) { return _assoPopup(a, th) + FAV.starHtml(FAV.fromAsso(a)) + FAV.blHtml(FAV.fromAsso(a)); };
   var _entPopup = entPopup;
-  window.entPopup = function (e) { return _entPopup(e) + FAV.starHtml(FAV.fromEnt(e)); };
+  window.entPopup = function (e) { return _entPopup(e) + FAV.starHtml(FAV.fromEnt(e)) + FAV.blHtml(FAV.fromEnt(e)); };
 
   var _coRenderResults = coRenderResults;
   window.coRenderResults = function () {
@@ -407,7 +549,7 @@ FAV.wrapAll = function () {
     try { favDecorateRows('coResults', CO.shown.slice(0, CO_MAX_LIST), FAV.fromEnt); } catch (e) {}
   };
   var _coPopupHtml = coPopupHtml;
-  window.coPopupHtml = function (e, et) { return _coPopupHtml(e, et) + FAV.starHtml(FAV.fromEnt(e)); };
+  window.coPopupHtml = function (e, et) { return _coPopupHtml(e, et) + FAV.starHtml(FAV.fromEnt(e)) + FAV.blHtml(FAV.fromEnt(e)); };
   var _coOpenFiche = coOpenFiche;
   window.coOpenFiche = function (siren) {
     _coOpenFiche(siren);
@@ -415,18 +557,33 @@ FAV.wrapAll = function () {
   };
 
   var _extPopupHtml = extPopupHtml;
-  window.extPopupHtml = function (c, cur) { return _extPopupHtml(c, cur) + FAV.starHtml(FAV.fromExtItem(c, cur)); };
+  window.extPopupHtml = function (c, cur) { return _extPopupHtml(c, cur) + FAV.starHtml(FAV.fromExtItem(c, cur)) + FAV.blHtml(FAV.fromExtItem(c, cur)); };
   var _extFTPopupHtml = extFTPopupHtml;
-  window.extFTPopupHtml = function (row) { return _extFTPopupHtml(row) + FAV.starHtml(FAV.fromFTRec(row.rec)); };
+  window.extFTPopupHtml = function (row) { return _extFTPopupHtml(row) + FAV.starHtml(FAV.fromFTRec(row.rec)) + FAV.blHtml(FAV.fromFTRec(row.rec)); };
   var _extRenderResults = extRenderResults;
   window.extRenderResults = function (lbb, curated) {
     _extRenderResults(lbb, curated);
     try { favDecorateExt(lbb, curated); } catch (e) {}
+    try { FAV.blApplyAll(); } catch (e) { /* best-effort */ }
   };
   var _extRenderFT = extRenderFT;
   window.extRenderFT = function () {
     _extRenderFT();
     try { favDecorateFT(); } catch (e) {}
+    try { FAV.blApplyAll(); } catch (e) { /* best-effort */ }
+  };
+  // Blacklist 🚫 : masque aussi les marqueurs à chaque synchro carte des modes
+  // existants (annuaire recrée les marqueurs manquants, composeur les recrée
+  // tous — l'application doit donc suivre chaque rendu).
+  var _annSyncMarkers = annSyncMarkers;
+  window.annSyncMarkers = function (entries) {
+    _annSyncMarkers(entries);
+    try { FAV.blApplyAll(); } catch (e) { /* best-effort */ }
+  };
+  var _coSyncMarkers = coSyncMarkers;
+  window.coSyncMarkers = function () {
+    _coSyncMarkers();
+    try { FAV.blApplyAll(); } catch (e) { /* best-effort */ }
   };
 };
 
@@ -520,6 +677,39 @@ function favRow(rec, key) {
   row.appendChild(actions);
   return row;
 }
+// Ligne « blacklistée » du panneau : bouton ↩ pour ré-afficher l'entité
+function favBlkRow(rec, key) {
+  var row = document.createElement('div');
+  row.className = 'cache-row';
+  row.style.opacity = '.6';
+  var info = document.createElement('div');
+  info.className = 'cache-info';
+  var head = document.createElement('div');
+  head.innerHTML = '<b>' + esc(rec.nom || key) + '</b> <span class="co-badge">' +
+    esc(favTypeLabel(rec.type)) + '</span> <span class="muted">masquée des listes et de la carte</span>';
+  info.appendChild(head);
+  var sub = [];
+  if (rec.ville) sub.push(rec.ville);
+  if (rec.siren) sub.push('SIREN ' + rec.siren);
+  if (sub.length) {
+    var s = document.createElement('div');
+    s.className = 'fav-sub';
+    s.textContent = sub.join(' · ');
+    info.appendChild(s);
+  }
+  var actions = document.createElement('div');
+  actions.className = 'cache-actions';
+  var btnR = document.createElement('button');
+  btnR.className = 'cache-btn';
+  btnR.type = 'button';
+  btnR.title = 'Retirer de la blacklist (ré-afficher l\u2019entité)';
+  btnR.textContent = '↩';
+  btnR.addEventListener('click', function () { FAV.blRemove(key); });
+  actions.appendChild(btnR);
+  row.appendChild(info);
+  row.appendChild(actions);
+  return row;
+}
 function favRenderPanel() {
   var box = document.getElementById('favList');
   if (!box) return;
@@ -537,6 +727,13 @@ function favRenderPanel() {
     box.appendChild(h3);
     groups[t].forEach(function (k) { box.appendChild(favRow(FAV.all[k], k)); });
   });
+  if (FAV.blOrder.length) {
+    var hb = document.createElement('div');
+    hb.className = 'cache-h3';
+    hb.textContent = 'Blacklistées 🚫 (' + FAV.blOrder.length + ')';
+    box.appendChild(hb);
+    FAV.blOrder.forEach(function (k) { if (FAV.bl[k]) box.appendChild(favBlkRow(FAV.bl[k], k)); });
+  }
   if (!FAV.order.length) {
     var p = document.createElement('p');
     p.className = 'muted';
@@ -576,6 +773,7 @@ FAV.refresh = function () {
   var n = FAV.order.length;
   if (btn) btn.textContent = '⭐ Favoris' + (n ? ' (' + n + ')' : '');
   favSyncStars();
+  favSyncBlk();
   favSyncCityStars();
   var dlg = document.getElementById('favDlg');
   if (dlg && dlg.style.display !== 'none') favRenderPanel();
@@ -588,6 +786,21 @@ function favSyncStars() {
     el.className = 'fav-star' + (on ? ' fav-on' : '');
     el.textContent = on ? '⭐' : '☆';
   }
+}
+// Boutons 🚫 déjà affichés + lignes concernées + option « afficher grisées »
+function favSyncBlk() {
+  var bls = document.querySelectorAll('.fav-blk[data-blkkey]');
+  for (var i = 0; i < bls.length; i++) {
+    var el = bls[i];
+    var on = !!FAV.bl[el.getAttribute('data-blkkey')];
+    el.className = 'fav-blk' + (on ? ' blk-on' : '');
+    el.textContent = on ? '🚫' : '⊘';
+    var row = el.closest ? el.closest('.ann-row, .co-row') : null;
+    if (row) { if (on) row.classList.add('fav-blkrow'); else row.classList.remove('fav-blkrow'); }
+  }
+  try {
+    document.body.classList[FAV.blHide ? 'remove' : 'add']('fav-blshow');
+  } catch (e) { /* best-effort */ }
 }
 
 // ---------- Étoile de ville cible (composeur + recherche étendue) ----------
@@ -680,24 +893,51 @@ FAV.wireUI = function () {
   var all = document.getElementById('favAllBtn');
   if (all) all.addEventListener('click', function () { FAV.lookupAll(); });
   favWireCityField();
+  favWireBlkToggle();
 };
+
+// Case « masquer les blacklistées » (persistée en localStorage)
+function favWireBlkToggle() {
+  var cb = document.getElementById('favBlkHide');
+  if (!cb) return;
+  try { FAV.blHide = localStorage.getItem(FAV.blHideKey) !== '0'; } catch (e) { /* défaut : masquer */ }
+  cb.checked = FAV.blHide;
+  cb.addEventListener('change', function () {
+    FAV.blHide = cb.checked;
+    try { localStorage.setItem(FAV.blHideKey, FAV.blHide ? '1' : '0'); } catch (e) { /* best-effort */ }
+    FAV.refresh();
+  });
+}
 
 document.addEventListener('DOMContentLoaded', function () {
   if (FAV._inited) return;
   FAV._inited = true;
-  favDbLoadAll().then(function (pairs) {
-    pairs.forEach(function (p) {
-      if (p && p.key && p.rec) {
-        p.rec.key = p.key;
-        FAV.all[p.key] = p.rec;
-        FAV.order.push(p.key);
-      }
-    });
-  }).catch(function () { /* IndexedDB bloqué : favoris de session seulement */ })
+  favDbLoadAll().catch(function () { /* IndexedDB bloqué : favoris de session seulement */ })
+    .then(function (pairs) {
+      (pairs || []).forEach(function (p) {
+        if (p && p.key && p.rec) {
+          p.rec.key = p.key;
+          FAV.all[p.key] = p.rec;
+          FAV.order.push(p.key);
+        }
+      });
+      return blDbLoadAll().catch(function () { return []; });
+    })
+    .then(function (blPairs) {
+      (blPairs || []).forEach(function (p) {
+        if (p && p.key && p.rec) {
+          p.rec.key = p.key;
+          FAV.bl[p.key] = p.rec;
+          FAV.blOrder.push(p.key);
+        }
+      });
+    })
+    .catch(function () { /* IndexedDB bloqué : session seulement */ })
     .then(function () {
       try { FAV.wrapAll(); }
       catch (e) { console.warn('[OpenFrance] Favoris : enveloppement impossible :', e); }
       FAV.wireUI();
+      FAV.blApplyAll(); // masque les marqueurs blacklistés déjà affichés
       FAV.refresh();
     });
 });

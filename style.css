@@ -170,6 +170,12 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 .fav-sub { color: #94a3b8; font-size: .72rem; margin-top: 2px; }
 .fav-status { font-size: .75rem; margin-top: 3px; line-height: 1.35; word-break: break-all; }
 .fav-status a { color: #93c5fd; }
+/* Blacklist 🚫 (l'inverse des favoris) */
+.fav-blk { cursor: pointer; font-size: .9rem; margin-left: 2px; display: inline-block; }
+.fav-blk:hover { transform: scale(1.25); }
+.fav-blktoggle { display: flex; align-items: center; gap: 6px; background: #334155; border-radius: 6px; padding: 6px 10px; font-size: .78rem; color: #e2e8f0; cursor: pointer; margin: 6px 0; }
+.fav-blkrow { display: none; } /* lignes blacklistées : masquées des listes */
+body.fav-blshow .fav-blkrow { display: block; opacity: .45; text-decoration: line-through; }
 /* --- Enrich : descriptions, bouton, tooltip (branche get_email) --- */
 .enr-block { margin-top: 4px; }
 .enr-btn { display: inline-block; background: #334155; color: #93c5fd; border: 1px solid #475569; border-radius: 6px; padding: 2px 8px; font-size: .72rem; cursor: pointer; margin-top: 4px; }
