@@ -1470,6 +1470,16 @@ function initUI() {
       return;
     }
     if (typeof scoreIsActive === 'function' && scoreIsActive()) scoreLeave();
+    // Persistance de la zone multi-départements entre catégories : en revenant
+    // d'une catégorie sans carte (composeur, entreprises…), on rétablit la vue zone.
+    if (state.view !== 'dep' && state.zone && state.zone.length &&
+        ['annuaire', 'score31', 'corp', 'corp_ext'].indexOf(state.category) === -1 &&
+        DEP_FOLDERS[state.zone[0]]) {
+      state.view = 'dep';
+      state.dep = { code: state.zone[0], nom: depNom(state.zone[0]) };
+      document.getElementById('backBtn').hidden = false;
+      document.getElementById('levelTitle').textContent = zoneLabel(state.zone) + ' — par commune';
+    }
     // Conserve le département sélectionné si on est en vue département :
     // on change d'indicateur mais on reste sur le même territoire.
     var keepDep = (state.view === 'dep' && state.dep);

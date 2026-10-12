@@ -1152,7 +1152,8 @@ function annLeave() {
   // Restaure le titre correspondant au territoire conservé (le département
   // n'est PAS réinitialisé : app.js gère la suite via selectIndicator(…, keepDep))
   if (state.view === 'dep' && state.dep) {
-    document.getElementById('levelTitle').textContent = state.dep.nom + ' (' + state.dep.code + ') — par commune';
+    document.getElementById('levelTitle').textContent =
+      ((state.zone && state.zone.length) ? zoneLabel(state.zone) : state.dep.nom + ' (' + state.dep.code + ')') + ' — par commune';
   } else {
     document.getElementById('backBtn').hidden = true;
     document.getElementById('levelTitle').textContent = 'France — par département';

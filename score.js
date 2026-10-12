@@ -764,9 +764,9 @@ function scInitUI() {
 // ---------- Entrée / sortie du mode ----------
 function scoreEnter() {
   SC.active = true;
-  // Département consulté dans l'appli au moment d'entrer dans le composeur
-  // (s'il y en a un) : il devient le département par défaut.
-  var curDep = (state.view === 'dep' && state.dep && state.dep.code && DEP_FOLDERS[state.dep.code]) ? state.dep.code : null;
+  // Zone consultée dans l'appli au moment d'entrer dans le composeur
+  // (s'il y en a une) : elle devient la zone par défaut.
+  var curZone = (state.zone && state.zone.length) ? state.zone.filter(function (d) { return !!DEP_FOLDERS[d]; }) : [];
   scInitUI();
   var zwr = document.getElementById('scZoneWrap');
   if (zwr) zwr.style.display = '';
@@ -779,7 +779,7 @@ function scoreEnter() {
   document.getElementById('scoreControls').style.display = 'flex';
   document.getElementById('legendBlock').style.display = '';
   document.getElementById('backBtn').hidden = true;
-  state.view = 'france'; state.dep = null; state.zone = [];
+  state.view = 'france'; state.dep = null;
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   hideError();
   if (!SC.seeded) {
@@ -802,9 +802,10 @@ function scoreEnter() {
     SC._savedTarget = (saved && saved.target && saved.target.code &&
       SC.zone.indexOf(depOfCommune(saved.target.code)) !== -1) ? saved.target : null;
   }
-  // Département par défaut : département consulté dans l'appli > dernier
-  // sauvegardé > 01 — Ain.
-  if (curDep && SC.zone.indexOf(curDep) === -1) { SC.zone = [curDep]; SC.dep = curDep; SC._savedTarget = null; }
+  // Zone par défaut : zone consultée dans l'appli > dernière
+  // sauvegardée > 01 — Ain.
+  var zNew = curZone.filter(function (d) { return SC.zone.indexOf(d) === -1; });
+  if (zNew.length) { SC.zone = curZone.slice(); SC.dep = SC.zone[0]; SC._savedTarget = null; }
   scSetZone(SC.zone);
 }
 
@@ -815,7 +816,11 @@ function scoreLeave() {
   document.getElementById('scoreControls').style.display = 'none';
   var zwl = document.getElementById('scZoneWrap');
   if (zwl) zwl.style.display = 'none';
-  if (state.category !== 'annuaire') {
+  // Restitue la zone du composeur à l'appli : elle persiste entre catégories.
+  var zsc = (SC.zone || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (zsc.length) state.zone = zsc;
+  // Ne pas écraser le titre géré par annuaire/entreprises en sortie du composeur.
+  if (['annuaire', 'corp', 'corp_ext'].indexOf(state.category) === -1) {
     document.getElementById('indicatorLabel').style.display = '';
     document.getElementById('legendBlock').style.display = '';
     if (state.view === 'dep' && state.dep) {
