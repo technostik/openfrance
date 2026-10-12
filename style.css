@@ -190,3 +190,9 @@ body.fav-blshow .fav-blkrow { display: block; opacity: .45; text-decoration: lin
 .enr-desc { font-size: .78rem; color: #e2e8f0; background: rgba(30,41,59,.6); border-radius: 6px; padding: 4px 6px; margin-top: 4px; line-height: 1.35; }
 #enrTip { position: fixed; z-index: 3000; background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px; padding: 8px 10px; font-size: .75rem; max-width: 320px; box-shadow: 0 4px 16px rgba(0,0,0,.5); pointer-events: none; line-height: 1.4; }
 #enrTip b { color: #fff; }
+/* --- Zone multi-departements --- */
+#zoneWrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.zone-chip { display: inline-flex; align-items: center; background: #334155; border: 1px solid #475569; color: #e2e8f0; border-radius: 999px; padding: 3px 10px; font-size: .82rem; white-space: nowrap; }
+.zone-x { margin-left: 7px; cursor: pointer; color: #94a3b8; font-weight: bold; }
+.zone-x:hover { color: #f87171; }
+.zone-add { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 10px; font-size: .82rem; min-width: 130px; }

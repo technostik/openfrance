@@ -44,6 +44,128 @@ var DEP_FOLDERS = {
   '973':'973-guyane','974':'974-la-reunion','976':'976-mayotte'
 };
 
+// --- Zone multi-departements : departements limitrophes (metropole ; DOM vides) ---
+var DEP_NEIGHBORS = {
+  '01':['38','39','69','71','73','74'], '02':['08','51','59','60','62','77','80'], '03':['15','18','23','42','43','58','63','71'],
+  '04':['05','06','13','26','83','84'], '05':['04','26','38','73'], '06':['04','83'], '07':['26','30','38','42','43','48','69','84'],
+  '08':['02','51','10','55','59'], '09':['11','31','34','66'], '10':['08','21','51','52','77','89'], '11':['09','12','30','34','66','81'],
+  '12':['11','15','19','30','34','46','48','81','82'], '13':['04','30','83','84'], '14':['27','50','61','76'], '15':['03','12','19','23','43','48','63'],
+  '16':['17','24','79','86','87'], '17':['16','24','33','79','85','86'], '18':['03','23','36','41','45','58','71'], '19':['12','15','23','24','46','63','87'],
+  '21':['10','39','52','58','70','71','89'], '22':['29','35','56'], '23':['03','15','18','19','24','36','63','87'], '24':['16','17','19','23','33','40','46','47','87'],
+  '25':['39','70','90'], '26':['04','05','07','38','84'], '27':['14','28','60','61','76','78','95'], '28':['27','36','41','45','61','72','78','91'],
+  '29':['22','56'], '2A':['2B'], '2B':['2A'], '30':['07','11','12','13','34','48','84'], '31':['09','32','65','81','82'],
+  '32':['31','40','47','64','65','81','82'], '33':['17','24','40','47'], '34':['09','11','12','30','48','81'], '35':['22','44','50','53','56'],
+  '36':['18','23','28','37','41','45','86','87'], '37':['36','41','49','72','79','86'], '38':['01','05','07','26','42','69','73'], '39':['01','21','25','70','71'],
+  '40':['24','32','33','47','64','65'], '41':['18','28','36','37','45','49','72'], '42':['03','07','38','43','63','69','71'], '43':['03','07','15','42','48','63'],
+  '44':['35','49','53','56','85'], '45':['18','28','36','41','58','77','89','91'], '46':['12','19','24','47','82'], '47':['24','32','33','40','46','82'],
+  '48':['07','12','15','30','34','43'], '49':['37','41','44','53','72','79','85','86'], '50':['14','35','53'], '51':['02','08','10','52','55','77'],
+  '52':['10','21','51','55','70','77','88','89'], '53':['35','44','49','50','61','72'], '54':['55','57','67','88'], '55':['08','51','52','54','88'],
+  '56':['22','29','35','44'], '57':['54','67','88'], '58':['03','18','21','45','71','89'], '59':['02','08','60','62','80'],
+  '60':['02','27','59','76','77','80','95'], '61':['14','27','28','53','72'], '62':['02','59','80'], '63':['03','15','19','23','42','43'],
+  '64':['32','40','65'], '65':['31','32','40','64'], '66':['09','11'], '67':['54','57','68','88'], '68':['67','88','90'],
+  '69':['01','07','38','42','71'], '70':['21','25','39','52','71','88','89','90'], '71':['01','03','18','21','39','42','58','69','70','89'],
+  '72':['28','37','41','49','53','61'], '73':['01','05','38','74'], '74':['01','73'], '75':['92','93','94'], '76':['14','27','60','80'],
+  '77':['02','10','45','51','52','60','89','91','93','94'], '78':['27','28','91','92','95'], '79':['16','17','37','49','85','86','87'],
+  '80':['02','59','60','62','76'], '81':['11','12','31','32','34','82'], '82':['12','31','32','46','47','81'], '83':['04','06','13','84'],
+  '84':['04','07','13','26','30','83'], '85':['17','44','49','79'], '86':['16','17','36','37','49','79','87'], '87':['16','19','23','24','36','79','86'],
+  '88':['52','54','55','57','67','68','70'], '89':['10','21','45','52','58','70','71','77','91'], '90':['25','68','70'],
+  '91':['28','45','77','78','89','92','94'], '92':['75','78','91','93','95'], '93':['75','77','92','94','95'], '94':['75','77','91','93'],
+  '95':['27','60','78','92','93'], '971':[], '972':[], '973':[], '974':[], '976':[]
+};
+
+var DEP_NAMES = {};
+function buildDepNames() {
+  DEP_NAMES = {};
+  var feats = (state.geo && state.geo.features) || [];
+  feats.forEach(function (f) {
+    if (f.properties && f.properties.code) DEP_NAMES[f.properties.code] = f.properties.nom || f.properties.code;
+  });
+}
+function depNom(code) { return DEP_NAMES[code] || code; }
+function depNeighbors(code) { return DEP_NEIGHBORS[code] || []; }
+// Departement d'un code commune INSEE (2A/2B : 2 car., 97x : 3 car., sinon 2 car.)
+function depOfCommune(code) {
+  if (/^97/.test(code)) return code.slice(0, 3);
+  return code.slice(0, 2);
+}
+function zoneLabel(deps) {
+  return deps.map(function (d) { return depNom(d) + ' (' + d + ')'; }).join(' + ');
+}
+
+// --- Geo fusionnee pour une zone multi-departements (dedup par code INSEE) ---
+var ZONE_GEO_CACHE = {};
+function mergedZoneGeo(deps) {
+  var key = deps.slice().sort().join('+');
+  if (ZONE_GEO_CACHE[key]) return Promise.resolve(ZONE_GEO_CACHE[key]);
+  var proms = deps.map(function (d) {
+    if (state.communesGeo[d]) return Promise.resolve(state.communesGeo[d]);
+    var fold = DEP_FOLDERS[d];
+    return fetchJSONCached('/geo/communes/departements/' + fold + '/communes-' + fold + '.geojson')
+      .then(function (g) { state.communesGeo[d] = g; return g; });
+  });
+  return Promise.all(proms).then(function (geos) {
+    var feats = [], seen = {};
+    geos.forEach(function (g) {
+      (g.features || []).forEach(function (f) {
+        var id = f.properties && (f.properties.code || f.properties.insee);
+        if (!id || seen[id]) return;
+        seen[id] = 1; feats.push(f);
+      });
+    });
+    var merged = { type: 'FeatureCollection', features: feats };
+    ZONE_GEO_CACHE[key] = merged;
+    return merged;
+  });
+}
+
+// --- Widget de selection de zone : chips + ajout (limitrophes suggerees) ---
+function zoneWidgetRender(el, deps, onChange) {
+  var key = deps.join('+');
+  if (el._zk === key) return;
+  el._zk = key;
+  var chips = deps.map(function (d) {
+    var x = deps.length > 1 ? ' <span class="zone-x" data-x="' + d + '" title="Retirer ce d\u00e9partement">&times;</span>' : '';
+    return '<span class="zone-chip">' + depNom(d) + ' (' + d + ')' + x + '</span>';
+  }).join(' ');
+  var voisins = [];
+  deps.forEach(function (d) {
+    depNeighbors(d).forEach(function (n) {
+      if (deps.indexOf(n) === -1 && voisins.indexOf(n) === -1 && DEP_FOLDERS[n]) voisins.push(n);
+    });
+  });
+  voisins.sort(function (a, b) { return depNom(a).localeCompare(depNom(b)); });
+  var opts = '<option value="">+ D\u00e9partement</option>';
+  if (voisins.length) {
+    opts += '<optgroup label="Limitrophes">' + voisins.map(function (d) {
+      return '<option value="' + d + '">' + depNom(d) + ' (' + d + ')</option>';
+    }).join('') + '</optgroup>';
+  }
+  opts += '<optgroup label="Tous les d\u00e9partements">' + Object.keys(DEP_FOLDERS).map(function (d) {
+    return '<option value="' + d + '">' + depNom(d) + ' (' + d + ')</option>';
+  }).join('') + '</optgroup>';
+  el.innerHTML = chips + ' <select class="zone-add" title="Ajouter un d\u00e9partement \u00e0 la zone">' + opts + '</select>';
+  Array.prototype.forEach.call(el.querySelectorAll('.zone-x'), function (b) {
+    b.addEventListener('click', function () {
+      var gone = b.getAttribute('data-x');
+      onChange(deps.filter(function (d) { return d !== gone; }));
+    });
+  });
+  el.querySelector('.zone-add').addEventListener('change', function () {
+    var v = this.value;
+    this.value = '';
+    if (v && deps.indexOf(v) === -1) onChange(deps.concat([v]));
+  });
+}
+
+function setZone(deps) {
+  deps = (deps || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (!deps.length) return;
+  state.zone = deps.slice();
+  state.dep = { code: deps[0], nom: depNom(deps[0]) };
+  document.getElementById('levelTitle').textContent = zoneLabel(state.zone) + ' \u2014 par commune';
+  refresh();
+}
+
 var TOTAL_LABEL = 'Ensemble des faits constatés (tous indicateurs)';
 
 // ---------- Utilitaires UI ----------
@@ -178,7 +300,7 @@ function distKm(a, b) {
 }
 
 var state = {
-  view: 'france', dep: null,
+  view: 'france', dep: null, zone: [],
   category: (window.MF_PAGE ? 'delinquance' : 'economie'),
   indicator: null,
   annee: null,
@@ -1226,6 +1348,7 @@ function updateFrance() {
 function openDepartment(code, nom) {
   state.view = 'dep';
   state.dep = { code: code, nom: nom };
+  state.zone = [code];
   document.getElementById('backBtn').hidden = false;
   document.getElementById('levelTitle').textContent = nom + ' (' + code + ') — par commune';
   refresh();
@@ -1234,6 +1357,7 @@ function openDepartment(code, nom) {
 function backToFrance() {
   state.view = 'france';
   state.dep = null;
+  state.zone = [];
   document.getElementById('backBtn').hidden = true;
   document.getElementById('levelTitle').textContent = 'France — par département';
   refresh();
@@ -1244,27 +1368,34 @@ function refresh() {
   var ind = state.indicator;
   if (!ind) return;
   hideError();
+  var zwAuto = document.getElementById('zoneWrap');
+  if (zwAuto && !(state.view === 'dep' && ind.hasCommunes)) zwAuto.style.display = 'none';
   if (state.view === 'france') {
     updateFrance();
   } else if (ind.hasCommunes) {
-    var prep = Promise.resolve();
-    if (ind.cat === 'delinquance') prep = loadCommunesDelinquance(state.dep.code, state.annee);
-    else if (ind.electId) prep = loadElectCommunes(state.dep.code, ind.electId);
-    else if (ind.ensureCommunes) prep = ind.ensureCommunes(state.dep.code);
-    prep.then(function () {
-      var geoPromise = state.communesGeo[state.dep.code] ? Promise.resolve(state.communesGeo[state.dep.code]) :
-        fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[state.dep.code] + '/communes-' + DEP_FOLDERS[state.dep.code] + '.geojson')
-          .then(function (g) { state.communesGeo[state.dep.code] = g; return g; });
-      return geoPromise;
+    var deps = (state.zone && state.zone.length) ? state.zone.slice() : (state.dep ? [state.dep.code] : []);
+    var zw = document.getElementById('zoneWrap');
+    if (zw) { zw.style.display = ''; zoneWidgetRender(zw, deps, setZone); }
+    Promise.all(deps.map(function (d) {
+      if (ind.cat === 'delinquance') return loadCommunesDelinquance(d, state.annee);
+      if (ind.electId) return loadElectCommunes(d, ind.electId);
+      if (ind.ensureCommunes) return ind.ensureCommunes(d);
+      return Promise.resolve();
+    })).then(function () {
+      return mergedZoneGeo(deps);
     }).then(function (geo) {
-      var data = ind.communes(state.dep.code);
+      var data = {};
+      deps.forEach(function (d) {
+        var dz = ind.communes(d);
+        for (var k in dz) if (!(k in data)) data[k] = dz[k];
+      });
       applyNames(data, geo);
-      document.getElementById('legendTitle').textContent = ind.label + ' — ' + ind.unit;
+      document.getElementById('legendTitle').textContent = ind.label + ' \u2014 ' + ind.unit;
       renderChoropleth(geo, data, ind, 'communes');
       if (geoLayer) map.fitBounds(geoLayer.getBounds(), { padding: [30, 30] });
     }).catch(function (err) {
-      console.error('[OpenFrance] Échec communes :', err);
-      showError('Impossible de charger les communes de ' + state.dep.nom + '.', err.message);
+      console.error('[OpenFrance] \u00c9chec communes :', err);
+      showError('Impossible de charger les communes de ' + zoneLabel(deps) + '.', err.message);
     });
   } else {
     setStatus('ℹ️ Indicateur disponible uniquement au niveau départemental.');
@@ -1288,7 +1419,7 @@ function currentIndicatorByLabel(label) {
 function selectIndicator(label, keepView) {
   var ind = currentIndicatorByLabel(label);
   state.indicator = ind;
-  if (!keepView) { state.view = 'france'; state.dep = null; document.getElementById('backBtn').hidden = true; document.getElementById('levelTitle').textContent = 'France — par département'; }
+  if (!keepView) { state.view = 'france'; state.dep = null; state.zone = []; document.getElementById('backBtn').hidden = true; document.getElementById('levelTitle').textContent = 'France — par département'; }
   var yearLabel = document.getElementById('yearLabel');
   var ySel = document.getElementById('yearSelect');
   if (ind.hasYears) {
@@ -1329,6 +1460,8 @@ function initUI() {
 
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
+    var zwCat = document.getElementById('zoneWrap');
+    if (zwCat && ['annuaire', 'score31', 'corp', 'corp_ext'].indexOf(state.category) !== -1) zwCat.style.display = 'none';
 
     // Mode « Score perso (31) » (score.js) : hors REGISTRY, gestion dédiée.
     // Les scripts annuaire.js/score.js se chargent après app.js : appel par typeof guard.
@@ -1390,6 +1523,7 @@ setStatus('⏳ Chargement des données…', 'loading');
   }
   hideError();
   setStatus('Données chargées');
+  buildDepNames();
   initUI();
 }).catch(function (err) {
   console.error('[OpenFrance] Échec du démarrage :', err);
