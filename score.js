@@ -268,6 +268,41 @@ var SC_TYPES = {
   }
 };
 
+// Page principale (politiquement correcte) : le critère délinquance disparaît.
+if (!window.MF_PAGE) delete SC_TYPES.delinq;
+
+// Page /mafrance : les six indices composites MaFrance deviennent des critères
+// du composeur (base 100 = France métropolitaine ; mesure d'intensité, pas un
+// jugement de valeur).
+if (window.MF_PAGE && typeof MF_INDICES !== 'undefined') {
+  SC_TYPES.mf = {
+    icon: '📊', label: 'Indice MaFrance', dir: 'max', cfg: 'select', field: 'idx',
+    defCfg: function () { return { idx: 0 }; },
+    key: function (cfg) { return 'mf|' + cfg.idx; },
+    cfgOptions: function () {
+      return MF_INDICES.map(function (m, i) { return { v: i, l: 'MaFrance — ' + m.label }; });
+    },
+    describe: function (cfg) {
+      return 'MaFrance — ' + (MF_INDICES[cfg.idx] ? MF_INDICES[cfg.idx].label : 'indice');
+    },
+    defDir: function (cfg) {
+      // insécurité : moins élevé = mieux par défaut ; le reste au sens inverse,
+      // l'utilisateur peut basculer librement.
+      return (MF_INDICES[cfg.idx] && MF_INDICES[cfg.idx].key === 'insecurite_score') ? 'min' : 'max';
+    },
+    ensure: function () { return loadMfCommunes(SC.dep); },
+    vals: function (cfg) {
+      var m = MF_INDICES[cfg.idx], com = MF.com[SC.dep] || {}, out = {};
+      for (var c in com) {
+        var v = com[c][m.key];
+        if (v !== undefined && v !== null) out[c] = v;
+      }
+      return out;
+    },
+    fmt: function (v) { return fmt(v) + ' (base 100)'; }
+  };
+}
+
 // ---------- Cycle de vie d'un critère ----------
 function scCacheKey(crit) { return SC.dep + '|' + SC_TYPES[crit.type].key(crit.cfg); }
 
@@ -467,7 +502,7 @@ function scSetDep(dep) {
   scSavePrefs(); // changement de département : la ville cible repart à zéro
   document.getElementById('scTarget').value = '';
   document.getElementById('levelTitle').textContent = 'Composeur — ' + scDepLabel(dep) + ' (' + dep + ')';
-  var delinqP = DELINQ.loaded ? Promise.resolve() : loadDelinquance();
+  var delinqP = (!window.MF_PAGE || DELINQ.loaded) ? Promise.resolve() : loadDelinquance();
   delinqP.then(function () {
     SC.annee = scLatestYear();
     return scEnsureGeo();
@@ -697,7 +732,7 @@ function scoreEnter() {
         }
       });
     } else {
-      scAddCrit('delinq', null, 5, null, true); // critère neutre au premier passage
+      scAddCrit(window.MF_PAGE && SC_TYPES.delinq ? 'delinq' : 'revenus', null, 5, null, true); // critère neutre au premier passage
     }
     SC._savedTarget = (saved && saved.dep === SC.dep && saved.target && saved.target.code) ? saved.target : null;
     var depSel = document.getElementById('scDep');

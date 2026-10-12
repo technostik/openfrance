@@ -182,3 +182,18 @@
   to = "/.netlify/functions/email"
   status = 200
   force = true
+
+# --- Page /mafrance (branche hidden) : indices composites MaFrance (mafrance.app) ---
+# Une requête par département côté client ; cache navigateur (IndexedDB +
+# service worker, TTL /api/ 7 jours). Indices base 100 = France métropolitaine.
+[[redirects]]
+  from = "/api/mafrance/*"
+  to = "https://mafrance.app/api/:splat"
+  status = 200
+  force = true
+
+# URL propre pour la page étendue mafrance.html
+[[redirects]]
+  from = "/mafrance"
+  to = "/mafrance.html"
+  status = 200

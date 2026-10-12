@@ -848,7 +848,8 @@ var SW_API_LABELS = {
   '/api/assos': 'Annuaire — associations, pages API',
   '/api/nomen': 'Nomenclature WALDEC — pages API',
   '/api/ent': 'Composeur d\'entreprises — pages API',
-  '/api/entreprises': 'Annuaire — entreprises, pages API'
+  '/api/entreprises': 'Annuaire — entreprises, pages API',
+  '/api/mafrance': 'MaFrance — indices par commune/département, pages API'
 };
 
 function swCacheGroups() {

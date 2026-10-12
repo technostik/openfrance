@@ -179,7 +179,7 @@ function distKm(a, b) {
 
 var state = {
   view: 'france', dep: null,
-  category: 'delinquance',
+  category: (window.MF_PAGE ? 'delinquance' : 'economie'),
   indicator: null,
   annee: null,
   communesCache: {}, communesGeo: {}, geo: null
@@ -1250,6 +1250,7 @@ function refresh() {
     var prep = Promise.resolve();
     if (ind.cat === 'delinquance') prep = loadCommunesDelinquance(state.dep.code, state.annee);
     else if (ind.electId) prep = loadElectCommunes(state.dep.code, ind.electId);
+    else if (ind.ensureCommunes) prep = ind.ensureCommunes(state.dep.code);
     prep.then(function () {
       var geoPromise = state.communesGeo[state.dep.code] ? Promise.resolve(state.communesGeo[state.dep.code]) :
         fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[state.dep.code] + '/communes-' + DEP_FOLDERS[state.dep.code] + '.geojson')
@@ -1314,9 +1315,17 @@ function selectIndicator(label, keepView) {
 }
 
 function initUI() {
-  registerDelinquanceIndicators();
-  fillIndicatorSelect();
-  selectIndicator(catIndicators('delinquance')[0].label, false);
+  // Page /mafrance : catégories Délinquance + MaFrance. Page principale :
+  // version sans la délinquance (défaut = économie).
+  if (window.MF_PAGE) {
+    registerDelinquanceIndicators();
+    fillIndicatorSelect();
+    selectIndicator(catIndicators('delinquance')[0].label, false);
+  } else {
+    registerEconomieIndicators();
+    fillIndicatorSelect();
+    selectIndicator(catIndicators('economie')[0].label, false);
+  }
 
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
@@ -1331,6 +1340,11 @@ function initUI() {
     // Conserve le département sélectionné si on est en vue département :
     // on change d'indicateur mais on reste sur le même territoire.
     var keepDep = (state.view === 'dep' && state.dep);
+    // Catégorie « MaFrance » (page /mafrance) : chargement puis enregistrement
+    if (state.category === 'mafrance' && typeof mfEnterCategory === 'function') {
+      mfEnterCategory(keepDep);
+      return;
+    }
     if (state.category === 'economie' && catIndicators('economie').length === 0) registerEconomieIndicators();
     if (state.category === 'politique' && catIndicators('politique').length === 0) {
       // Les indicateurs politiques dépendent des données chargées (listes de
@@ -1360,16 +1374,20 @@ function initUI() {
 }
 
 setStatus('⏳ Chargement des données…', 'loading');
-Promise.all([
-  fetchTextCached(URLS.delinquance),
-  fetchJSONCached(URLS.departements)
-]).then(function (res) {
-  state.geo = res[1];
-  DELINQ.allRows = parseDelinquanceCSV(res[0]);
-  DELINQ.totalRows = buildAggregates(DELINQ.allRows.map(function (r) {
-    return { zone: r.dep, annee: r.annee, nombre: r.nombre, pop: r.pop, estim: false };
-  }));
-  DELINQ.loaded = true;
+(window.MF_PAGE ?
+  Promise.all([fetchTextCached(URLS.delinquance), fetchJSONCached(URLS.departements)])
+  : Promise.all([fetchJSONCached(URLS.departements)])
+).then(function (res) {
+  if (window.MF_PAGE) {
+    state.geo = res[1];
+    DELINQ.allRows = parseDelinquanceCSV(res[0]);
+    DELINQ.totalRows = buildAggregates(DELINQ.allRows.map(function (r) {
+      return { zone: r.dep, annee: r.annee, nombre: r.nombre, pop: r.pop, estim: false };
+    }));
+    DELINQ.loaded = true;
+  } else {
+    state.geo = res[0]; // page principale : pas de CSV délinquance au démarrage
+  }
   hideError();
   setStatus('Données chargées');
   initUI();
