@@ -350,6 +350,11 @@ function scAddCrit(type, cfg, w, dir, silent) {
   SC.crits.push(crit);
   scRenderCrits();
   if (!silent) scEnsureCrit(crit);
+  // Ajout du critère « distance » sans ville cible : on invite à en choisir une
+  if (!silent && type === 'dist' && !SC.target) {
+    var tin = document.getElementById('scTarget');
+    if (tin) tin.focus();
+  }
   return crit;
 }
 
@@ -568,7 +573,15 @@ function scRenderCrits() {
   if (!box) return;
   box.innerHTML = '';
   SC.crits.forEach(function (crit) { box.appendChild(scCritRow(crit)); });
+  scUpdateTargetVisibility();
   scSavePrefs(); // ajout/retrait/config d'un critère : persistance
+}
+
+// La « ville cible » n'est utilisée que par le critère « distance » : le champ
+// ne s'affiche que si un tel critère est présent dans la composition.
+function scUpdateTargetVisibility() {
+  var wrap = document.getElementById('scTargetWrap');
+  if (wrap) wrap.style.display = SC.crits.some(function (c) { return c.type === 'dist'; }) ? '' : 'none';
 }
 
 function scCritRow(crit) {
@@ -707,7 +720,12 @@ function scInitUI() {
 // ---------- Entrée / sortie du mode ----------
 function scoreEnter() {
   SC.active = true;
+  // Département consulté dans l'appli au moment d'entrer dans le composeur
+  // (s'il y en a un) : il devient le département par défaut.
+  var curDep = (state.view === 'dep' && state.dep && state.dep.code && DEP_FOLDERS[state.dep.code]) ? state.dep.code : null;
   scInitUI();
+  document.getElementById('scDepWrap').style.display = '';
+  scUpdateTargetVisibility();
   document.getElementById('indicatorLabel').style.display = 'none';
   document.getElementById('yearLabel').style.display = 'none';
   document.getElementById('annControls').style.display = 'none';
@@ -735,9 +753,12 @@ function scoreEnter() {
       scAddCrit(window.MF_PAGE && SC_TYPES.delinq ? 'delinq' : 'revenus', null, 5, null, true); // critère neutre au premier passage
     }
     SC._savedTarget = (saved && saved.dep === SC.dep && saved.target && saved.target.code) ? saved.target : null;
-    var depSel = document.getElementById('scDep');
-    if (depSel) depSel.value = SC.dep;
   }
+  // Département par défaut : département consulté dans l'appli > dernier
+  // sauvegardé > 01 — Ain.
+  if (curDep && SC.dep !== curDep) { SC.dep = curDep; SC._savedTarget = null; }
+  var depSel = document.getElementById('scDep');
+  if (depSel) depSel.value = SC.dep;
   scSetDep(SC.dep);
 }
 
@@ -746,6 +767,7 @@ function scoreLeave() {
   scTargetDrop(false);
   if (SC.layer) { map.removeLayer(SC.layer); SC.layer = null; }
   document.getElementById('scoreControls').style.display = 'none';
+  document.getElementById('scDepWrap').style.display = 'none';
   if (state.category !== 'annuaire') {
     document.getElementById('indicatorLabel').style.display = '';
     document.getElementById('legendBlock').style.display = '';

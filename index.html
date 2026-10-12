@@ -31,6 +31,9 @@
       <option value="corp_ext">Recherche étendue d'entreprises</option>
     </select>
   </label>
+  <label id="scDepWrap" style="display:none">Département
+    <select id="scDep"></select>
+  </label>
   <label id="indicatorLabel">Indicateur
     <select id="indicatorSelect" disabled><option>Chargement…</option></select>
   </label>
@@ -67,9 +70,6 @@
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
   </div>
   <div id="scoreControls" style="display:none">
-    <label>Département
-      <select id="scDep"></select>
-    </label>
     <label id="scTargetWrap">Ville cible
       <input id="scTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
       <div id="scTargetDrop" class="sc-drop"></div>
@@ -166,9 +166,11 @@
     </label>
     <button id="extSearchBtn" type="button" title="Lancer la recherche étendue">🔎 Rechercher</button>
   </div>
-  <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
-  <button id="favBtn" type="button" title="Favoris : entités suivies + recherche email/site web">⭐ Favoris</button>
-  <span id="status">⏳ Chargement des données…</span>
+  <div class="ctrl-meta">
+    <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
+    <button id="favBtn" type="button" title="Favoris : entités suivies + recherche email/site web">⭐ Favoris</button>
+    <span id="status">⏳ Chargement des données…</span>
+  </div>
 </section>
 <p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département). Ville : tapez un nom de commune pour filtrer « dans la ville » ou par rayon.</p>
 <p id="annQueryExp" class="muted" style="display:none"></p>

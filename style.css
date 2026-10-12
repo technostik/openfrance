@@ -9,6 +9,8 @@ select { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-
 #backBtn { background: #1d4ed8; color: white; border: none; border-radius: 6px; padding: 10px 16px; font-size: .9rem; cursor: pointer; }
 #backBtn:hover { background: #2563eb; }
 #status { font-size: .85rem; color: #94a3b8; }
+.ctrl-meta { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+#scDepWrap select { min-width: 170px; } /* département du composeur : compact, sur la ligne « Catégorie */
 main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 #map { flex: 1; }
 #panel { width: 300px; background: #1e293b; padding: 16px; overflow-y: auto; }
