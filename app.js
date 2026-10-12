@@ -166,6 +166,17 @@ function setZone(deps) {
   refresh();
 }
 
+// Affiche le widget de zone multi-départements avec le callback onChange de la
+// catégorie active (indicateurs, annuaire, composeur, recherche étendue).
+function zoneWidgetShow(onChange) {
+  var zw = document.getElementById('zoneWrap');
+  if (!zw) return;
+  var deps = (state.zone && state.zone.length) ? state.zone.slice() : (state.dep ? [state.dep.code] : []);
+  zw.style.display = '';
+  zw._zk = null; // force le re-rendu : le onChange change selon la catégorie
+  zoneWidgetRender(zw, deps, onChange || setZone);
+}
+
 var TOTAL_LABEL = 'Ensemble des faits constatés (tous indicateurs)';
 
 // ---------- Utilitaires UI ----------
@@ -1375,7 +1386,7 @@ function refresh() {
   } else if (ind.hasCommunes) {
     var deps = (state.zone && state.zone.length) ? state.zone.slice() : (state.dep ? [state.dep.code] : []);
     var zw = document.getElementById('zoneWrap');
-    if (zw) { zw.style.display = ''; zoneWidgetRender(zw, deps, setZone); }
+    if (zw) { zw.style.display = ''; zw._zk = null; zoneWidgetRender(zw, deps, setZone); }
     Promise.all(deps.map(function (d) {
       if (ind.cat === 'delinquance') return loadCommunesDelinquance(d, state.annee);
       if (ind.electId) return loadElectCommunes(d, ind.electId);
@@ -1461,7 +1472,7 @@ function initUI() {
   document.getElementById('categorySelect').addEventListener('change', function () {
     state.category = this.value;
     var zwCat = document.getElementById('zoneWrap');
-    if (zwCat && ['annuaire', 'score31', 'corp', 'corp_ext'].indexOf(state.category) !== -1) zwCat.style.display = 'none';
+    if (zwCat && state.category === 'score31') zwCat.style.display = 'none';
 
     // Mode « Score perso (31) » (score.js) : hors REGISTRY, gestion dédiée.
     // Les scripts annuaire.js/score.js se chargent après app.js : appel par typeof guard.

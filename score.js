@@ -820,7 +820,7 @@ function scoreLeave() {
   var zsc = (SC.zone || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
   if (zsc.length) state.zone = zsc;
   // Ne pas écraser le titre géré par annuaire/entreprises en sortie du composeur.
-  if (['annuaire', 'corp', 'corp_ext'].indexOf(state.category) === -1) {
+  if (['annuaire', 'corp', 'corp_ext'].indexOf(document.getElementById('categorySelect').value) === -1) {
     document.getElementById('indicatorLabel').style.display = '';
     document.getElementById('legendBlock').style.display = '';
     if (state.view === 'dep' && state.dep) {
