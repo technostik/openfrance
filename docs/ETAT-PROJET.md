@@ -4,14 +4,16 @@
 
 ## 🎯 Objectif
 
-Application web **100 % statique** (pas de backend) affichant des cartes choroplèthes de données ouvertes françaises (data.gouv.fr). Déployée sur Netlify (branche `main` = production). **Contraintes : gratuit, sans clé API, sans service tiers payant.**
+Application web **100 % statique** (pas de backend) affichant des cartes choroplèthes de données ouvertes françaises (data.gouv.fr). Déployée sur Netlify et Vercel en double déploiement (branche `main` = production). **Contraintes : gratuit, sans clé API, sans service tiers payant.**
 
 ## 🗂️ Structure du repo
 
 ```
-index.html      — UI : sélecteurs catégorie/indicateur/année, annuaire (recherche/type/catégorie), composeur d'entreprises (ciblage + critères), page cache globale, favoris (bouton ⭐ + panneau), bandeau d'erreur, bouton retour
+index.html      — UI : barre du haut (marque 🇫🇷, bouton retour, widgets de zone #zoneWrap/#scZoneWrap, sélecteurs catégorie/indicateur/année), annuaire (recherche/type/catégorie), composeur d'entreprises (ciblage + critères), page cache globale, favoris (bouton ⭐ + panneau), bandeau d'erreur
 style.css       — Thème sombre, filtre CSS sur tuiles OSM, styles annuaire (.ann-*), composeur d'entreprises (.co-*), cache (.cache-*) et favoris (.fav-*)
-app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI) + utilitaires partagés : étalement spirale des marqueurs co-localisés (MK_SPREAD), distance haversine (distKm)
+app.js          — Logique générale (registre d'indicateurs, parsers CSV, requêtes API, rendu choroplèthe, UI) + utilitaires partagés : étalement spirale des marqueurs co-localisés (MK_SPREAD), distance haversine (distKm), fusion des géométries de zone (mergedZoneGeo), widget de zone multi-départements (zoneWidgetShow, #zoneWrap)
+mafrance.html   — Page étendue « /mafrance » : catégories Délinquance + MaFrance (window.MF_PAGE = true) ; la page principale (index.html) reste « politiquement correcte » (défaut : Économie)
+mafrance.js     — Page /mafrance : six indices composites de mafrance.app (base 100 = France métropolitaine) par département/commune via /api/mafrance/*, IndexedDB openfrance-mafrance, critère « mf » du Composeur de critères
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
 score.js        — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (ex-score31.js, renommé 10/2026)
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
@@ -21,7 +23,11 @@ naf.js          — Données : libellés NAF rév. 2 (INSEE, 732 sous-classes, L
 enrich.js       — Mode transversal Enrich : libellés NAF dans popups/fiches, tooltips de survol (listes + marqueurs carte), bouton ✨ Enrich (description : Wikidata + DuckDuckGo + meta du site), cache persistant IndexedDB (branche de test get_email)
 netlify/functions/ft.js, curated.js, email.js — Fonctions Netlify : proxy France Travail (OAuth + cache token + throttle), listes curatées Supabase, recherche email/site web des favoris (chaîne de moteurs, budget 9 s) ; op describe : description d'activité (DuckDuckGo + meta du site)
 sw.js           — Service Worker : cache disque persistant (stale-while-revalidate)
-netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/assos, /api/nomen, /api/entreprises, /api/ent
+api/            — Fonctions Vercel : ports exacts des fonctions Netlify (ft, curated, email) — même logique, adaptateur HTTP (req, res)
+vercel.json     — Rewrites Vercel équivalents aux [[redirects]] de netlify.toml (proxys same-origin + routage /ft/*) — double déploiement, voir docs/VERCEL.md
+package.json    — Dépendances des fonctions Vercel (prospector-mcp pour api/email.js), inoffensif côté build Netlify
+docs/           — Documentation : ETAT-PROJET.md (mémoire du projet), VERCEL.md (déploiement Vercel)
+netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/* (assos, nomen, entreprises, ent, communes, elect-gen/elect-cand, loyers, adr, mafrance) + /ft/* (fonctions Netlify) — source de vérité des URLs
 ```
 
 ## 🏗️ Architecture
@@ -30,10 +36,11 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 1. Au chargement : CSV délinquance + GeoJSON départements sont fetchés (via proxy)
 2. `REGISTRY` : registre d'indicateurs, chacun avec `{ cat, label, unit, type, hasCommunes, ensure, france(), communes() }`
    - `type: 'num'` → dégradé vert→rouge ; `type: 'cat'` → couleur par catégorie (hash de la clé), légende = clé + décompte
-3. Catégories : **Délinquance** / **Économie** / **Politique** / **Annuaire**
+3. Catégories : **Économie** / **Politique** / **Annuaire** / **Composeur de critères** (score31) / **Composeur d'entreprises** (corp) / **Recherche étendue** (corp_ext) — page /mafrance : **Délinquance** + **MaFrance**
 4. Vue France (départements) → clic sur un département → zoom communes + bouton « ← France »
-5. **Le département est conservé au changement de catégorie** (`selectIndicator(label, keepDep)`) : on change d'indicateur, pas de territoire
-6. Erreurs : bandeau rouge (`showError`) + détails console F12 ; erreurs de parsing nomment la colonne manquante
+5. **Le territoire est conservé au changement de catégorie** (`selectIndicator(label, keepDep)`) : on change d'indicateur, pas de territoire (département seul ou zone multi-départements)
+6. **Zone multi-départements** (`state.zone`, branche multi-dep 10/2026) : chips cliquables dans la barre du haut (widget `#zoneWrap` via `zoneWidgetShow(onChange)`, suggestions de départements limitrophes) ; géométries communales fusionnées `mergedZoneGeo(deps)`, titre `zoneLabel(deps)` ; zone vide = département seul (fallback `state.dep`)
+7. Erreurs : bandeau rouge (`showError`) + détails console F12 ; erreurs de parsing nomment la colonne manquante
 
 ### Rendu choroplèthe — échelle robuste
 `scaleBounds(values)` : bornes **P5→P95** (percentiles), pas min/max brut. Une commune de 3 habitants avec 2 faits (666 ‰) ne doit pas écraser la palette — les outliers **saturent** (clamp `min(1, max(0, t))`) et la légende affiche « Échelle écrétée (P5–P95) ». Communes < 100 hab : infobulle « ⚠️ taux peu significatif ». Le taux reste faits/habitants (méthode officielle Intérieur, pas de pondération par gravité — n'existe pas officiellement).
@@ -41,25 +48,32 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 ### Étalement spirale des marqueurs co-localisés (commun, app.js)
 `MK_SPREAD` (`mkSpreadApply`/`mkSpreadClear`) : les marqueurs partageant exactement la même position (assos RNA au centroïde de leur commune, établissements aux mêmes coordonnées, fiches curatées géocodées au centroïde BAN) sont écartés en spirale d’angle d’or (pas `12·√(i+0,5)` px) autour de la position réelle, recalculée à chaque `zoomend` (échelle constante en pixels quel que soit le zoom). Un marqueur isolé reste à sa position exacte (remis en place s’il avait été écarté au rendu précédent). Utilisé par annuaire.js (`ANN.spread`), corp.js (`CO.spread`) et corp_ext.js — mécanisme unifié 10/2026, la copie privée EXT_SPREAD de corp_ext.js a été supprimée ; note 📍 « N groupe(s) écartés en spirale » dans les statuts concernés.
 
+### Zone multi-départements (10/2026, branche multi-dep)
+- **Widget chips `#zoneWrap`** (app.js : `zoneWidgetShow(onChange)` place le widget partagé, `setZone(deps)` applique la zone) : département courant + chips des départements ajoutés, suggestions de départements limitrophes ; `state.zone` = liste de codes, vide = département seul.
+- **Toutes les catégories** : indicateurs carto (économie, délinquance, politique, mafrance — géo fusionnée, valeurs affichées pour tous les départements de la zone), annuaire (assos/entreprises chargés par département puis fusionnés), Composeur de critères (widget dédié `#scZoneWrap`), Composeur d'entreprises (`coSetZone`, pages fusionnées `coPageZone`), Recherche étendue (`extSetZone`).
+- **Persistance** : la zone survit au changement de catégorie (`state.zone` partagé, restitué par chaque `*Leave`) et à la session (champ `zone` des prefs localStorage de chaque mode) ; la ville cible est restituée si sa commune appartient à la zone.
+- **Piège ordre des listeners** : `#categorySelect` est écouté par annuaire.js → score.js → corp.js → corp_ext.js → app.js ; les `*Leave` s'exécutent APRÈS les `*Enter` de la catégorie suivante et `state.category` n'est mis à jour qu'à la fin (listener de app.js) → pendant un changement, lire `document.getElementById('categorySelect').value`, jamais `state.category` (bug n°27) ; l'annuaire relance `setTimeout(annRefresh, 0)`.
+
 ### annuaire.js — mode Annuaire
 - **Associations** : RNA agrégé national (Waldec, resource `91fd139b-...`) via `/api/assos/`, filtres `date_disso__exact=-infinity` + `adrs_codeinsee__in=<codes INSEE du dept>`, pagination par lots de 10 pages de 200. Chargement par département → filtrage **local**.
 - **Thèmes** : nomenclature WALDEC (resource `2b618348-...`, 297 codes, 2 pages) via `/api/nomen/` → facette catégorie.
 - **Entreprises** : API Recherche d'entreprises (DINUM) via `/api/entreprises/` (`q`, `departement`, `est_association=false`, `per_page` max 25, total_pages plafonné à 4). Recherche texte obligatoire ici — pour une recherche par critères sans mot-clé, voir le **Composeur d'entreprises** (corp.js).
 - **Recherche multi-opérateurs** (`parseAnnQuery`) : mots simples = ET · `+mot` = OU (dès qu'il y a un `+`, req+or forment un OU : `a + b` = a OU b) · `-mot` = exclusion · `"mot"` = mot exact (frontières de mot, regex `(^|[^a-z0-9])mot($|[^a-z0-9])`) · espaces autour des `+`/`-` tolérés (token orphelin → `pendingSign`). Interprétation en direct sous le champ (`annQueryExplain`, `#annQueryExp`).
 - **Marqueurs par différence** (`annSyncMarkers` + `ANN.markerIndex`) : à chaque frappe, seuls les nouveaux marqueurs sont créés, les disparus retirés — jamais de recréation complète (anti-scintillement). Clés : `a:<id RNA>` / `e:<siren>`.
-- **Filtre ville** (champ `#annCity` + zone `#annRadius`) : autocomplete sur les communes du département (`annCityList`, centroïdes GeoJSON, Entrée = 1er résultat) ; champ **sur sa propre ligne, pleine largeur** (`#annCityWrap` : `position:relative` pour le dropdown `.sc-drop` + `flex:1 1 100%`). « Dans la ville » : code INSEE de la commune pour les assos, code INSEE du siège pour les entreprises (repli : distance ≤ 2 km au centroïde) ; rayon 5/10/20/50 km : distance haversine `distKm` (app.js) — centroïde de commune pour les assos, coordonnées du siège pour les entreprises. Cercle + marqueur de la ville cible (`annFrameZone`), filtrage local AVANT construction des marqueurs, ville cible réinitialisée au changement de département, champ vidé = filtre retiré.
+- **Filtre ville** (champ `#annCity` + zone `#annRadius`) : autocomplete sur les communes de la zone (`annCityList` par département, fusion triée `annCityListZone`, centroïdes GeoJSON, Entrée = 1er résultat) ; champ **sur sa propre ligne, pleine largeur** (`#annCityWrap` : `position:relative` pour le dropdown `.sc-drop` + `flex:1 1 100%`). « Dans la ville » : code INSEE de la commune pour les assos, code INSEE du siège pour les entreprises (repli : distance ≤ 2 km au centroïde) ; rayon 5/10/20/50 km : distance haversine `distKm` (app.js) — centroïde de commune pour les assos, coordonnées du siège pour les entreprises. Cercle + marqueur de la ville cible (`annFrameZone`), filtrage local AVANT construction des marqueurs, ville cible réinitialisée au changement de département ou de zone, champ vidé = filtre retiré.
+- **Zone multi-départements** : `annZoneDeps()` (state.zone, sinon département seul) ; assos chargées par département de la zone (miroir `ANN.assos[d]`), entreprises via `searchEntreprisesZone(deps, q, section)` (une requête API par département, SIREN dédupliqués, échec d'un seul département toléré), catégories comptées sur toute la zone, géo + centroïdes fusionnés (`annZoneCentroids`), carte cadrée sur la zone (titre `zoneLabel(deps)`).
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
-- `annEnter`/`annLeave` : **conservent le département courant** (pas de retour forcé à la France).
+- `annEnter`/`annLeave` : **conservent le territoire courant** (département ou zone, pas de retour forcé à la France) ; `annEnter` hérite/restaure la zone puis relance `setTimeout(annRefresh, 0)` (ordre des listeners, bug n°27).
 - Le SW_API_LABELS de la page cache mentionne `/api/ent` (composeur d'entreprises) et le compteur RAM inclut les résultats du composeur.
 
 ### score.js — mode « Composeur de critères » (ex-score31.js)
 - **Généralisation de l'ancien « Score perso »** : indice composite **personnalisable** des communes de **n'importe quel département**, **hors REGISTRY** (`scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` de app.js via `typeof` guards).
-- **Département** au choix (select) + **ville cible** avec autocomplete sur les communes du département (recherche insensible aux accents via `normTxt`, dropdown custom `#scTargetDrop`, Entrée = 1er résultat).
+- **Zone multi-départements** (widget `#scZoneWrap` dans la barre du haut, 1..n départements avec limitrophes suggérés — remplace l'ancien select département) + **ville cible** avec autocomplete sur les communes de la zone (recherche insensible aux accents via `normTxt`, dropdown custom `#scTargetDrop`, Entrée = 1er résultat) ; géo fusionnée `mergedZoneGeo` (app.js), critères chargés par département de la zone (loyers, assos RNA).
 - **Critères ajoutables/retirables à volonté** (bouton ＋ / ✕), chacun avec : **sens** (⬆ plus = mieux / ⬇ moins = mieux) et **poids 0–10**. Types : 📍 distance à la ville cible · 🛡 délinquance (indicateur au choix, dernière année) · 💰 loyers (Carte des loyers 2025) · 💶 niveau de vie médian (Filosofi) · 🏠 prix m² DVF (appartements/maisons) · 🥋 associations RNA (requête multi-opérateurs) · 🗳 politique par commune (indicateurs numériques du REGISTRY : abstentions, voix candidat/nuance/liste).
 - Normalisation P5–P95 avec saturation par critère (`scBounds`) ; score = Σ poids×part / Σ poids ; **donnée absente → part neutre 0,5** ; critère non chargé → neutre également.
 - **Temps réel** : `scDraw` recalcule puis `setStyle` en place (jamais de recréation de couche) ; les chargements de données sont paresseux, par critère, avec dédoublonnage (`SC.valCache[key].promise`).
 - Couleurs : `colorFor(1 − score)` (vert = bon score) ; **meilleure commune en bleu** (#2563eb, bordure blanche, 🏆 infobulle/légende/top 10) ; infobulle détaillée = valeur de chaque critère.
-- Premier passage : un critère neutre (délinquance) et le premier département de la liste ; ensuite critères, poids, sens, département et ville cible restaurés depuis le localStorage (clé `openfrance-score-prefs`) — plus aucune valeur personnelle en dur.
+- Premier passage : un critère neutre (délinquance) et le premier département de la liste ; ensuite critères, poids, sens, zone (`SC.zone`, `SC.dep` = zone[0] en compat) et ville cible restaurés depuis le localStorage (clé `openfrance-score-prefs`, champ `zone`) — plus aucune valeur personnelle en dur.
 - Mode isolé : retire `geoLayer`, couche propre `SC.layer`, ne remplace pas `refresh`, réutilise les caches existants (IndexedDB assos, `state.communesGeo`/`communesCache`, SW `/data/` et `/api/`).
 
 ### corp.js — mode « Composeur d'entreprises » (branche de test `corp_search`)
@@ -67,11 +81,11 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - **3 modes de ciblage** automatiques :
   - `near` : ville cible + rayon > 0 km → `/near_point` (lat/long du centroïde de la commune, rayon max 50 km) ; cercle dessiné sur la carte ;
   - `commune` : ville cible + rayon 0 → `/search?code_commune=` (toutes les entreprises domiciliées dans la commune) ;
-  - `dep` : sans ville → `/search?departement=` (tout le département).
+  - `dep` : sans ville → `/search?departement=` (tout le département) — en zone multi-départements, une requête par département à chaque page (`coPageZone`/`coPageOne`) : total_results additionnés, total_pages max, SIREN dédupliqués, échec d'un département signalé dans le statut.
 - **Critères serveur** (`/search`) : `activite_principale` (codes NAF **exacts** séparés par virgules, pas de joker) ou `section_activite_principale`, `tranche_effectif_salarie` (liste de tranches, min/max traduits en ensemble), `categorie_entreprise` (PME/ETI/GE, valeur unique), `nature_juridique` (**valeur unique** seulement), `ca_min`/`ca_max`, `resultat_net_min`/`max`, `est_ess`, `est_bio`, `est_qualiopi`, `est_rge`, `est_spectacle`, `est_mission`, `est_siae`, `est_organisme_formation`, `etat_administratif`, `q` (texte optionnel — **`/search` fonctionne sans `q` dès qu'un filtre est présent**).
 - **Contraintes API vérifiées empiriquement** : `per_page` max **25** (100 → 0 résultat silencieux) ; `total_results` plafonné à 10 000 ; pagination > 4 pages fonctionne ; `minimal=true` réduit la charge. Sur **`/near_point`**, `q` est **interdit** (« terms not allowed ») et **seuls les filtres d'activité passent côté serveur** — tranche/catégorie/CA/labels/état sont **ignorés silencieusement** : en mode `near`, ces critères sont donc **filtrés localement** sur les pages chargées (q et CA désactivés dans l'UI pour ce mode, indice de mode affiché `#coModeHint`).
-- **Pagination** : 25 résultats/page, lots de 4 pages (« Charger plus », max 20 pages = 500 résultats) ; liste plafonnée à 300, marqueurs à 600. Le cache disque SW couvre automatiquement `/api/ent/` (TTL `/api/` 7 j) — pas d'IndexedDB dédié.
-- **Ville cible** : autocomplete sur les centroïdes GeoJSON des communes (`annCentroids` d'annuaire.js), dropdown custom, Entrée = 1er résultat ; rayon 0–50 km. Dernier département, rayon et ville cible conservés d'une session à l'autre (localStorage, clé `openfrance-corp-prefs`).
+- **Pagination** : 25 résultats/page, lots de 4 pages (« Charger plus », max 20 pages = 500 résultats, plafond de pages divisé par le nombre de départements en mode zone) ; liste plafonnée à 300, marqueurs à 600. Le cache disque SW couvre automatiquement `/api/ent/` (TTL `/api/` 7 j) — pas d'IndexedDB dédié.
+- **Ville cible** : autocomplete sur les centroïdes GeoJSON des communes (`annCentroids` d'annuaire.js, fusionnés sur la zone via `coEnsureGeo`, cache par clé de zone `coZoneKey`), dropdown custom, Entrée = 1er résultat ; rayon 0–50 km. Zone (`coSetZone`/`coZoneDeps`, héritée de la carte ou des prefs, ville cible restituée si sa commune est dans la zone), rayon et ville cible conservés d'une session à l'autre (localStorage, clé `openfrance-corp-prefs`, champ `zone`) ; statut/titres `coZoneLabel()`.
 - **Carte** : cercle du rayon (mode near), marqueurs par **établissement dans la zone** (`matching_etablissements`, fallback siège hors mode near), popup avec lien « Fiche détaillée » (`coOpenFiche`).
 - **Fiche détaillée** (modal `#coFicheDlg`) : identité (SIREN, NAF, création, catégorie, effectifs), siège (adresse + coordonnées cliquables → zoom), état administratif + labels en chips, dirigeants, établissements dans la zone (cliquables), lien officiel `annuaire-entreprises.data.gouv.fr/entreprise/<siren>`.
 
@@ -83,6 +97,14 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - **Dégradation gracieuse** : LBB non abonné → {ok:false, code:'lbb_unavailable'} → message + métiers ROME affichés quand même (le mode ne casse pas, s'activera seul dès provisionnement).
 - **Auto-câblage** comme corp.js : listener propre sur #categorySelect (extEnter/extLeave), aucune modification d'app.js. Réutilise esc/normTxt/annCentroids (annuaire.js), coDepLabel (corp.js), colorFor (dégradé app.js pour les marqueurs), classes .co-row/.co-badge/.ann-obj/.sc-drop + .ext-* (style.css).
 - **Service worker** : /ft/* hors TTL → jamais mis en cache (données dynamiques fraîches) ; pas de bump de CACHE_NAME nécessaire (le SW ne cache pas les .js).
+
+- **Zone multi-départements** (miroir de corp.js) : `EXT.zone` + `extSetZone`/`extZoneDeps` (ville cible restituée si sa commune est dans la zone), géo des villes fusionnée (`extEnsureGeo`), titres `extZoneLabel()`, zone persistée dans `openfrance-ext-prefs` (champ `zone`) ; `extLeave` restitue `state.zone` et relit `categorySelect.value` (bug n°27).
+
+### mafrance.js — page « /mafrance » (10/2026)
+- **Page étendue** mafrance.html (servie sur /mafrance, `window.MF_PAGE = true`) : catégories **Délinquance** (transférée depuis la page principale) + **MaFrance** ; la page principale (index.html) reste « politiquement correcte » (défaut : Économie, sans catégorie Délinquance).
+- **Six indices composites** de mafrance.app (`MF_INDICES`) — général, insécurité, immigration, islamisation, défrancisation, wokisme (indice base 100 : France métropolitaine = 100) — par département (`/api/mafrance/rankings/departements`) et par commune (`/api/mafrance/rankings/communes?dept=`, une requête par département), via le proxy `/api/mafrance/*`.
+- **Hors REGISTRY** : `mfEnterCategory(keepDep)` appelé depuis le listener de app.js (typeof guard) ; rendu choroplèthe réutilisé (renderChoropleth, colorFor/catColor) ; critère « mf » du Composeur de critères (page /mafrance uniquement).
+- **Cache** : IndexedDB `openfrance-mafrance` (persistant) + service worker `/api/` (TTL 7 j).
 
 ### favoris.js — mode transversal « Favoris et contacts » (branche de test get_email)
 
@@ -100,6 +122,7 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
 - **IndexedDB** (`openfrance-annuaire`, store `assos`) : clés `assos-<dep>` ({v, date, rows}), `nomen` ({child}), `ent-<dep|terms|section>` (résultats de recherche entreprises) — **persistant entre sessions**
+- **Autres IndexedDB** : `openfrance-favoris` (favoris + blacklist), `openfrance-enrich` (descriptions Enrich), `openfrance-mafrance` (indices MaFrance) — tous persistants.
 - **Cache disque Service Worker** (`openfrance-v1` + TTL `openfrance-meta-v1`) : `/geo/` 30 j, `/data/` 24 h, `/api/` 7 j. Le SW ne met PAS en cache .js/.html/.css.
 - La page 🗂 Cache (`renderCachePage`, `annCacheButtonAction`) réunit les 3 niveaux avec actions 🔄 rafraîchir / 🗑 purger par entrée.
 
@@ -126,6 +149,9 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
   - `/api/elect-gen/` → resource `b8703c69-...` : inscrits/abstentions/exprimés par **bureau de vote**
   - `/api/elect-cand/` → resource `52a11762-...` : voix par candidat/liste et BV
   - `id_election` : `2022_pres_t1`, `2022_pres_t2`, `2024_legi_t1`, `2024_euro_t1` — BV **sommés par commune** dans le navigateur
+
+### MaFrance (page /mafrance)
+- Six indices composites (général, insécurité, immigration, islamisation, défrancisation, wokisme) de [mafrance.app](https://mafrance.app) — indice base 100 : France métropolitaine = 100 — par département et par commune, via le proxy `/api/mafrance/*` (une requête par département) ; cache IndexedDB `openfrance-mafrance` + service worker `/api/` (TTL 7 j).
 
 ### Annuaire
 - Associations : RNA agrégé national (Waldec) — voir architecture ci-dessus
@@ -167,7 +193,7 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 9. Scintillement de la carte à chaque frappe : les marqueurs étaient tous supprimés/recréés → **mise à jour par différence** (`annSyncMarkers`)
 10. Changement de catégorie : retour forcé à la vue France → `selectIndicator(label, keepDep)` conserve le département ; `annEnter`/`annLeave` aussi
 11. Échelle choroplèthe écrasée par les outliers (commune de 3 hab à 666 ‰) → bornes **P5–P95** avec saturation + mention dans la légende
-12. Connector GitHub : `get_file_contents` exige `ref: "refs/heads/work"` (PAS `branch`) ; `read_file` retourne un objet `{content, was_truncated…}` — **toujours** vérifier `was_truncated === false` avant un push (sinon fichier corrompu, incident réparé en 471da2d)
+12. Connector GitHub : `get_file_contents` exige `ref: "refs/heads/<branche>"` (PAS `branch`) ; `read_file` retourne un objet `{content, was_truncated…}` — **toujours** vérifier `was_truncated === false` avant un push (sinon fichier corrompu, incident réparé en 471da2d)
 13. **Pièges API Recherche d'entreprises** (vérifiés empiriquement) : `per_page` max 25 (100 → 0 résultat silencieux) ; `activite_principale` n'accepte **pas** de jokers (`62*` invalide) ; `nature_juridique` = valeur unique ; sur `/near_point` : `q` interdit + filtres non-activité ignorés silencieusement → d'où le filtrage local de corp.js en mode near.
 14. **Pièges France Travail** (vérifiés empiriquement le 10/10/2026 via tools/verify-ft.mjs + diagnostic dédié) : fiches ROME → chemin /rome-fiches-metiers/v1/fiches-rome/fiche-metier/<code> (segment /fiches-rome/ obligatoire, sinon 404 ; scope sans nomenclatureRome → 403) ; base sans numéro de version → 401 « TypeAuth invalide » + header errorcause: type_auth_invalide ; scope non souscrit → 400 invalid_scope (signature d'un abonnement absent — idem tous les scopes api_test* : le bac à sable n'est PAS souscrit sur cette app) ; LBB → 403 insufficient_scope si le scope du token est incomplet (v2 exige 'search office api_labonneboitev2') ou si l'abonnement n'est pas provisionné (action portail francetravail.io) ; 429 après ~7 appels référentiels ROME à ~1/s → throttle 1,1 s dans ft.js.
 15. **LBB v2 ≠ v1** (vérifié le 10/10/2026, implémentation de référence testée en prod : projet open source cle-avenir, oct. 2026) : endpoint GET /partenaire/labonneboite/v2/recherche (PAS /company/) ; le scope api_labonneboitev2 SEUL ne suffit pas → 403 insufficient_scope, il faut 'search office api_labonneboitev2' ; les codes ROME passent en paramètres répétés (rome=A&rome=B, pas de rome_codes) ; latitude/longitude/distance (API : ]0;200[ km — le proxy borne à 100 km), page/page_size (max 100) ; réponse {hits, items:[{siret, office_name, company_name, naf, naf_label, location{lat,lon}, city, postcode, headcount_min/max, hiring_potential 0-100, rome}]}, 204 = aucun résultat ; plus de filtre contract (dpae/alternance) en v2. SIREN = 9 premiers chiffres du siret (croisement Supabase).
@@ -190,15 +216,16 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 
 26. **Dropdown autocomplete du filtre ville invisible (annuaire, 10/2026)** : `.sc-drop` est en `position:absolute` et exige un ancêtre `position:relative` — tous les autres champs ville en ont un (`#scTargetWrap`, `#coTargetWrap`, `#extTargetWrap`, `#favCityWrap`) SAUF `#annCityWrap` → les suggestions se positionnaient par rapport à la page (bas gauche, invisibles). Correctif style.css : `#annCityWrap { position:relative; flex:1 1 100% }` (ligne dédiée) + champ `#annCity` élargi (pleine largeur, police plus grande). Leçon : tout nouveau dropdown `.sc-drop` doit vivre dans un wrapper `position:relative`.
 
+27. **`state.category` obsolète pendant un changement de catégorie** (10/2026, zone multi-dep) : le listener de app.js qui met à jour `state.category` s'exécute en DERNIER (ordre d'attachement sur `#categorySelect` : annuaire.js → score.js → corp.js → corp_ext.js → app.js) — pendant les `*Leave`, la nouvelle catégorie doit se lire dans `document.getElementById('categorySelect').value`, sinon le leave écrase l'UI que le enter suivant vient de restaurer (titres, widgets) ; corollaire : `annEnter` relance `setTimeout(annRefresh, 0)`.
+
+28. **Barre du haut : widget de zone du Composeur de critères mal placé** (10/2026) : `#scZoneWrap` était inséré APRÈS le sélecteur de catégorie (il apparaissait près de la marque OpenFrance) alors que le widget de zone des autres catégories est placé avant → homogénéisé : `#zoneWrap` puis `#scZoneWrap`, tous les deux AVANT le sélecteur de catégorie — même position pour toutes les catégories.
+
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
-- **Workflow** : travailler sur une branche dédiée (`work`), tester en local avec `netlify dev`, merger vers `main` seulement quand stable = 1 seul deploy
-- Branche de test **`score31`** (fork de `work`) : fonctionnalité « Composeur de critères » (généralisation du score perso). Tester en local (`netlify dev`, les proxys `/api/loyers/` y sont actifs), merger vers `work`/`main` ou abandonner librement.
-- Branche de test **`corp_search`** (fork de `work`) : fonctionnalité « Composeur d'entreprises » (corp.js). Tester en local (`netlify dev`, le proxy `/api/ent/` y est actif), merger vers `work`/`main` ou abandonner librement.
-- Branche de test **corp_ext** (fork de work) : fonctionnalité « Recherche étendue d'entreprises » (corp_ext.js + netlify/functions/). Variables d'env Netlify requises (mêmes contextes que FT_CLIENT_ID existant) : FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY. Test local : clés dans .env puis netlify dev (fonctions + redirects /ft/* actifs).
-- Branche de test **get_email** (fork de work) : fonctionnalité « Favoris et contacts » (favoris.js, enrich.js, naf.js + netlify/functions/email.js). Variable d'env Netlify OPTIONNELLE : TAVILY_API_KEY (découverte des sites web — moteur sauté proprement si absente) ; prospector-mcp (dépendance npm netlify/functions/package.json) pour la vérification SMTP opt-in. Test local : netlify dev (fonction + redirect /ft/email actifs).
-- Migration Vercel envisagée (100 deploys/jour) : traduire `netlify.toml` → `vercel.json` (rewrites), rien d'autre à changer
+- **Workflow** (validé 10/2026) : branche dédiée → PR vers `hidden` → merge → PR `hidden` → `main` → merge ; test local `netlify dev` (port 8888, proxys actifs) = 1 seul deploy par évolution
+- Branches de test **historiques, toutes MERGÉES** (10/2026) : `score31` (Composeur de critères), `corp_search` (Composeur d'entreprises), `corp_ext` (Recherche étendue), `get_email` (Favoris/Enrich/email.js), `multi-dep` (zone multi-départements), `hidden` (page /mafrance) — la branche `hidden` a été resynchronisée sur `main` le 13/10/2026 (page /mafrance désormais sur `main`).
+- **Double déploiement Vercel RÉALISÉ** (10/2026) : `vercel.json` (rewrites équivalents) + `api/` (ports des fonctions ft/curated/email) + `package.json` racine — le repo se déploie tel quel sur Vercel en parallèle de Netlify (voir `docs/VERCEL.md`)
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 
 ## 💡 Idées backlog (non réalisées)
