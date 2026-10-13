@@ -182,3 +182,27 @@
   to = "/.netlify/functions/email"
   status = 200
   force = true
+
+# --- Page /mafrance (branche hidden) : indices composites MaFrance (mafrance.app) ---
+# Une requête par département côté client ; cache navigateur (IndexedDB +
+# service worker, TTL /api/ 7 jours). Indices base 100 = France métropolitaine.
+[[redirects]]
+  from = "/api/mafrance/*"
+  to = "https://mafrance.app/api/:splat"
+  status = 200
+  force = true
+
+# URL propre pour la page étendue mafrance.html
+[[redirects]]
+  from = "/mafrance"
+  to = "/mafrance.html"
+  status = 200
+
+# --- Développement local : port fixe pour une origine stable ---
+# Service worker, IndexedDB et localStorage sont cloisonnés par origine
+# (protocole + hôte + port) : un port qui change à chaque lancement de
+# `netlify dev` vide tous les caches à chaque run. Port fixe = caches
+# conservés entre 2 lancements. Si le 8888 est occupé par un ancien process,
+# le CLI le signale explicitement : tuer le process restant avant de relancer.
+[dev]
+  port = 8888

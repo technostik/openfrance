@@ -30,6 +30,16 @@ Application web de visualisation des données ouvertes françaises (data.gouv.fr
 - Mode annuaire : champ métier VIDE + case cochée + « Rechercher » → affiche les French Tech elles-mêmes (sans ROMEO/La Bonne Boite) : avec une ville → celles du rayon (tri par distance, marqueurs) ; champ ville effacé → toute la base (tri par nom). Les fiches n'ont qu'une ville en texte : géocodage communal via la Base Adresse Nationale (proxy `/api/adr/`, gratuit sans clé) — positions approximatives, fiche Sirene détaillée au clic.
 - Ces APIs passent par des fonctions Netlify (netlify/functions/, servies sous /ft/*) : OAuth client_credentials France Travail côté serveur, secrets en variables d'environnement Netlify. Tant que l'abonnement La Bonne Boite n'est pas provisionné, le mode dégrade proprement (métiers ROME affichés, message explicite).
 
+## Page « /mafrance » (branche `hidden`)
+
+Version étendue servie sur **/mafrance** (fichier `mafrance.html`, uniquement sur la branche `hidden`) :
+
+- catégorie **Délinquance** (transférée depuis la page principale) ;
+- catégorie **MaFrance** : les six indices composites de [mafrance.app](https://mafrance.app) — indice général, insécurité, immigration, islamisation, défrancisation, wokisme (indice base 100 : France métropolitaine = 100) — par département et par commune ;
+- **Composeur de critères** enrichi : les indices MaFrance sont utilisables comme critères (sens ⬆/⬇ et pondération 0–10), aux côtés de la délinquance et des critères existants.
+
+La page principale (index.html) reste la version « politiquement correcte » : plus de catégorie Délinquance, plus de critère délinquance dans le composeur (défaut : Économie). Les données MaFrance passent par le proxy `/api/mafrance/*` (une requête par département) et sont mises en cache côté navigateur : IndexedDB persistant + service worker (cache disque /api/, TTL 7 jours).
+
 ## Stack
 
 Site statique sans build : HTML + CSS + JS, [Leaflet](https://leafletjs.com) + fond de carte OSM/CARTO. Les données sont chargées directement dans le navigateur depuis data.gouv.fr (proxy Netlify, aucun serveur requis). Service worker pour le cache disque persistant (stale-while-revalidate). Deux fonctions Netlify (netlify/functions/ft.js, netlify/functions/curated.js) proxifient les APIs France Travail et Supabase (listes curatées) pour la recherche étendue (secrets en variables d'environnement, jamais dans le repo).

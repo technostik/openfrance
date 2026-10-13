@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenFrance — MaFrance</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="errorBanner" style="display:none">
+  <strong>Erreur de chargement des données</strong>
+  <span id="errorText"></span>
+  <button type="button" onclick="location.reload()">Réessayer</button>
+</div>
+
+<section id="controls">
+  <div id="brand"><h1>🇫🇷 OpenFrance</h1></div>
+  <button id="backBtn" type="button" title="Revenir à la carte de France" hidden>← France</button>
+  <div id="zoneWrap" style="display:none"></div>
+  <div id="scZoneWrap" style="display:none"></div>
+  <label>Catégorie
+    <select id="categorySelect">
+      <option value="delinquance">Délinquance</option>
+      <option value="mafrance">MaFrance</option>
+      <option value="economie">Économie</option>
+      <option value="politique">Politique</option>
+      <option value="annuaire">Associations & entreprises</option>
+      <option value="score31">Composeur de critères</option>
+      <option value="corp">Composeur d'entreprises</option>
+      <option value="corp_ext">Recherche étendue d'entreprises</option>
+    </select>
+  </label>
+  <label id="indicatorLabel">Indicateur
+    <select id="indicatorSelect" disabled><option>Chargement…</option></select>
+  </label>
+  <label id="yearLabel">Année
+    <select id="yearSelect" disabled><option>Chargement…</option></select>
+  </label>
+  <div class="ctrl-meta">
+    <button id="annCacheBtn" type="button" title="Gérer le cache local : tous départements, données nationales, cache disque">🗂 Cache</button>
+    <button id="favBtn" type="button" title="Favoris : entités suivies + recherche email/site web">⭐ Favoris</button>
+    <span id="status">⏳ Chargement des données…</span>
+  </div>
+  <div id="annControls" style="display:none">
+    <label>Recherche
+      <input id="annSearch" type="text" placeholder="ex. théâtre + danse - opéra &quot;football&quot;">
+    </label>
+    <label>Type
+      <select id="annType">
+        <option value="asso">Associations</option>
+        <option value="ent">Entreprises</option>
+        <option value="both">Les deux</option>
+      </select>
+    </label>
+    <label>Catégorie
+      <select id="annCat"><option value="">Toutes catégories</option></select>
+    </label>
+    <label id="annCityWrap">Ville
+      <input id="annCity" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="annCityDrop" class="sc-drop"></div>
+    </label>
+    <label>Zone
+      <select id="annRadius" title="Périmètre du filtre ville : la commune seule ou un rayon autour de la ville">
+        <option value="0">Dans la ville</option>
+        <option value="5">± 5 km</option>
+        <option value="10">± 10 km</option>
+        <option value="20">± 20 km</option>
+        <option value="50">± 50 km</option>
+      </select>
+    </label>
+    <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
+  </div>
+  <div id="scoreControls" style="display:none">
+    <label id="scTargetWrap">Ville cible
+      <input id="scTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="scTargetDrop" class="sc-drop"></div>
+    </label>
+    <div id="scCrits"></div>
+    <label>Ajouter un critère
+      <select id="scAddType"></select>
+    </label>
+    <button id="scAddBtn" type="button" title="Ajouter le critère sélectionné">＋ Ajouter</button>
+  </div>
+  <div id="coControls" style="display:none">
+    <label>Département
+      <select id="coDep"></select>
+    </label>
+    <label id="coTargetWrap">Ville
+      <input id="coTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="coTargetDrop" class="sc-drop"></div>
+    </label>
+    <label>Zone
+      <select id="coRadius" title="Périmètre de recherche : département, commune ou rayon autour de la ville">
+        <option value="-1">Tout le département</option>
+        <option value="0">La commune seulement</option>
+        <option value="2">Rayon 2 km</option>
+        <option value="5">Rayon 5 km</option>
+        <option value="10">Rayon 10 km</option>
+        <option value="20">Rayon 20 km</option>
+        <option value="30">Rayon 30 km</option>
+        <option value="50">Rayon 50 km</option>
+      </select>
+    </label>
+    <label>Texte (nom/activité)
+      <input id="coQ" type="text" placeholder="optionnel — ex. boulangerie">
+    </label>
+    <label>Secteur (NAF)
+      <select id="coSection"></select>
+    </label>
+    <label>Codes NAF
+      <input id="coNaf" type="text" placeholder="ex. 62.01Z, 62.02A">
+    </label>
+    <label>Salariés (min)
+      <select id="coTrMin"></select>
+    </label>
+    <label>Salariés (max)
+      <select id="coTrMax"></select>
+    </label>
+    <label>Catégorie
+      <select id="coCat"></select>
+    </label>
+    <label>Forme juridique
+      <select id="coNat"></select>
+    </label>
+    <label>CA min (€)
+      <input id="coCaMin" type="number" min="0" step="1000" placeholder="ex. 500000">
+    </label>
+    <label>CA max (€)
+      <input id="coCaMax" type="number" min="0" step="1000" placeholder="ex. 50000000">
+    </label>
+    <label class="co-check" title="Ne garder que les entreprises en activité">
+      <input type="checkbox" id="coActive" checked> Actives uniquement
+    </label>
+    <div id="coLabels"></div>
+  </div>
+  <div id="extControls" style="display:none">
+    <label>Département
+      <select id="extDep"></select>
+    </label>
+    <label id="extTargetWrap">Ville cible
+      <input id="extTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="extTargetDrop" class="sc-drop"></div>
+    </label>
+    <label>Rayon
+      <select id="extRadius" title="Zone de recherche autour de la ville cible">
+        <option value="2">2 km</option>
+        <option value="5">5 km</option>
+        <option value="10">10 km</option>
+        <option value="20">20 km</option>
+        <option value="30">30 km</option>
+        <option value="50">50 km</option>
+      </select>
+    </label>
+    <label>Taille
+      <select id="extSize" title="Taille minimale des entreprises (filtre local)">
+        <option value="">Toutes</option>
+        <option value="10">10 salariés et +</option>
+        <option value="50">50 salariés et +</option>
+        <option value="100">100 salariés et +</option>
+      </select>
+    </label>
+    <label class="co-check" title="Ne garder que les entreprises présentes dans les listes curatées avec le label « French Tech » (filtre local, sans nouvel appel)">
+      <input type="checkbox" id="extFTOnly"> 🇫🇷 French Tech uniquement
+    </label>
+    <label>Métier (texte libre)
+      <input id="extText" type="text" placeholder="ex. boulanger">
+    </label>
+    <button id="extSearchBtn" type="button" title="Lancer la recherche étendue">🔎 Rechercher</button>
+  </div>
+</section>
+<p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département). Ville : tapez un nom de commune pour filtrer « dans la ville » ou par rayon.</p>
+<p id="annQueryExp" class="muted" style="display:none"></p>
+<p id="coModeHint" class="muted" style="display:none"></p>
+
+<main>
+  <div id="map"></div>
+  <aside id="panel">
+    <h2 id="levelTitle">France — par département</h2>
+    <div id="legendBlock">
+      <h2>Légende</h2>
+      <p id="legendTitle"></p>
+      <div id="legend"></div>
+      <h2 id="topTitle">Top 10 départements</h2>
+      <div id="toplist"><p class="muted">⏳ Chargement…</p></div>
+    </div>
+    <div id="annPanel" style="display:none">
+      <h2>Résultats</h2>
+      <p id="annStatus" class="muted"></p>
+      <div id="annResults"></div>
+    </div>
+    <div id="coPanel" style="display:none">
+      <h2>Entreprises</h2>
+      <p id="coStatus" class="muted"></p>
+      <div id="coResults"></div>
+      <button id="coMore" type="button" hidden>＋ Charger plus</button>
+    </div>
+    <div id="extPanel" style="display:none">
+      <h2>Recherche étendue</h2>
+      <p id="extStatus" class="muted"></p>
+      <div id="extMetiers"></div>
+      <div id="extFiche" style="display:none"></div>
+      <div id="extResults"></div>
+    </div>
+    <p class="hint">💡 Cliquez sur un département pour voir ses communes (sauf sièges de députés, au niveau circonscription).</p>
+    <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF, RNA (associations), API Recherche d'entreprises (DINUM), France Travail (ROMEO, ROME 4.0, La Bonne Boite), listes curatées (Supabase), <a href="https://mafrance.app/" target="_blank" rel="noopener">mafrance.app</a> (indices composites, base 100 = France métropolitaine)</p>
+  </aside>
+</main>
+
+<!-- Page de gestion globale du cache (tous modes) -->
+<div id="annCacheDlg" style="display:none">
+  <div class="cache-card">
+    <div class="cache-head">
+      <b>🗂 Gestion du cache local</b>
+      <button id="annCacheClose" type="button" title="Fermer">✕</button>
+    </div>
+    <p class="muted">Tous les caches du navigateur réunis : associations par département, nomenclature WALDEC et recherches entreprises (IndexedDB persistant), cache disque du service worker (données nationales, contours de communes, pages API) et mémoire vive. « Rafraîchir » purge puis recharge depuis la source ; « 🗑 » purge uniquement (retéléchargement à la prochaine utilisation).</p>
+    <div id="annCacheList"><p class="muted">⏳ Lecture du cache…</p></div>
+  </div>
+</div>
+
+<!-- Favoris et contacts (tous modes) -->
+<div id="favDlg" style="display:none">
+  <div class="cache-card">
+    <div class="cache-head">
+      <b>⭐ Favoris et contacts</b>
+      <button id="favClose" type="button" title="Fermer">✕</button>
+    </div>
+    <p class="muted">Ajoutez en favori des villes, associations et entreprises (étoile ☆ dans les listes, popups et fiches ; étoile de ville cible ; champ ci-dessous), puis cherchez leur email et site web avec les moteurs cochés. Résultats conservés localement (IndexedDB) ; « 🔎 » par favori ou « Chercher tout » pour la file complète. L'inverse existe aussi : bouton ⊘/🚫 à côté de l'étoile pour blacklister une entité — elle disparaît des listes et de la carte (section « Blacklistées » ci-dessous pour la ré-afficher).</p>
+    <div id="favEngines" class="fav-engines"></div>
+    <label class="fav-blktoggle"><input type="checkbox" id="favBlkHide" checked> Masquer les entités 🚫 blacklistées (décoché : affichées grisées et barrées)</label>
+    <label id="favCityWrap">Ajouter une ville
+      <input id="favCity" type="text" placeholder="Commencez à taper un nom de commune…" autocomplete="off">
+      <div id="favCityDrop" class="sc-drop"></div>
+    </label>
+    <div id="favList"></div>
+    <div class="cache-actions" style="margin-top:10px">
+      <button id="favAllBtn" class="cache-btn" type="button">🔎 Chercher tout (emails manquants)</button>
+    </div>
+  </div>
+</div>
+
+<!-- Fiche entreprise (composeur d'entreprises) -->
+<div id="coFicheDlg" style="display:none">
+  <div class="co-fiche">
+    <div class="cache-head">
+      <b id="coFicheTitle"></b>
+      <button id="coFicheClose" type="button" title="Fermer">✕</button>
+    </div>
+    <div id="coFicheBody"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>window.MF_PAGE = true; /* page étendue : Délinquance + MaFrance */</script>
+<script src="app.js"></script>
+<script src="mafrance.js"></script>
+<script src="annuaire.js"></script>
+<script src="score.js"></script>
+<script src="corp.js"></script>
+<script src="corp_ext.js"></script>
+<script src="favoris.js"></script>
+<script src="naf.js"></script>
+<script src="enrich.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js').then(function () {
+      console.info('[OpenFrance] Service Worker enregistré (cache disque actif)');
+    }).catch(function (err) {
+      console.warn('[OpenFrance] Service Worker non enregistré :', err);
+    });
+  });
+}
+</script>
+</body>
+</html>
+

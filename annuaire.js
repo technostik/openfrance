@@ -347,17 +347,39 @@ function annCentroids(code) {
 // Associations : placées au centroïde de leur commune, le rayon s'applique
 // donc au centroïde de leur commune. Entreprises : coordonnées précises du
 // siège (rayon exact ; « dans la ville » = code INSEE du siège).
-function annCityList(code) {
-  if (ANN.cityDep === code && ANN.cities) return ANN.cities;
+var ANN_CITY_CACHE = {};
+function annCityListOne(code) {
+  if (ANN_CITY_CACHE[code]) return ANN_CITY_CACHE[code];
   var centroids = annCentroids(code);
   var geo = state.communesGeo[code];
-  ANN.cities = ((geo && geo.features) || []).map(function (f) {
+  var list = ((geo && geo.features) || []).map(function (f) {
     var c = centroids[f.properties.code];
     if (!c) return null;
     return { code: f.properties.code, nom: f.properties.nom, n: normTxt(f.properties.nom), latlng: c };
   }).filter(Boolean);
+  ANN_CITY_CACHE[code] = list;
+  return list;
+}
+function annCityList(code) { // compat : un seul département
+  var list = annCityListOne(code);
+  ANN.cities = list;
   ANN.cityDep = code;
-  return ANN.cities;
+  return list;
+}
+// Communes de toute la zone (fusion + tri par nom) pour l'autocomplete du filtre ville
+function annCityListZone(deps) {
+  var merged = [], seen = {};
+  deps.forEach(function (d) {
+    annCityListOne(d).forEach(function (c) {
+      if (seen[c.code]) return;
+      seen[c.code] = 1;
+      merged.push(c);
+    });
+  });
+  merged.sort(function (a2, b2) { return a2.nom.localeCompare(b2.nom); });
+  ANN.cities = merged;
+  ANN.cityDep = deps.join('+');
+  return merged;
 }
 function annCitySearch(q) {
   q = normTxt(q);
@@ -389,7 +411,7 @@ function annCityRender(matches) {
   d.style.display = matches.length ? 'block' : 'none';
 }
 function annSetTarget(code, nom) {
-  var c = (annCentroids(state.dep.code) || {})[code];
+  var c = annZoneCentroids(annZoneDeps())[code];
   if (!c) return;
   ANN.target = { code: code, nom: nom, latlng: c };
   document.getElementById('annCity').value = nom;
@@ -660,7 +682,9 @@ function annRebuildCat() {
     for (var s in NAF_SECTIONS) opts.push('<option value="' + s + '">' + s + ' — ' + NAF_SECTIONS[s] + '</option>');
   } else {
     var counts = {};
-    (ANN.assos[state.dep ? state.dep.code : ''] || []).forEach(function (a) {
+    var poolCat = [];
+    annZoneDeps().forEach(function (d) { (ANN.assos[d] || []).forEach(function (a3) { poolCat.push(a3); }); });
+    poolCat.forEach(function (a) {
       var th = annTheme(a);
       if (th && th.p) counts[th.p] = (counts[th.p] || 0) + 1;
     });
@@ -673,6 +697,44 @@ function annRebuildCat() {
 }
 
 // ---------- Recherche et affichage ----------
+// ---------- Zone multi-départements (annuaire) ----------
+function annZoneDeps() {
+  var z = (state.zone || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (z.length) return z;
+  return (state.view === 'dep' && state.dep && state.dep.code) ? [state.dep.code] : [];
+}
+// Centroïdes fusionnés de toute la zone
+function annZoneCentroids(deps) {
+  var out = {};
+  deps.forEach(function (d) {
+    var cs = annCentroids(d);
+    for (var k in cs) if (!(k in out)) out[k] = cs[k];
+  });
+  return out;
+}
+// Recherche entreprises sur toute la zone : une requête par département,
+// résultats dédoublonnés par SIREN (même cache que par département).
+function searchEntreprisesZone(deps, q, section) {
+  var lists = [];
+  return Promise.all(deps.map(function (d) {
+    return searchEntreprises(d, q, section).then(function (rows) { lists.push(rows); },
+      function (err) {
+        if (deps.length === 1) throw err; // département unique : l'erreur remonte
+        console.warn('[OpenFrance] Recherche entreprises, département ' + d + ' :', err);
+      });
+  })).then(function () {
+    var bySiren = {}, out = [];
+    lists.forEach(function (rows) {
+      (rows || []).forEach(function (e2) {
+        if (!e2 || bySiren[e2.siren]) return;
+        bySiren[e2.siren] = 1;
+        out.push(e2);
+      });
+    });
+    return out;
+  });
+}
+
 function annApplySearch() {
   if (!ANN.active || state.view !== 'dep' || !state.dep) return;
   var token = ++ANN.seq;
@@ -685,7 +747,7 @@ function annApplySearch() {
 
   var type = document.getElementById('annType').value;
   var cat = document.getElementById('annCat').value;
-  var code = state.dep.code;
+  var deps = annZoneDeps();
   // Filtre ville (facultatif) : commune seule ou rayon autour de la ville cible
   var target = ANN.target;
   var radius = target ? (parseInt(document.getElementById('annRadius').value, 10) || 0) : 0;
@@ -698,8 +760,10 @@ function annApplySearch() {
 
   // --- Associations : filtrage local (données en cache) ---
   if (type !== 'ent') {
-    var centroids = annCentroids(code);
-    var list = (ANN.assos[code] || []).filter(function (a) {
+    var centroids = annZoneCentroids(deps);
+    var pool = [];
+    deps.forEach(function (d) { (ANN.assos[d] || []).forEach(function (a3) { pool.push(a3); }); });
+    var list = pool.filter(function (a) {
       if (cat) {
         var th = annTheme(a);
         if (!th || th.p !== cat) return false;
@@ -725,7 +789,7 @@ function annApplySearch() {
     if (q.req.length + q.or.length > 0) {
       var section = type === 'ent' ? cat : '';
       setStatus('⏳ Recherche entreprises…', 'loading');
-      entPromise = searchEntreprises(code, q, section)
+      entPromise = searchEntreprisesZone(deps, q, section)
         .then(function (ents) { return { ents: ents }; })
         .catch(function (err) {
           console.error('[OpenFrance] Recherche entreprises :', err);
@@ -779,6 +843,8 @@ function annRenderFrance() {
   document.getElementById('annStatus').textContent = 'Sélectionnez un département sur la carte.';
   document.getElementById('annResults').innerHTML = '';
   document.getElementById('levelTitle').textContent = 'Annuaire — France';
+  var zwFR = document.getElementById('zoneWrap');
+  if (zwFR) zwFR.style.display = 'none';
   setStatus('Annuaire — cliquez sur un département');
 }
 
@@ -787,35 +853,46 @@ function annRefresh() {
   hideError();
   clearAnnMarkers();
   if (state.view === 'france' || !state.dep) { annRenderFrance(); return; }
-  var code = state.dep.code;
-  document.getElementById('levelTitle').textContent = 'Annuaire — ' + state.dep.nom + ' (' + code + ')';
-  var geoPromise = state.communesGeo[code] ? Promise.resolve(state.communesGeo[code]) :
-    fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[code] + '/communes-' + DEP_FOLDERS[code] + '.geojson')
-      .then(function (g) { state.communesGeo[code] = g; return g; });
+  var deps = annZoneDeps();
+  if (!deps.length) { annRenderFrance(); return; }
+  if (!state.dep || state.dep.code !== deps[0]) state.dep = { code: deps[0], nom: depNom(deps[0]) };
+  var zoneLbl = zoneLabel(deps);
+  document.getElementById('backBtn').hidden = false;
+  document.getElementById('levelTitle').textContent = 'Annuaire — ' + zoneLbl;
+  zoneWidgetShow(setZone);
   setStatus('⏳ Chargement des associations…', 'loading');
-  Promise.all([geoPromise, loadNomen()]).then(function (res) {
-    return loadAssosDept(code).then(function (rows) {
-      annCityList(code); // communes du département pour l'autocomplete du filtre ville
-      if (ANN.target && !(ANN.centroids[code] || {})[ANN.target.code]) {
-        // ville cible hors du département courant : filtre réinitialisé
+  var geoPromises = deps.map(function (code) {
+    return state.communesGeo[code] ? Promise.resolve(state.communesGeo[code]) :
+      fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[code] + '/communes-' + DEP_FOLDERS[code] + '.geojson')
+        .then(function (g) { state.communesGeo[code] = g; return g; });
+  });
+  Promise.all([Promise.all(geoPromises), loadNomen()]).then(function () {
+    return Promise.all(deps.map(loadAssosDept)).then(function () {
+      annCityListZone(deps); // communes de la zone pour l'autocomplete du filtre ville
+      var centZ = annZoneCentroids(deps);
+      if (ANN.target && !centZ[ANN.target.code]) {
+        // ville cible hors de la zone courante : filtre réinitialisé
         ANN.target = null;
         document.getElementById('annCity').value = '';
       }
       annRebuildCat();
       if (ANN.target) annFrameZone(); // recadre la carte après clearAnnMarkers
       annApplySearch();
-      // cadrage sur le département
-      var cs = annCentroids(code), xs = [], ys = [];
-      for (var k in cs) { xs.push(cs[k][1]); ys.push(cs[k][0]); }
-      if (xs.length && !ANN.target) map.fitBounds([[Math.min.apply(null, ys), Math.min.apply(null, xs)], [Math.max.apply(null, ys), Math.max.apply(null, xs)]], { padding: [30, 30] });
-      var cached = ANN.assos[code] && ANN.assos[code].length;
-      setStatus(cached.toLocaleString('fr-FR') + ' associations dans ' + state.dep.nom + ' (en cache)');
+      // cadrage sur la zone entière (sauf si une ville cible est affichée)
+      if (!ANN.target) {
+        var xs = [], ys = [];
+        for (var k in centZ) { xs.push(centZ[k][1]); ys.push(centZ[k][0]); }
+        if (xs.length) map.fitBounds([[Math.min.apply(null, ys), Math.min.apply(null, xs)], [Math.max.apply(null, ys), Math.max.apply(null, xs)]], { padding: [30, 30] });
+      }
+      var total = 0;
+      deps.forEach(function (d) { total += (ANN.assos[d] || []).length; });
+      setStatus(total.toLocaleString('fr-FR') + ' associations dans ' + zoneLbl + ' (en cache)');
       // si la page cache est ouverte, la rafraîchir
       if (document.getElementById('annCacheDlg').style.display !== 'none') renderCachePage();
     });
   }).catch(function (err) {
     console.error('[OpenFrance] Annuaire :', err);
-    showError('Impossible de charger les associations de ' + state.dep.nom + '.', err.message);
+    showError('Impossible de charger les associations de ' + zoneLbl + '.', err.message);
   });
 }
 
@@ -848,7 +925,8 @@ var SW_API_LABELS = {
   '/api/assos': 'Annuaire — associations, pages API',
   '/api/nomen': 'Nomenclature WALDEC — pages API',
   '/api/ent': 'Composeur d\'entreprises — pages API',
-  '/api/entreprises': 'Annuaire — entreprises, pages API'
+  '/api/entreprises': 'Annuaire — entreprises, pages API',
+  '/api/mafrance': 'MaFrance — indices par commune/département, pages API'
 };
 
 function swCacheGroups() {
@@ -963,7 +1041,7 @@ function renderCachePage() {
         } else if (e.key.indexOf('assos-') === 0) {
           var dep = e.key.slice(6);
           var rows = e.v && e.v.rows ? e.v.rows.length : 0;
-          label = 'Associations — département ' + dep + (state.dep && state.dep.code === dep ? ' <span class="muted">(courant)</span>' : '');
+          label = 'Associations — département ' + dep + (annZoneDeps().indexOf(dep) !== -1 ? ' <span class="muted">(courant)</span>' : '');
           detail = rows.toLocaleString('fr-FR') + ' associations';
         } else if (e.key.indexOf('ent-') === 0) {
           var c = e.v || {};
@@ -1040,14 +1118,14 @@ function annCacheButtonAction(btn) {
           setStatus('⏳ Rechargement des associations du ' + dep + '…', 'loading');
           annReloadDept(dep).then(function () {
             after('Associations du ' + dep + ' rechargées (' + (ANN.assos[dep] || []).length.toLocaleString('fr-FR') + ')');
-            if (ANN.active && state.dep && state.dep.code === dep) annApplySearch();
+            if (ANN.active && annZoneDeps().indexOf(dep) !== -1) annApplySearch();
           }).catch(function (err) {
             showError('Impossible de recharger les associations du ' + dep + '.', err.message);
             renderCachePage();
           });
         } else {
           after('Cache des associations du ' + dep + ' supprimé (rechargé à la prochaine ouverture)');
-          if (ANN.active && state.dep && state.dep.code === dep) annApplySearch();
+          if (ANN.active && annZoneDeps().indexOf(dep) !== -1) annApplySearch();
         }
       });
     } else if (id === 'nomen') {
@@ -1125,16 +1203,23 @@ function annEnter() {
   document.getElementById('annPanel').style.display = '';
   // On conserve le département sélectionné (s'il y en a un) : on reste sur
   // le territoire en cours, sinon on repart de la vue France.
-  if (state.view === 'dep' && state.dep) {
+  var zIn = (state.zone || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (!zIn.length && state.view === 'dep' && state.dep) zIn = [state.dep.code];
+  if (zIn.length) {
+    state.zone = zIn;
+    state.view = 'dep';
+    state.dep = { code: zIn[0], nom: depNom(zIn[0]) };
     document.getElementById('backBtn').hidden = false;
-    document.getElementById('levelTitle').textContent = 'Annuaire — ' + state.dep.nom + ' (' + state.dep.code + ')';
+    document.getElementById('levelTitle').textContent = 'Annuaire — ' + zoneLabel(zIn);
   } else {
     state.view = 'france'; state.dep = null;
     document.getElementById('backBtn').hidden = true;
     document.getElementById('levelTitle').textContent = 'Annuaire — France';
   }
   loadNomen().catch(function (err) { console.warn('[OpenFrance] Nomenclature WALDEC :', err); });
-  annRefresh();
+  // Rafraîchissement différé : les listeners des autres catégories (enregistrés
+  // après celui d'annuaire.js) restituent la zone APRÈS annEnter.
+  setTimeout(annRefresh, 0);
 }
 function annLeave() {
   ANN.active = false;
@@ -1151,7 +1236,8 @@ function annLeave() {
   // Restaure le titre correspondant au territoire conservé (le département
   // n'est PAS réinitialisé : app.js gère la suite via selectIndicator(…, keepDep))
   if (state.view === 'dep' && state.dep) {
-    document.getElementById('levelTitle').textContent = state.dep.nom + ' (' + state.dep.code + ') — par commune';
+    document.getElementById('levelTitle').textContent =
+      ((state.zone && state.zone.length) ? zoneLabel(state.zone) : state.dep.nom + ' (' + state.dep.code + ')') + ' — par commune';
   } else {
     document.getElementById('backBtn').hidden = true;
     document.getElementById('levelTitle').textContent = 'France — par département';

@@ -117,6 +117,18 @@
     {
       "source": "/ft/email",
       "destination": "/api/email"
+    },
+    {
+      "source": "/api/mafrance",
+      "destination": "https://mafrance.app/api/"
+    },
+    {
+      "source": "/api/mafrance/:path*",
+      "destination": "https://mafrance.app/api/:path*"
+    },
+    {
+      "source": "/mafrance",
+      "destination": "/mafrance.html"
     }
   ]
 }
