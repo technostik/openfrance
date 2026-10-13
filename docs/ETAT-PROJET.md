@@ -15,6 +15,7 @@ app.js          — Logique générale (registre d'indicateurs, parsers CSV, req
 mafrance.html   — Page étendue « /mafrance » : catégories Délinquance + MaFrance (window.MF_PAGE = true) ; la page principale (index.html) reste « politiquement correcte » (défaut : Économie)
 mafrance.js     — Page /mafrance : six indices composites de mafrance.app (base 100 = France métropolitaine) par département/commune via /api/mafrance/*, IndexedDB openfrance-mafrance, critère « mf » du Composeur de critères
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
+francenum.js    — Mode transversal France Num : activateurs France Num (dataset data.gouv, proxy /api/activateurs) — chargement unique + cache IndexedDB dédié, case « France Num uniquement » dans l'annuaire, le composeur et la recherche étendue (branche de test `francenum`)
 score.js        — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (ex-score31.js, renommé 10/2026)
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
 corp_ext.js     — Mode Recherche étendue : ROMEO → ROME 4.0 → La Bonne Boite → croisement listes curatées Supabase (branche de test corp_ext)
@@ -27,7 +28,7 @@ api/            — Fonctions Vercel : ports exacts des fonctions Netlify (ft, c
 vercel.json     — Rewrites Vercel équivalents aux [[redirects]] de netlify.toml (proxys same-origin + routage /ft/*) — double déploiement, voir docs/VERCEL.md
 package.json    — Dépendances des fonctions Vercel (prospector-mcp pour api/email.js), inoffensif côté build Netlify
 docs/           — Documentation : ETAT-PROJET.md (mémoire du projet), VERCEL.md (déploiement Vercel)
-netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/* (assos, nomen, entreprises, ent, communes, elect-gen/elect-cand, loyers, adr, mafrance) + /ft/* (fonctions Netlify) — source de vérité des URLs
+netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /geo/*, /api/* (assos, nomen, entreprises, ent, activateurs, communes, elect-gen/elect-cand, loyers, adr, mafrance) + /ft/* (fonctions Netlify) — source de vérité des URLs
 ```
 
 ## 🏗️ Architecture
@@ -65,6 +66,16 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
 - `annEnter`/`annLeave` : **conservent le territoire courant** (département ou zone, pas de retour forcé à la France) ; `annEnter` hérite/restaure la zone puis relance `setTimeout(annRefresh, 0)` (ordre des listeners, bug n°27).
 - Le SW_API_LABELS de la page cache mentionne `/api/ent` (composeur d'entreprises) et le compteur RAM inclut les résultats du composeur.
+
+### francenum.js — activateurs France Num (transversal, branche de test `francenum`)
+- **Source** : dataset data.gouv « Activateurs France Num » (ministère de l'Économie, Licence Ouverte 2.0, ~4 400 lignes, **PAS de SIREN**) — on cherche les activateurs EUX-MÊMES, pas des entreprises filtrées. Hébergé sur l'API ODS explore v2.1 de data.economie.gouv.fr : **export complet en UNE requête** (`/api/activateurs/exports/json`, proxy netlify.toml + rewrite vercel.json — jamais de copie de données).
+- **Chargement unique** (`fnEnsure`) : fetch du proxy (cache disque SW `/api/` 7 j automatique) → normalisation (id/nom/type/cat/taille/date/adresse/cp/ville/dép/région/périmètre/secteurs/labels/certifs/réseaux/url/lat/lng + haystack `_h` pré-normalisé + `_dn`/`_vn` noms dép/ville normalisés) → cache IndexedDB **dédié** `openfrance-francenum` (store `kv`, clé `all`, TTL 7 j, `FN_VERSION` = invalidation).
+- **Filtrage 100 % local** (`fnFilter`) : zone = codes de départements → noms normalisés (`fnNormName` : apostrophes U+2019/U+0027, tirets, accents — croisement avec le champ `Département` du dataset, qui est un NOM pas un code) ; requête multi-opérateurs (`parseAnnQuery`/`annMatch` d'annuaire.js) ; ville cible (« dans la ville » = nom de commune normalisé, rayon = haversine `distKm` sur lat/lng du dataset).
+- **3 intégrations, une case chacune (« 🇫🇷 France Num uniquement », comme French Tech)** :
+  - **Annuaire** (`#annFnOnly`) : branche dédiée dans `annApplySearch` — les activateurs remplacent assos + entreprises (`ANN.showing` kind `'fn'`, `renderAnnList` gère le kind, marqueurs `annSyncMarkers` clés `'f:<uuid>'`, couleur violette `#a78bfa`) ;
+  - **Composeur** (`#coFnOnly`) : branche dans `coApply` → `fnCorpSearch` (francenum.js) — ciblage du composeur respecté (`coMode` : rayon/commune/département-zone), `CO.q` en filtre local, critères d'entreprise non applicables (note dans `#coModeHint`), marqueurs dans `CO.markers`/`CO.markerBySiret` (clés `f:` — `coClearMap` les retire), `#coMore` masqué (pas de pagination : tout est local) ;
+  - **Étendue** (`#extFnOnly`, exclusive de `#extFTOnly`) : branche dans `extSearch` → `extShowFNAround` (miroir de `extShowFTAround` SANS géocodage BAN — le dataset a ses propres coordonnées) : ville cible → rayon trié par distance, champ effacé → toute la zone `EXT.zone` triée par nom ; le champ « métier » devient un filtre texte local (pas de ROMEO/LBB).
+- **Compatibilité favoris.js/enrich.js (chargés après, ils enveloppent les rendus)** : pas de SIREN/identifiant favori → pas d'étoile (FAV.starHtml renvoie '' sans id, décoration sans crash) ; lignes/marqueurs portent un **shim compatible asso** `{t, o, l, p}` (`fnShim`) pour que les tooltips de survol d'enrich.js (`ENR.tipAsso` via `enrWireRow`/`ENR.wireMarker`, typeof guards) fonctionnent sans modifier enrich.js. Les marqueurs clés `f:` sont hors blacklist (FAV.blApply ne connaît que `a:`/`e:`).
 
 ### score.js — mode « Composeur de critères » (ex-score31.js)
 - **Généralisation de l'ancien « Score perso »** : indice composite **personnalisable** des communes de **n'importe quel département**, **hors REGISTRY** (`scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` de app.js via `typeof` guards).
@@ -122,7 +133,7 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 ### Caches (3 niveaux, page de gestion unifiée 🗂)
 - **En RAM** (vidés au rechargement) : `fetchCache`/`inFlight`, `state.communesGeo`, `state.communesCache`, `ELECAGR.byDepElection`, `ANN.assos`, `ANN.entCache`
 - **IndexedDB** (`openfrance-annuaire`, store `assos`) : clés `assos-<dep>` ({v, date, rows}), `nomen` ({child}), `ent-<dep|terms|section>` (résultats de recherche entreprises) — **persistant entre sessions**
-- **Autres IndexedDB** : `openfrance-favoris` (favoris + blacklist), `openfrance-enrich` (descriptions Enrich), `openfrance-mafrance` (indices MaFrance) — tous persistants.
+- **Autres IndexedDB** : `openfrance-favoris` (favoris + blacklist), `openfrance-enrich` (descriptions Enrich), `openfrance-mafrance` (indices MaFrance), `openfrance-francenum` (activateurs France Num, clé `all` = {v, date, rows}, TTL 7 j) — tous persistants.
 - **Cache disque Service Worker** (`openfrance-v1` + TTL `openfrance-meta-v1`) : `/geo/` 30 j, `/data/` 24 h, `/api/` 7 j. Le SW ne met PAS en cache .js/.html/.css.
 - La page 🗂 Cache (`renderCachePage`, `annCacheButtonAction`) réunit les 3 niveaux avec actions 🔄 rafraîchir / 🗑 purger par entrée.
 
@@ -156,6 +167,9 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 ### Annuaire
 - Associations : RNA agrégé national (Waldec) — voir architecture ci-dessus
 - Entreprises : API Recherche d'entreprises (DINUM) — gratuit, sans clé, résultats cachés IndexedDB pour économiser le quota
+
+### France Num (activateurs, branche francenum)
+- **Activateurs France Num** : dataset data.gouv [« Activateurs France Num »](https://www.data.gouv.fr/fr/datasets/activateurs-france-num/) (ministère de l'Économie, **Licence Ouverte 2.0**, ~4 400 structures labellisées d'accompagnement numérique des TPE/PME ; CSV, JSON, GeoJSON et ZIP). Hébergé sur l'API ODS explore v2.1 de **data.economie.gouv.fr** : export complet en UNE requête via le proxy `/api/activateurs/*` (`netlify.toml` + rewrite `vercel.json`) — jamais de copie de données dans le repo. **Pas de SIREN** dans le dataset (identifiant = UUID France Num) : les activateurs sont cherchés eux-mêmes, pas croisés avec la base Sirene. Colonnes : identifiant, nom, type, catégorie, taille, date de création, adresse, CP, ville, **Département (NOM, pas un code)**, région, périmètre d'intervention, secteurs, labels, certifications, réseaux, URL fiche France Num, latitude/longitude. Caches : SW `/api/` 7 j + IndexedDB dédié `openfrance-francenum` (TTL 7 j).
 
 ### Composeur de critères
 - Loyers d'annonce prédits par commune : « Carte des loyers » 2025 (Ministère de la Transition écologique, dataset `693aa2feed1bf4da603faa49`), resource `55b34088-...` (colonnes `INSEE_C`, `loypredm2`) via `/api/loyers/`, filtre `DEP__exact=<dept>` (généralisé à tout département) — une valeur par commune, même pour les petites (prédiction par maille).
@@ -220,11 +234,14 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 
 28. **Barre du haut : widget de zone du Composeur de critères mal placé** (10/2026) : `#scZoneWrap` était inséré APRÈS le sélecteur de catégorie (il apparaissait près de la marque OpenFrance) alors que le widget de zone des autres catégories est placé avant → homogénéisé : `#zoneWrap` puis `#scZoneWrap`, tous les deux AVANT le sélecteur de catégorie — même position pour toutes les catégories.
 
+29. **France Num : apostrophes typographiques + département en NOM** (10/2026, branche francenum) : le dataset « Activateurs France Num » mélange apostrophe droite (U+0027) et typographique (U+2019) — le nom de colonne « Périmètre d'intervention » lui-même existe en deux variantes selon l'export (`fld()` tente les deux), et les valeurs de comparaison (noms de départements, de villes) doivent passer par `fnNormName` (U+2019/U+0027 + tirets U+2010/U+2011/hyphen → espaces, accents retirés via `normTxt`) — sinon « Val-d'Oise » ≠ « Val-d'Oise » et le filtre par zone renvoie 0 résultat silencieusement. Le champ `Département` du dataset est un NOM (« Essonne », « Puy-de-Dôme »), PAS un code : le croisement avec la zone se fait par noms normalisés (`depNom(code)` côté app), jamais par codes. Le dataset n'a pas de SIREN : pas de croisement possible avec la base Sirene — les activateurs sont affichés seuls (shim compatible asso pour favoris.js/enrich.js, pas d'étoile possible).
+
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
 - **Workflow** (validé 10/2026) : branche dédiée → PR vers `hidden` → merge → PR `hidden` → `main` → merge ; test local `netlify dev` (port 8888, proxys actifs) = 1 seul deploy par évolution
 - Branches de test **historiques, toutes MERGÉES** (10/2026) : `score31` (Composeur de critères), `corp_search` (Composeur d'entreprises), `corp_ext` (Recherche étendue), `get_email` (Favoris/Enrich/email.js), `multi-dep` (zone multi-départements), `hidden` (page /mafrance) — la branche `hidden` a été resynchronisée sur `main` le 13/10/2026 (page /mafrance désormais sur `main`).
+- Branche **active** `francenum` (10/2026) : activateurs France Num — module francenum.js + cases « 🇫🇷 France Num uniquement » dans les 3 sources entreprises (annuaire, composeur, recherche étendue) + proxy `/api/activateurs/*` (netlify.toml + vercel.json) — voir la section francenum.js de l'architecture.
 - **Double déploiement Vercel RÉALISÉ** (10/2026) : `vercel.json` (rewrites équivalents) + `api/` (ports des fonctions ft/curated/email) + `package.json` racine — le repo se déploie tel quel sur Vercel en parallèle de Netlify (voir `docs/VERCEL.md`)
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
 

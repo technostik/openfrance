@@ -103,6 +103,14 @@
       "destination": "https://recherche-entreprises.api.gouv.fr/:path*"
     },
     {
+      "source": "/api/activateurs",
+      "destination": "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/activateurs-france-num/exports/json"
+    },
+    {
+      "source": "/api/activateurs/:path*",
+      "destination": "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/activateurs-france-num/:path*"
+    },
+    {
       "source": "/api/adr/:path*",
       "destination": "https://api-adresse.data.gouv.fr/:path*"
     },

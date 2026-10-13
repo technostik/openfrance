@@ -540,6 +540,13 @@ function coPaintHint() {
 
 function coApply() {
   if (!CO.active) return;
+  // Case « France Num uniquement » (francenum.js) : la recherche d'entreprises
+  // est remplacée par les activateurs France Num du ciblage courant (filtrage
+  // local, aucun appel API — voir fnCorpSearch).
+  if (document.getElementById('coFnOnly').checked && typeof fnCorpSearch === 'function') {
+    fnCorpSearch();
+    return;
+  }
   coPaintHint();
   coResetResults();
   coClearMap();
@@ -851,6 +858,10 @@ function coInitUI() {
   var act = document.getElementById('coActive');
   act.checked = CO.activesOnly;
   act.addEventListener('change', function () { CO.activesOnly = act.checked; coApply(); });
+
+  // France Num uniquement (francenum.js) : activateurs au lieu des entreprises
+  var fnCb = document.getElementById('coFnOnly');
+  fnCb.addEventListener('change', function () { coApply(); });
 
   // labels
   var labBox = document.getElementById('coLabels');

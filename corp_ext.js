@@ -383,6 +383,13 @@ function extSearch() {
   document.getElementById('extMetiers').innerHTML = '';
   extInfo(null);
   document.getElementById('extResults').innerHTML = '';
+  // Case « 🇫🇷 France Num uniquement » (francenum.js) : mode annuaire des
+  // activateurs France Num (ville = autour, champ effacé = toute la zone) —
+  // le champ « métier » devient un filtre texte local, pas de ROMEO/LBB.
+  if (document.getElementById('extFnOnly').checked && typeof extShowFNAround === 'function') {
+    extShowFNAround();
+    return;
+  }
   if (!text) {
     // Sans texte : pas de ROMEO/LBB possibles. Avec la case 🇫🇷 → annuaire des
     // French Tech (ville cible = autour, champ effacé = toute la base).
@@ -859,12 +866,34 @@ function extInitUI() {
 
   var ftCb = document.getElementById('extFTOnly');
   ftCb.addEventListener('change', function () {
+    if (ftCb.checked && document.getElementById('extFnOnly').checked) {
+      // annuaires exclusifs : French Tech OU France Num (jamais les deux)
+      document.getElementById('extFnOnly').checked = false;
+    }
     EXT.onlyFT = ftCb.checked;
     if (EXT.lastLbb) extRenderResults(EXT.lastLbb, EXT.lastCurated); // re-render local
     else if (!ftCb.checked && EXT.lastFT) {
       // Annuaire FT affiché et case décochée → on efface la vue (plus de critère)
       EXT.seq++;
       EXT.lastFT = null;
+      extClearMap();
+      document.getElementById('extResults').innerHTML = '';
+      extInfo(null);
+      document.getElementById('extStatus').textContent =
+        'Entrez un métier en texte libre, choisissez une ville, puis « 🔎 Rechercher ».';
+    }
+  });
+
+  // France Num uniquement (francenum.js) : annuaire des activateurs France Num
+  var fnCb = document.getElementById('extFnOnly');
+  fnCb.addEventListener('change', function () {
+    if (fnCb.checked) {
+      if (ftCb.checked) { ftCb.checked = false; EXT.onlyFT = false; } // exclusifs
+      extShowFNAround();
+    } else if (typeof FN !== 'undefined' && FN.lastExt) {
+      // Annuaire France Num affiché et case décochée → vue effacée
+      EXT.seq++;
+      FN.lastExt = null;
       extClearMap();
       document.getElementById('extResults').innerHTML = '';
       extInfo(null);

@@ -144,6 +144,16 @@
   status = 200
   force = true
 
+# --- France Num : activateurs (dataset data.gouv « Activateurs France Num », ministère de l'Économie, Licence Ouverte 2.0) ---
+# Hébergé sur l'API ODS explore v2.1 de data.economie.gouv.fr : export complet
+# en UNE requête (/api/activateurs/exports/json, francenum.js). Cache disque SW
+# automatique (/api/ 7 j) + IndexedDB dédié « openfrance-francenum » (TTL 7 j).
+[[redirects]]
+  from = "/api/activateurs/*"
+  to = "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/activateurs-france-num/:splat"
+  status = 200
+  force = true
+
 # --- Recherche étendue d'entreprises (corp_ext.js) : fonctions Netlify ---
 # Proxys vers les APIs France Travail (ROMEO, ROME 4.0, La Bonne Boite — OAuth
 # client_credentials côté serveur) et Supabase (listes curatées d'entreprises, table public.entreprises — API REST, clé anonyme).

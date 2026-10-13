@@ -646,20 +646,27 @@ function renderAnnList() {
     var row = document.createElement('div');
     row.className = 'ann-row';
     var head = document.createElement('div');
-    var color = r.kind === 'ent' ? entColor(r.e) : (function () {
+    var color = r.kind === 'ent' ? entColor(r.e) : (r.kind === 'fn' ? FN_COLOR : (function () {
       var th = annTheme(r.a); return th && th.p ? catColor(th.p) : '#60a5fa';
-    })();
+    })());
     head.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + '"></span> <b>' +
-      esc(r.kind === 'ent' ? r.e.nom_complet : r.a.t) + '</b>' +
-      ' <span class="ann-type">' + (r.kind === 'ent' ? 'Entreprise' : 'Association') + '</span>';
+      esc(r.kind === 'ent' ? r.e.nom_complet : (r.kind === 'fn' ? r.fn.nom : r.a.t)) + '</b>' +
+      ' <span class="ann-type">' + (r.kind === 'ent' ? 'Entreprise' : (r.kind === 'fn' ? 'France Num' : 'Association')) + '</span>';
     var sub = document.createElement('div');
     sub.className = 'ann-obj';
-    sub.textContent = r.kind === 'ent'
-      ? ((r.e.siege && r.e.siege.adresse) || '')
-      : ((r.a.l || '') + (r.a.p ? ' (' + r.a.p + ')' : '') + (r.a.o ? ' — ' + r.a.o : ''));
+    if (r.kind === 'fn') {
+      sub.textContent = (r.fn.type ? r.fn.type + ' — ' : '') +
+        [r.fn.adr, [r.fn.cp, r.fn.ville].filter(Boolean).join(' ')].filter(Boolean).join(' — ') +
+        (r.fn.perim ? ' · 🎯 ' + r.fn.perim : '');
+    } else if (r.kind === 'ent') {
+      sub.textContent = ((r.e.siege && r.e.siege.adresse) || '');
+    } else {
+      sub.textContent = ((r.a.l || '') + (r.a.p ? ' (' + r.a.p + ')' : '') + (r.a.o ? ' — ' + r.a.o : ''));
+    }
     row.appendChild(head); row.appendChild(sub);
     row.addEventListener('click', function () {
-      var mk = r.kind === 'ent' ? r.e._marker : r.a._marker;
+      var mk = r.kind === 'ent' ? r.e._marker :
+        (r.kind === 'fn' ? (ANN.markerIndex['f:' + r.fn.id] || null) : r.a._marker);
       if (mk) { map.panTo(mk.getLatLng()); mk.openPopup(); }
     });
     box.appendChild(row);
@@ -751,6 +758,40 @@ function annApplySearch() {
   // Filtre ville (facultatif) : commune seule ou rayon autour de la ville cible
   var target = ANN.target;
   var radius = target ? (parseInt(document.getElementById('annRadius').value, 10) || 0) : 0;
+
+  // --- Mode France Num (case #annFnOnly, francenum.js) : les activateurs ---
+  // remplacent assos + entreprises — filtrage 100 % local (zone + requête +
+  // filtre ville), chargement unique du dataset via fnEnsure (cache IndexedDB).
+  if (document.getElementById('annFnOnly').checked && typeof fnEnsure === 'function') {
+    setStatus('⏳ Activateurs France Num…', 'loading');
+    fnEnsure().then(function () {
+      if (token !== ANN.seq) return; // une recherche plus récente a pris la dessus
+      var rows = fnFilter({ deps: deps, q: q, target: target, radius: radius });
+      if (target && radius > 0) fnSortByDist(rows); else fnSortByName(rows);
+      ANN.showing = [];
+      rows.slice(0, 2000).forEach(function (f) { ANN.showing.push({ kind: 'fn', fn: f, a: fnShim(f) }); });
+      annSyncMarkers(fnEntries(rows, 2000));
+      renderAnnList();
+      var fnParts = [];
+      if (target) fnParts.push('🎯 ' + esc(target.nom) + (radius > 0 ? ' — rayon ' + radius + ' km' : ' — dans la ville'));
+      if (ANN.spread && ANN.spread.groups) {
+        fnParts.unshift('📍 ' + ANN.spread.groups + ' groupe(s) de marqueurs co-localisés écartés en spirale');
+      }
+      fnParts.push('<b>' + rows.length.toLocaleString('fr-FR') + ' activateur(s) France Num</b>' +
+        (rows.length < FN.total ? ' · base : ' + FN.total.toLocaleString('fr-FR') : ''));
+      document.getElementById('annStatus').innerHTML = fnParts.join(' · ');
+      setStatus('Annuaire : ' + rows.length.toLocaleString('fr-FR') + ' activateur(s) France Num');
+    }).catch(function (err) {
+      if (token !== ANN.seq) return;
+      console.error('[OpenFrance] Annuaire France Num :', err);
+      ANN.showing = [];
+      annSyncMarkers([]);
+      renderAnnList();
+      document.getElementById('annStatus').innerHTML =
+        '<span class="ann-warn">⚠️ Activateurs France Num : ' + esc(err.message || String(err)) + '</span>';
+    });
+    return;
+  }
 
   // PAS de clearAnnMarkers ici : les marqueurs sont mis à jour par différence
   // (annSyncMarkers) pour éviter le scintillement de la carte à chaque frappe.
@@ -1268,6 +1309,9 @@ function annInitUI() {
     annApplySearch();
   });
   document.getElementById('annCat').addEventListener('change', annApplySearch);
+  // Case « France Num uniquement » (francenum.js) : bascule la recherche sur
+  // les activateurs France Num de la zone (assos/entreprises ignorés).
+  document.getElementById('annFnOnly').addEventListener('change', annApplySearch);
 
   // Filtre ville (autocomplete, même mécanique que corp.js)
   var cityIn = document.getElementById('annCity');

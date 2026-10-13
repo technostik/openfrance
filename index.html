@@ -51,6 +51,9 @@
         <option value="both">Les deux</option>
       </select>
     </label>
+    <label class="co-check" title="Ne chercher que les activateurs France Num (structures labellisées qui accompagnent la numérisation des TPE/PME, data.gouv.fr) de la zone courante — la requête et le filtre ville s'appliquent, le type et la catégorie sont ignorés">
+      <input type="checkbox" id="annFnOnly"> 🇫🇷 France Num uniquement
+    </label>
     <label>Catégorie
       <select id="annCat"><option value="">Toutes catégories</option></select>
     </label>
@@ -130,6 +133,9 @@
     <label class="co-check" title="Ne garder que les entreprises en activité">
       <input type="checkbox" id="coActive" checked> Actives uniquement
     </label>
+    <label class="co-check" title="Chercher les activateurs France Num (data.gouv.fr) au lieu des entreprises : le ciblage (ville/rayon/commune/département) et le texte s'appliquent, les autres critères ne concernent pas les activateurs">
+      <input type="checkbox" id="coFnOnly"> 🇫🇷 France Num uniquement
+    </label>
     <div id="coLabels"></div>
   </div>
   <div id="extControls" style="display:none">
@@ -161,13 +167,16 @@
     <label class="co-check" title="Ne garder que les entreprises présentes dans les listes curatées avec le label « French Tech » (filtre local, sans nouvel appel)">
       <input type="checkbox" id="extFTOnly"> 🇫🇷 French Tech uniquement
     </label>
+    <label class="co-check" title="Annuaire des activateurs France Num (data.gouv.fr) : avec une ville → dans le rayon ; champ ville effacé → toute la zone. Le champ métier devient un filtre texte local (pas de ROMEO/La Bonne Boite)">
+      <input type="checkbox" id="extFnOnly"> 🇫🇷 France Num uniquement
+    </label>
     <label>Métier (texte libre)
       <input id="extText" type="text" placeholder="ex. boulanger">
     </label>
     <button id="extSearchBtn" type="button" title="Lancer la recherche étendue">🔎 Rechercher</button>
   </div>
 </section>
-<p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département). Ville : tapez un nom de commune pour filtrer « dans la ville » ou par rayon.</p>
+<p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département). Ville : tapez un nom de commune pour filtrer « dans la ville » ou par rayon. Case « 🇫🇷 France Num uniquement » : les activateurs France Num de la zone (dataset data.gouv.fr, filtrage local, mot-clé facultatif).</p>
 <p id="annQueryExp" class="muted" style="display:none"></p>
 <p id="coModeHint" class="muted" style="display:none"></p>
 
@@ -252,6 +261,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 <script src="annuaire.js"></script>
+<script src="francenum.js"></script>
 <script src="score.js"></script>
 <script src="corp.js"></script>
 <script src="corp_ext.js"></script>
