@@ -15,8 +15,10 @@
 </div>
 
 <section id="controls">
-  <div id="brand"><h1>🇫🇷 OpenFrance</h1><p class="subtitle">Cartographie des données ouvertes — data.gouv.fr + mafrance.app</p></div>
+  <div id="brand"><h1>🇫🇷 OpenFrance</h1></div>
   <button id="backBtn" type="button" title="Revenir à la carte de France" hidden>← France</button>
+  <div id="zoneWrap" style="display:none"></div>
+  <div id="scZoneWrap" style="display:none"></div>
   <label>Catégorie
     <select id="categorySelect">
       <option value="delinquance">Délinquance</option>
@@ -28,9 +30,6 @@
       <option value="corp">Composeur d'entreprises</option>
       <option value="corp_ext">Recherche étendue d'entreprises</option>
     </select>
-  </label>
-  <label id="scDepWrap" style="display:none">Département
-    <select id="scDep"></select>
   </label>
   <label id="indicatorLabel">Indicateur
     <select id="indicatorSelect" disabled><option>Chargement…</option></select>

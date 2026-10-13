@@ -55,6 +55,7 @@
 var EXT = {
   active: false,
   dep: null,           // département choisi (restauré depuis le localStorage)
+  zone: [],             // zone multi-départements courante (codes valides)
   target: null,          // { code, nom, latlng } — ville cible
   radius: 10,            // km
   size: '',              // filtre local headcount_min : '' | '10' | '50' | '100'
@@ -106,20 +107,38 @@ function extFetchJson(url) {
 }
 
 // ---------- Géographie du département (comme corp.js) ----------
+function extZoneDeps() {
+  var z = (EXT.zone || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (z.length) return z;
+  return EXT.dep ? [EXT.dep] : [];
+}
+function extZoneKey(deps) { return deps.slice().sort().join('+'); }
+function extZoneLabel() { return zoneLabel(extZoneDeps()); }
 function extEnsureGeo() {
-  if (EXT.geo && EXT.dep === EXT.geoDep) return Promise.resolve();
-  var dep = EXT.dep;
-  var g = state.communesGeo[dep];
-  var p = g ? Promise.resolve(g) :
-    fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[dep] + '/communes-' + DEP_FOLDERS[dep] + '.geojson')
-      .then(function (geo) { state.communesGeo[dep] = geo; return geo; });
-  return p.then(function (geo) {
-    if (EXT.dep !== dep) return; // département changé entre-temps
-    EXT.geo = geo; EXT.geoDep = dep;
-    EXT.centroids = annCentroids(dep);
-    EXT.cities = (geo.features || []).map(function (f) {
-      return { code: f.properties.code, nom: f.properties.nom, n: normTxt(f.properties.nom), latlng: EXT.centroids[f.properties.code] };
-    }).filter(function (c) { return !!c.latlng; });
+  var deps = extZoneDeps();
+  var key = extZoneKey(deps);
+  if (EXT.geo && EXT.geoDep === key) return Promise.resolve();
+  return Promise.all(deps.map(function (dep) {
+    var g = state.communesGeo[dep];
+    return g ? Promise.resolve(g) :
+      fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[dep] + '/communes-' + DEP_FOLDERS[dep] + '.geojson')
+        .then(function (geo) { state.communesGeo[dep] = geo; return geo; });
+  })).then(function (geos) {
+    if (extZoneKey(extZoneDeps()) !== key) return; // zone changée entre-temps
+    var cent = {}, cities = [], seen = {};
+    geos.forEach(function (geo, i) {
+      var cs = annCentroids(deps[i]);
+      for (var k in cs) if (!(k in cent)) cent[k] = cs[k];
+      (geo.features || []).forEach(function (f) {
+        var c3 = cent[f.properties.code];
+        if (!c3 || seen[f.properties.code]) return;
+        seen[f.properties.code] = 1;
+        cities.push({ code: f.properties.code, nom: f.properties.nom, n: normTxt(f.properties.nom), latlng: c3 });
+      });
+    });
+    EXT.geo = geos[geos.length - 1]; EXT.geoDep = key;
+    EXT.centroids = cent;
+    EXT.cities = cities;
   });
 }
 
@@ -826,7 +845,7 @@ function extInitUI() {
     depSel.appendChild(o);
   });
   depSel.value = EXT.dep;
-  depSel.addEventListener('change', function () { extSetDep(depSel.value); });
+  depSel.addEventListener('change', function () { extSetZone([depSel.value]); });
 
   var radSel = document.getElementById('extRadius');
   radSel.value = String(EXT.radius);
@@ -904,41 +923,56 @@ function extPrefsSave() {
   var t = document.getElementById('extText');
   try {
     localStorage.setItem(EXT_PREF_KEY, JSON.stringify({
-      dep: EXT.dep, target: EXT.target, radius: EXT.radius,
+      dep: EXT.dep, zone: EXT.zone, target: EXT.target, radius: EXT.radius,
       text: t ? t.value : ''
     }));
   } catch (e) {}
 }
 
-function extSetDep(dep) {
+function extSetZone(deps) {
+  deps = (deps || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (!deps.length) return;
   var saved = extPrefs();
-  EXT.dep = dep;
+  EXT.zone = deps.slice();
+  EXT.dep = deps[0];
   EXT.geo = null; EXT.target = null;
   EXT.lastLbb = null; EXT.lastCurated = null; EXT.lastFT = null;
-  extPrefsSave(); // changement de département : la ville cible repart à zéro
+  extPrefsSave(); // changement de zone : la ville cible repart à zéro
   document.getElementById('extTarget').value = '';
   extClearMap();
   extEnsureGeo().then(function () {
     if (!EXT.active) return;
-    document.getElementById('levelTitle').textContent =
-      'Recherche étendue — ' + coDepLabel(dep) + ' (' + dep + ')';
+    state.zone = EXT.zone.slice();
+    state.dep = { code: EXT.zone[0], nom: depNom(EXT.zone[0]) };
+    document.getElementById('extDep').value = EXT.zone[0];
+    zoneWidgetShow(extSetZone);
+    document.getElementById('levelTitle').textContent = 'Recherche étendue — ' + extZoneLabel();
     document.getElementById('extStatus').textContent =
       'Entrez un métier en texte libre, choisissez une ville, puis « 🔎 Rechercher ».';
-    if (saved && saved.dep === dep && saved.target && (EXT.centroids || {})[saved.target.code]) {
+    var sameZone = saved && saved.zone && saved.zone.length ?
+      extZoneKey(saved.zone) === extZoneKey(EXT.zone) : (saved && saved.dep === EXT.dep);
+    if (saved && saved.target && sameZone && (EXT.centroids || {})[saved.target.code]) {
       extSetTarget(saved.target.code, saved.target.nom); // restauration de la dernière ville cible
     }
   }).catch(function (err) {
     console.error('[OpenFrance] Recherche étendue :', err);
-    showError('Impossible de charger le département.', err.message);
+    showError('Impossible de charger la zone.', err.message);
   });
 }
+function extSetDep(dep) { extSetZone([dep]); }
 
 // ---------- Entrée / sortie du mode ----------
 function extEnter() {
   EXT.active = true;
   var saved = extPrefs();
+  // Héritage de la zone : zone carte courante, sinon dernière zone de la recherche.
+  var zIn = (state.zone || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (!zIn.length && saved.zone && saved.zone.length) zIn = saved.zone.filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (zIn.length) EXT.zone = zIn;
   if (!EXT.dep) EXT.dep = (saved.dep && DEP_FOLDERS[saved.dep]) ? saved.dep
                        : Object.keys(DEP_FOLDERS).sort()[0];
+  if (!EXT.zone.length) EXT.zone = [EXT.dep];
+  EXT.dep = EXT.zone[0];
   if (saved.radius !== undefined && saved.radius !== null) EXT.radius = saved.radius;
   extInitUI();
   document.getElementById('indicatorLabel').style.display = 'none';
@@ -955,16 +989,18 @@ function extEnter() {
   document.getElementById('extPanel').style.display = '';
   document.getElementById('legendBlock').style.display = 'none';
   document.getElementById('backBtn').hidden = true;
-  document.getElementById('levelTitle').textContent =
-    'Recherche étendue — ' + coDepLabel(EXT.dep) + ' (' + EXT.dep + ')';
+  document.getElementById('levelTitle').textContent = 'Recherche étendue — ' + extZoneLabel();
   state.view = 'france'; state.dep = null;
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   hideError();
-  extSetDep(EXT.dep);
+  extSetZone(EXT.zone);
+  zoneWidgetShow(extSetZone);
 }
 
 function extLeave() {
   EXT.active = false;
+  // Restitue la zone courante (même mécanisme que corpLeave)
+  if (EXT.zone && EXT.zone.length) state.zone = EXT.zone.slice();
   EXT.seq++; // invalide les recherches en vol
   EXT.lastLbb = null; EXT.lastCurated = null;
   extTargetDropEl(false);
@@ -973,10 +1009,16 @@ function extLeave() {
   if (typeof coFicheClose === 'function') coFicheClose();
   document.getElementById('extControls').style.display = 'none';
   document.getElementById('extPanel').style.display = 'none';
-  document.getElementById('indicatorLabel').style.display = '';
-  document.getElementById('legendBlock').style.display = '';
-  document.getElementById('backBtn').hidden = true;
-  document.getElementById('levelTitle').textContent = 'France — par département';
+  // Catégories à UI dédiée : ne pas écraser leurs titres/contrôles
+  // (voir corpLeave — on lit la valeur courante du sélecteur).
+  var backToMap = ['annuaire', 'score31', 'corp', 'corp_ext']
+    .indexOf(document.getElementById('categorySelect').value) === -1;
+  document.getElementById('indicatorLabel').style.display = backToMap ? '' : 'none';
+  document.getElementById('legendBlock').style.display = backToMap ? '' : 'none';
+  if (backToMap) {
+    document.getElementById('backBtn').hidden = true;
+    document.getElementById('levelTitle').textContent = 'France — par département';
+  }
 }
 
 // ---------- Branchement UI (comme corp.js : écoute directe du select) ----------

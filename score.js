@@ -1,8 +1,9 @@
 // OpenFrance — Composeur de critères : indice ad hoc généralisé
 // (généralisation de l'ancien « Score perso »)
 //
-// Principe : l'utilisateur choisit un département, une ville cible (autocomplete sur
-// les communes du département), puis compose librement son indice : ajout/retrait de
+// Principe : l'utilisateur choisit une zone (un ou plusieurs départements, avec
+// suggestion des limitrophes), une ville cible (autocomplete sur les communes de la
+// zone), puis compose librement son indice : ajout/retrait de
 // critères (les filtres existants de l'app + distance à la ville cible), sens de
 // chaque critère (⬆ plus = mieux / ⬇ moins = mieux) et pondération 0–10.
 // Recalcul en temps réel, dégradé vert→rouge, meilleure commune en bleu.
@@ -27,10 +28,11 @@
 
 var SC = {
   active: false,
-  dep: null,           // département choisi (restauré depuis le localStorage au 1er passage)
+  dep: null,           // département choisi = zone[0] (compat préférences)
+  zone: [],            // zone multi-départements (1..n, limitrophes suggérés)
   target: null,          // { code, nom } — ville cible (critère distance)
   annee: null,           // année délinquance utilisée
-  geo: null, geoDep: null, centroids: null, cities: [],
+  geo: null, geoZoneKey: null, centroids: null, cities: [],
   valCache: {},          // dep|typeKey -> { ready, vals: {code -> nombre}, promise }
   crits: [], nextId: 1,
   data: {}, best: null, layer: null,
@@ -55,7 +57,7 @@ function scLoadPrefs() {
 function scSavePrefs() {
   try {
     localStorage.setItem(SC_PREF_KEY, JSON.stringify({
-      dep: SC.dep,
+      dep: SC.dep, zone: SC.zone,
       target: SC.target,
       crits: SC.crits.map(function (c) { return { type: c.type, cfg: c.cfg, w: c.w, dir: c.dir }; })
     }));
@@ -102,17 +104,18 @@ function scLatestYear() {
 }
 
 // ---------- Chargements ----------
-function scEnsureGeo() {
-  if (SC.geo && SC.dep === SC.geoDep) return Promise.resolve();
-  var dep = SC.dep;
-  var g = state.communesGeo[dep];
-  var p = g ? Promise.resolve(g) :
-    fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[dep] + '/communes-' + DEP_FOLDERS[dep] + '.geojson')
-      .then(function (geo) { state.communesGeo[dep] = geo; return geo; });
-  return p.then(function (geo) {
-    if (SC.dep !== dep) return; // département changé entre-temps
-    SC.geo = geo; SC.geoDep = dep;
-    SC.centroids = annCentroids(dep);
+function scEnsureGeo() { // géo fusionnée de la zone (mergedZoneGeo, app.js)
+  var zk = SC.zone.join('+');
+  if (SC.geo && zk === SC.geoZoneKey) return Promise.resolve();
+  return mergedZoneGeo(SC.zone).then(function (geo) {
+    if (SC.zone.join('+') !== zk) return; // zone changée entre-temps
+    SC.geo = geo; SC.geoZoneKey = zk;
+    var cent = {};
+    SC.zone.forEach(function (d) {
+      var c = annCentroids(d);
+      for (var k in c) if (!cent[k]) cent[k] = c[k];
+    });
+    SC.centroids = cent;
     SC.cities = (geo.features || []).map(function (f) {
       return { code: f.properties.code, nom: f.properties.nom, n: normTxt(f.properties.nom) };
     });
@@ -120,7 +123,9 @@ function scEnsureGeo() {
 }
 
 function scEnsureLoyers() {
-  var dep = SC.dep;
+  return Promise.all(SC.zone.map(function (dep) { return scEnsureLoyersDep(dep); }));
+}
+function scEnsureLoyersDep(dep) {
   if (SC.loyersByDep[dep]) return Promise.resolve();
   var base = '/api/loyers/?DEP__exact=' + encodeURIComponent(dep) + '&page_size=200';
   function page(p) {
@@ -149,16 +154,20 @@ function scEnsureLoyers() {
 }
 
 function scEnsureAssos() {
-  return scEnsureGeo().then(function () { return loadAssosDept(SC.dep); });
+  return scEnsureGeo().then(function () {
+    return Promise.all(SC.zone.map(function (d) { return loadAssosDept(d); }));
+  });
 }
 
 function scAnnCounts(q) { // requête RNA -> { code commune -> nb d'assos }
   var parsed = parseAnnQuery(q);
   var counts = {};
-  (ANN.assos[SC.dep] || []).forEach(function (a) {
-    if (!annMatch(annHaystack(a), parsed)) return;
-    var c = String(a.n || '').trim();
-    if (c) counts[c] = (counts[c] || 0) + 1;
+  SC.zone.forEach(function (dep) {
+    (ANN.assos[dep] || []).forEach(function (a) {
+      if (!annMatch(annHaystack(a), parsed)) return;
+      var c = String(a.n || '').trim();
+      if (c) counts[c] = (counts[c] || 0) + 1;
+    });
   });
   return counts;
 }
@@ -196,8 +205,17 @@ var SC_TYPES = {
       return opts;
     },
     describe: function (cfg) { return 'Délinquance — ' + (cfg.ind === TOTAL_LABEL ? 'ensemble' : cfg.ind); },
-    ensure: function () { return scEnsureGeo().then(function () { return loadCommunesDelinquance(SC.dep, SC.annee); }); },
-    vals: function (cfg) { return scMapVals(delinquanceCommunes(SC.dep, cfg.ind, SC.annee)); },
+    ensure: function () { return scEnsureGeo().then(function () {
+      return Promise.all(SC.zone.map(function (d) { return loadCommunesDelinquance(d, SC.annee); }));
+    }); },
+    vals: function (cfg) {
+      var merged = {};
+      SC.zone.forEach(function (d) {
+        var dz = delinquanceCommunes(d, cfg.ind, SC.annee);
+        for (var c in dz) if (!(c in merged)) merged[c] = dz[c];
+      });
+      return scMapVals(merged);
+    },
     fmt: function (v) { return fmt1(v) + ' ‰'; }
   },
   loyers: {
@@ -205,7 +223,14 @@ var SC_TYPES = {
     key: function () { return 'loyers'; },
     describe: function () { return 'Loyers d\'annonce €/m²'; },
     ensure: function () { return scEnsureLoyers(); },
-    vals: function () { return SC.loyersByDep[SC.dep] || {}; },
+    vals: function () {
+      var out = {};
+      SC.zone.forEach(function (d) {
+        var m = SC.loyersByDep[d] || {};
+        for (var c in m) if (!(c in out)) out[c] = m[c];
+      });
+      return out;
+    },
     fmt: function (v) { return fmt1(v) + ' €/m²'; }
   },
   revenus: {
@@ -213,7 +238,14 @@ var SC_TYPES = {
     key: function () { return 'revenus'; },
     describe: function () { return 'Niveau de vie médian (Filosofi)'; },
     ensure: function () { return loadRevenus(); },
-    vals: function () { return scMapVals(revenusCommunes(SC.dep)); },
+    vals: function () {
+      var merged = {};
+      SC.zone.forEach(function (d) {
+        var r = revenusCommunes(d);
+        for (var c in r) if (!(c in merged)) merged[c] = r[c];
+      });
+      return scMapVals(merged);
+    },
     fmt: function (v) { return fmt(v) + ' €/an'; }
   },
   dvf: {
@@ -227,7 +259,7 @@ var SC_TYPES = {
       var all = dvfData(cfg.which, 'com'), out = {};
       for (var c in all) {
         var d = c.slice(0, 2); if (/^97/.test(c)) d = c.slice(0, 3);
-        if (d === SC.dep) out[c] = all[c].val;
+        if (SC.zone.indexOf(d) !== -1) out[c] = all[c].val;
       }
       return out;
     },
@@ -258,11 +290,19 @@ var SC_TYPES = {
     ensure: function (cfg) {
       var e = scPolEntries()[cfg.idx];
       if (!e) return Promise.reject(new Error('indicateur politique inconnu'));
-      return scEnsureGeo().then(function () { return loadElectCommunes(SC.dep, e.electId); });
+      return scEnsureGeo().then(function () {
+        return Promise.all(SC.zone.map(function (d) { return loadElectCommunes(d, e.electId); }));
+      });
     },
     vals: function (cfg) {
       var e = scPolEntries()[cfg.idx];
-      return e ? scMapVals(e.communes(SC.dep)) : {};
+      if (!e) return {};
+      var merged = {};
+      SC.zone.forEach(function (d) {
+        var r = e.communes(d);
+        for (var c in r) if (!(c in merged)) merged[c] = r[c];
+      });
+      return scMapVals(merged);
     },
     fmt: function (v) { return fmt1(v) + ' %'; }
   }
@@ -290,13 +330,17 @@ if (window.MF_PAGE && typeof MF_INDICES !== 'undefined') {
       // l'utilisateur peut basculer librement.
       return (MF_INDICES[cfg.idx] && MF_INDICES[cfg.idx].key === 'insecurite_score') ? 'min' : 'max';
     },
-    ensure: function () { return loadMfCommunes(SC.dep); },
+    ensure: function () { return Promise.all(SC.zone.map(function (d) { return loadMfCommunes(d); })); },
     vals: function (cfg) {
-      var m = MF_INDICES[cfg.idx], com = MF.com[SC.dep] || {}, out = {};
-      for (var c in com) {
-        var v = com[c][m.key];
-        if (v !== undefined && v !== null) out[c] = v;
-      }
+      var m = MF_INDICES[cfg.idx], out = {};
+      SC.zone.forEach(function (d) {
+        var com = MF.com[d] || {};
+        for (var c in com) {
+          if (out[c] !== undefined) continue;
+          var v = com[c][m.key];
+          if (v !== undefined && v !== null) out[c] = v;
+        }
+      });
       return out;
     },
     fmt: function (v) { return fmt(v) + ' (base 100)'; }
@@ -304,7 +348,7 @@ if (window.MF_PAGE && typeof MF_INDICES !== 'undefined') {
 }
 
 // ---------- Cycle de vie d'un critère ----------
-function scCacheKey(crit) { return SC.dep + '|' + SC_TYPES[crit.type].key(crit.cfg); }
+function scCacheKey(crit) { return SC.zone.join('+') + '|' + SC_TYPES[crit.type].key(crit.cfg); }
 
 function scEnsureCrit(crit) {
   var key = scCacheKey(crit);
@@ -498,36 +542,43 @@ function scDraw() {
 }
 
 // ---------- Département / ville cible ----------
-function scSetDep(dep) {
+function scSetZone(deps) { // zone = 1..n départements (widget commun, app.js)
+  deps = (deps || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (!deps.length) return;
   var saved = scLoadPrefs();
-  SC.dep = dep;
+  var keepT = (SC._savedTarget && SC._savedTarget.code) ? SC._savedTarget :
+              (SC.target && SC.target.code) ? SC.target :
+              (saved && saved.target && saved.target.code) ? saved.target : null;
+  SC._savedTarget = null;
+  SC.zone = deps.slice();
+  SC.dep = deps[0];
   SC.geo = null; SC.data = {}; SC.best = null;
   if (SC.layer) { map.removeLayer(SC.layer); SC.layer = null; }
   SC.target = null;
-  scSavePrefs(); // changement de département : la ville cible repart à zéro
+  scSavePrefs(); // changement de zone
   document.getElementById('scTarget').value = '';
-  document.getElementById('levelTitle').textContent = 'Composeur — ' + scDepLabel(dep) + ' (' + dep + ')';
+  document.getElementById('levelTitle').textContent = 'Composeur — ' + zoneLabel(SC.zone);
+  var zw = document.getElementById('scZoneWrap');
+  if (zw) zoneWidgetRender(zw, SC.zone, scSetZone);
   var delinqP = (!window.MF_PAGE || DELINQ.loaded) ? Promise.resolve() : loadDelinquance();
   delinqP.then(function () {
     SC.annee = scLatestYear();
     return scEnsureGeo();
   }).then(function () {
-    var t = null;
-    if (SC._savedTarget && SC._savedTarget.code) { t = SC._savedTarget; SC._savedTarget = null; }
-    else if (saved && saved.dep === dep && saved.target && saved.target.code) t = saved.target;
-    if (t) scSetTarget(t.code, t.nom); // restauration de la dernière ville cible choisie
+    // la ville cible n'est conservée que si elle appartient à la nouvelle zone
+    if (keepT && SC.zone.indexOf(depOfCommune(keepT.code)) !== -1) scSetTarget(keepT.code, keepT.nom);
     scRenderCrits();
     return scEnsureAll();
   }).then(function () { scDraw(); }).catch(function (err) {
     console.error('[OpenFrance] Composeur :', err);
-    showError('Composeur : impossible de charger le département.', err.message);
+    showError('Composeur : impossible de charger la zone.', err.message);
   });
 }
 
 function scSetTarget(code, nom) {
   SC.target = { code: code, nom: nom };
   document.getElementById('scTarget').value = nom;
-  var prefix = SC.dep + '|dist|'; // invalide les distances du département courant
+  var prefix = SC.zone.join('+') + '|dist|'; // invalide les distances de la zone courante
   for (var k in SC.valCache) if (k.indexOf(prefix) === 0) delete SC.valCache[k];
   SC.crits.forEach(function (crit) {
     if (crit.type === 'dist') scEnsureCrit(crit);
@@ -676,15 +727,8 @@ function scInitUI() {
   if (SC.uiReady) return;
   SC.uiReady = true;
 
-  var depSel = document.getElementById('scDep');
-  Object.keys(DEP_FOLDERS).sort().forEach(function (d) {
-    var o = document.createElement('option');
-    o.value = d;
-    o.textContent = d + ' — ' + scDepLabel(d);
-    depSel.appendChild(o);
-  });
-  depSel.value = SC.dep;
-  depSel.addEventListener('change', function () { scSetDep(depSel.value); });
+  var zw = document.getElementById('scZoneWrap');
+  if (zw && SC.zone.length) zoneWidgetRender(zw, SC.zone, scSetZone);
 
   var addSel = document.getElementById('scAddType');
   Object.keys(SC_TYPES).forEach(function (k) {
@@ -720,11 +764,12 @@ function scInitUI() {
 // ---------- Entrée / sortie du mode ----------
 function scoreEnter() {
   SC.active = true;
-  // Département consulté dans l'appli au moment d'entrer dans le composeur
-  // (s'il y en a un) : il devient le département par défaut.
-  var curDep = (state.view === 'dep' && state.dep && state.dep.code && DEP_FOLDERS[state.dep.code]) ? state.dep.code : null;
+  // Zone consultée dans l'appli au moment d'entrer dans le composeur
+  // (s'il y en a une) : elle devient la zone par défaut.
+  var curZone = (state.zone && state.zone.length) ? state.zone.filter(function (d) { return !!DEP_FOLDERS[d]; }) : [];
   scInitUI();
-  document.getElementById('scDepWrap').style.display = '';
+  var zwr = document.getElementById('scZoneWrap');
+  if (zwr) zwr.style.display = '';
   scUpdateTargetVisibility();
   document.getElementById('indicatorLabel').style.display = 'none';
   document.getElementById('yearLabel').style.display = 'none';
@@ -740,8 +785,10 @@ function scoreEnter() {
   if (!SC.seeded) {
     SC.seeded = true;
     var saved = scLoadPrefs();
-    SC.dep = (saved && saved.dep && DEP_FOLDERS[saved.dep]) ? saved.dep
-             : Object.keys(DEP_FOLDERS).sort()[0];
+    var sz = (saved && Array.isArray(saved.zone)) ? saved.zone.filter(function (d) { return !!DEP_FOLDERS[d]; }) : [];
+    if (!sz.length && saved && saved.dep && DEP_FOLDERS[saved.dep]) sz = [saved.dep];
+    if (!sz.length) sz = [Object.keys(DEP_FOLDERS).sort()[0]];
+    SC.zone = sz; SC.dep = sz[0];
     SC.crits = []; SC.nextId = 1;
     if (saved && saved.crits.length) {
       saved.crits.forEach(function (c) {
@@ -752,14 +799,14 @@ function scoreEnter() {
     } else {
       scAddCrit(window.MF_PAGE && SC_TYPES.delinq ? 'delinq' : 'revenus', null, 5, null, true); // critère neutre au premier passage
     }
-    SC._savedTarget = (saved && saved.dep === SC.dep && saved.target && saved.target.code) ? saved.target : null;
+    SC._savedTarget = (saved && saved.target && saved.target.code &&
+      SC.zone.indexOf(depOfCommune(saved.target.code)) !== -1) ? saved.target : null;
   }
-  // Département par défaut : département consulté dans l'appli > dernier
-  // sauvegardé > 01 — Ain.
-  if (curDep && SC.dep !== curDep) { SC.dep = curDep; SC._savedTarget = null; }
-  var depSel = document.getElementById('scDep');
-  if (depSel) depSel.value = SC.dep;
-  scSetDep(SC.dep);
+  // Zone par défaut : zone consultée dans l'appli > dernière
+  // sauvegardée > 01 — Ain.
+  var zNew = curZone.filter(function (d) { return SC.zone.indexOf(d) === -1; });
+  if (zNew.length) { SC.zone = curZone.slice(); SC.dep = SC.zone[0]; SC._savedTarget = null; }
+  scSetZone(SC.zone);
 }
 
 function scoreLeave() {
@@ -767,12 +814,18 @@ function scoreLeave() {
   scTargetDrop(false);
   if (SC.layer) { map.removeLayer(SC.layer); SC.layer = null; }
   document.getElementById('scoreControls').style.display = 'none';
-  document.getElementById('scDepWrap').style.display = 'none';
-  if (state.category !== 'annuaire') {
+  var zwl = document.getElementById('scZoneWrap');
+  if (zwl) zwl.style.display = 'none';
+  // Restitue la zone du composeur à l'appli : elle persiste entre catégories.
+  var zsc = (SC.zone || []).filter(function (d) { return !!DEP_FOLDERS[d]; });
+  if (zsc.length) state.zone = zsc;
+  // Ne pas écraser le titre géré par annuaire/entreprises en sortie du composeur.
+  if (['annuaire', 'corp', 'corp_ext'].indexOf(document.getElementById('categorySelect').value) === -1) {
     document.getElementById('indicatorLabel').style.display = '';
     document.getElementById('legendBlock').style.display = '';
     if (state.view === 'dep' && state.dep) {
-      document.getElementById('levelTitle').textContent = state.dep.nom + ' (' + state.dep.code + ') — par commune';
+      document.getElementById('levelTitle').textContent =
+        ((state.zone && state.zone.length) ? zoneLabel(state.zone) : state.dep.nom + ' (' + state.dep.code + ')') + ' — par commune';
     } else {
       document.getElementById('backBtn').hidden = true;
       document.getElementById('levelTitle').textContent = 'France — par département';
