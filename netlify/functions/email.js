@@ -3,8 +3,8 @@
 // Endpoint (POST, paramètre op) :
 //   POST /ft/email  { op:'lookup', entity:{ type:'ent'|'asso'|'commune', nom, siren, siret,
 //                                            insee, ville, dep, siteWeb },
-//                     engines:[ 'officiel'|'tavily'|'scrape'|'prospector' ] }
-//   → { ok:true, best:{ email, website, source, confidence }, results:[{ engine, ... }] }
+//                     engines:[ 'officiel'|'tavily'|'scrape'|'prospector'|'francenum' ] }
+//   → { ok:true, best:{ email, website, contact, source, confidence }, results:[{ engine, ... }] }
 //   POST /ft/email  { op:'describe', entity:{ type, nom, siren, ville, siteWeb } }
 //   → { ok:true, best:{ description, source, confidence, siteUrl }, results:[{ engine, ... }] }
 //   Moteurs describe : ddg (snippets DuckDuckGo + découverte du site officiel, annuaires/
@@ -29,6 +29,11 @@
 //                (scraping + candidats à motifs + vérification DNS/SMTP sans envoi).
 //                Tier gratuit : 50 vérifs/jour (PROSPECTOR_TIER). Opt-in côté front ;
 //                dégrade proprement si le package n'est pas installé.
+//   francenum  : fiche France Num de la structure (entity.fnFiche, activateurs,
+//                dernier recours) : scrap de la fiche → site web, email, page
+//                contact de la structure, en excluant tout ce qui appartient au
+//                ministère (francenum.gouv.fr, data.gouv.fr, economie.gouv.fr) ;
+//                MX contrôlé comme scrape.
 //
 // Budget : fonctions Netlify synchrones ~10 s → budget total 9 s, chaque moteur reçoit
 // le temps restant ; les suivants sont sautés si le temps manque. Erreurs applicatives
@@ -255,6 +260,7 @@ async function engScrape(siteUrl, budgetMs) {
   if (!home.ok) { out.note = 'site injoignable (' + home.note + ')'; return out; }
   harvestEmails(home.html, 0, emails, domain);
   const links = contactLinks(home.html, home.url);
+  if (links.length) out.contact = links[0]; // page contact même sans email (📋)
   let spent = 0;
   for (let i = 0; i < links.length; i++) {
     if (budgetMs - spent < 2000) break;
@@ -360,6 +366,65 @@ async function engProspector(siteUrl, budgetMs) {
     }
   } catch (e) {
     out.note = 'prospector indisponible : ' + String((e && e.message) || e).slice(0, 140);
+  }
+  return out;
+}
+
+// ---------- Moteur 5 : fiche France Num (activateurs, dernier recours) ----------
+// La fiche France Num d'une structure (entity.fnFiche) affiche souvent SON
+// PROPRE site web et son email : on extrait les contacts de la structure en
+// excluant tout ce qui appartient au ministère (francenum.gouv.fr, data.gouv.fr,
+// economie.gouv.fr) et les réseaux sociaux/annuaires (TAVILY_BLOCK). MX contrôlé.
+const FN_BLOCK = /(^|\.)francenum\.gouv\.fr$|(^|\.)data\.gouv\.fr$|(^|\.)economie\.gouv\.fr$/;
+
+async function engFrancenum(ent, budgetMs) {
+  const out = { engine: 'francenum', source: 'fiche-francenum' };
+  const fiche = cleanUrl(ent.fnFiche);
+  if (!fiche) { out.note = 'URL de fiche France Num absente'; return out; }
+  const r = await fetchText(fiche, Math.min(budgetMs, PAGE_TIMEOUT), 300000);
+  if (!r.ok) { out.note = 'fiche injoignable (' + r.note + ')'; return out; }
+  const html = r.html;
+  // site web / page contact de la structure : liens externes hors ministère/réseaux
+  const reA = /href="(https?:\/\/[^"#]+)"/gi;
+  const seen = {};
+  let m, site = null, contact = null;
+  while ((m = reA.exec(html)) !== null) {
+    let abs;
+    try { abs = new URL(m[1], r.url).href; } catch (e) { continue; }
+    const h = hostOf(abs);
+    if (!h || seen[h]) continue;
+    seen[h] = 1;
+    if (FN_BLOCK.test(h) || TAVILY_BLOCK.test(h)) continue;
+    if (!site) site = abs;
+    if (!contact && /(contact|nous-contacter|contacter)/i.test(abs)) contact = abs;
+  }
+  // emails : ceux de la structure — jamais @francenum.gouv.fr ni du ministère
+  const emails = {};
+  harvestEmails(html, 0, emails, hostOf(r.url));
+  let email = null, bestScore = -1;
+  for (const e in emails) {
+    const dom = e.split('@')[1];
+    if (!dom || FN_BLOCK.test(dom)) continue;
+    if (emails[e] > bestScore) { bestScore = emails[e]; email = e; }
+  }
+  if (email) {
+    let mx = false;
+    try {
+      mx = await Promise.race([
+        dnsPromises.resolveMx(email.split('@')[1]).then(function () { return true; }),
+        new Promise(function (r2) { setTimeout(function () { r2(false); }, 2000); })
+      ]);
+    } catch (e) { mx = false; }
+    if (!mx) { out.note = 'email trouvé mais domaine sans MX'; email = null; }
+  }
+  if (site) out.website = site;
+  if (email) out.email = email;
+  if (contact) out.contact = contact;
+  if (out.website || out.email || out.contact) {
+    out.confidence = 55;
+    out.note = 'extrait de la fiche France Num';
+  } else {
+    out.note = 'fiche France Num sans contact de la structure';
   }
   return out;
 }
@@ -525,16 +590,17 @@ async function opDescribe(body) {
 async function opLookup(body) {
   const ent = (body && body.entity) || {};
   const engines = (Array.isArray(body && body.engines) && body.engines.length)
-    ? body.engines : ['officiel', 'tavily', 'scrape', 'prospector'];
+    ? body.engines : ['officiel', 'tavily', 'scrape', 'prospector', 'francenum'];
   const wants = function (id) { return engines.indexOf(id) !== -1; };
   const started = Date.now();
   const left = function () { return DEADLINE_MS - (Date.now() - started); };
-  const ctx = { website: cleanUrl(ent.siteWeb) || null, email: null, source: null, confidence: 0 };
+  const ctx = { website: cleanUrl(ent.siteWeb) || null, email: null, contact: null, source: null, confidence: 0 };
   const results = [];
   function absorb(r) {
     if (!r) return;
     results.push(r);
     if (r.website && !ctx.website) ctx.website = r.website;
+    if (r.contact && !ctx.contact) ctx.contact = r.contact;
     if (r.email && (r.confidence || 0) > ctx.confidence) {
       ctx.email = r.email;
       ctx.source = r.source || r.engine;
@@ -545,8 +611,9 @@ async function opLookup(body) {
   if (!ctx.website && wants('tavily') && left() > 2500) absorb(await engTavily(ent));
   if (ctx.website && wants('scrape') && left() > 2000) absorb(await engScrape(ctx.website, left() - 300));
   if (ctx.website && wants('prospector') && left() > 3000) absorb(await engProspector(ctx.website, left() - 200));
-  const best = (ctx.email || ctx.website)
-    ? { email: ctx.email, website: ctx.website, source: ctx.source, confidence: ctx.confidence }
+  if (wants('francenum') && ent.fnFiche && (!ctx.email || !ctx.website) && left() > 2500) absorb(await engFrancenum(ent, left() - 300));
+  const best = (ctx.email || ctx.website || ctx.contact)
+    ? { email: ctx.email, website: ctx.website, contact: ctx.contact, source: ctx.source, confidence: ctx.confidence }
     : null;
   return { ok: true, type: ent.type || '', best: best, results: results };
 }

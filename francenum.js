@@ -43,9 +43,12 @@
 // compatible associations ({t, o, l, p}) pour que les tooltips de survol
 // d'enrich.js fonctionnent sans modification. Clés marqueurs : 'f:<uuid>'.
 //
-// ✨ Enrich France Num : bouton dédié dans chaque fiche/popup activateur —
-// site web + email + description d'activité (chaîne /ft/email describe puis
-// lookup, Wikidata en repli ; cache IndexedDB dédié, cf. section Enrich).
+// ✨ Enrich France Num : bloc contact dédié dans chaque fiche/popup
+// activateur — description, site web, email, page contact ; escalier
+// DÉTERMINISTE Wikidata → describe → lookup (fiche France Num en dernier
+// recours côté serveur) ; les résultats faux se rejettent (⚠️ : blacklist
+// par domaine, escalier rejoué) et tout se corrige à la main (✏️ prioritaire,
+// jamais écrasé) ; cache IndexedDB dédié, cf. section Enrich.
 
 var FN_URL = '/api/activateurs/exports/json';
 var FN_VERSION = 2;          // bump = invalidation du cache IndexedDB
@@ -98,14 +101,22 @@ function fnIdbSet(key, val) {
   }).catch(function () { /* cache best-effort */ });
 }
 
-// ---------- Enrich France Num (site web + email + description) ----------
-// Cache dédié (clé « enr » de la même base IndexedDB, TTL 30 j) + bloc de
-// fiche/popup + chaîne FN.enrich : POST /ft/email describe (description +
-// découverte du site officiel) puis lookup seedé par ce site (tavily puis
-// scrape : email), puis Wikidata (FAV.wikidata de favoris.js, best-effort)
-// pour les manquants. ⚠️ NE PAS seeder avec l'URL France Num du dataset :
-// c'est la fiche du ministère, pas le site de la structure — on y trouverait
-// des emails @francenum.gouv.fr au lieu des contacts de l'activateur.
+// ---------- Enrich France Num : contacts (site web, email, page contact) ----------
+// Bloc contact de chaque fiche/popup + escalier de recherche DÉTERMINISTE
+// (volontairement pas d'agent : une liste fixe de marches, rejouable) :
+//   1. Wikidata (FAV.wikidata, désambiguïsé par le nom + la ville) ;
+//   2. POST /ft/email op=describe (DDG + meta : description + site officiel) ;
+//   3. POST /ft/email op=lookup seedé par le site trouvé (engines tavily puis
+//      scrape : email + page contact, puis francenum : la fiche France Num de
+//      la structure, DERNIER recours côté serveur).
+// Validation déterministe (fnEnrOkSite/fnEnrOkEmail : domaine pas blacklisté,
+// pas un site du ministère, email plausible) + rejet humain ⚠️ Faux (blacklist
+// par domaine, purge des valeurs auto, escalier rejoué) + saisie manuelle ✏️
+// (prioritaire, jamais écrasée). ⚠️ L'URL France Num du dataset n'est jamais
+// seedée comme siteWeb : c'est la fiche du ministère, pas le site de la
+// structure (sinon on y trouverait des emails @francenum.gouv.fr).
+// Cache : même base IndexedDB, clé « enr », map id→{site, email, page, desc,
+// source, date, bad, manual}, TTL 30 j par enregistrement.
 var FN_ENR_TTL = 30 * 24 * 3600 * 1000; // 30 jours
 function fnEnrLoad() {
   if (FN.enrMap) return Promise.resolve(FN.enrMap);
@@ -123,12 +134,37 @@ function fnEnrSave() {
   if (!FN.enrMap) return;
   fnIdbSet('enr', { v: FN_VERSION, date: Date.now(), map: FN.enrMap });
 }
-// Données minimales portées par le bouton (l'attribut ne tient pas tout le row).
+// Données portées par les boutons du bloc (le row entier ne tient pas en attribut).
 function fnEnrD(row) {
-  return { id: row.id, nom: row.nom, ville: row.ville, dep: row.dep };
+  return { id: row.id, nom: row.nom, ville: row.ville, dep: row.dep, fiche: row.url || '' };
 }
-// Tooltip de survol dédié (lignes + marqueurs) — remplace ENR.tipAsso :
-// type, taille, ville + site/email/description dès qu'ils sont en cache.
+// Domaine normalisé d'une URL (pour la blacklist rec.bad).
+function fnEnrHost(u) {
+  try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+}
+function fnEnrBad(rec, host) {
+  if (!host) return false;
+  var bad = rec.bad || [];
+  for (var i = 0; i < bad.length; i++) {
+    if (host === bad[i] ||
+        host.slice(-(bad[i].length + 1)) === '.' + bad[i] ||
+        bad[i].slice(-(host.length + 1)) === '.' + host) return true;
+  }
+  return false;
+}
+// Validation déterministe (pas d'agent) : domaine pas blacklisté, pas un site
+// du ministère ; email plausible et jamais @francenum.gouv.fr.
+function fnEnrOkSite(rec, u) {
+  var h = fnEnrHost(u);
+  return !!(h &&
+    !/(^|\.)francenum\.gouv\.fr$|(^|\.)data\.gouv\.fr$|(^|\.)economie\.gouv\.fr$/.test(h) &&
+    !fnEnrBad(rec, h));
+}
+function fnEnrOkEmail(rec, e) {
+  return !!(e && /^[^@\s]+@[^@\s]+\.[a-z]{2,24}$/i.test(e) &&
+    !/@francenum\.gouv\.fr$/i.test(e) && !fnEnrBad(rec, e.split('@')[1]));
+}
+// Tooltip de survol dédié (lignes + marqueurs) : identité + contacts en cache.
 function fnTip(row) {
   var h = '<b>' + esc(row.nom) + '</b>';
   if (row.type) h += '<br>🧭 ' + esc(row.type);
@@ -139,26 +175,44 @@ function fnTip(row) {
     if (e.desc) h += '<br>💬 ' + esc(String(e.desc).slice(0, 180));
     if (e.site) h += '<br>🌐 ' + esc(e.site);
     if (e.email) h += '<br>✉️ ' + esc(e.email);
+    else if (e.page) h += '<br>📋 ' + esc(e.page);
   }
   return h;
 }
-// Bloc enrich des fiches/popups : ce qu'on sait déjà (cache) + bouton ✨.
+// Bloc contact : ce qu'on sait déjà (cache) + boutons ✨ / ⚠️ Faux / ✏️ Corriger.
 function fnEnrBlock(d) {
   if (!d || !d.id) return '';
   var e = (FN.enrMap && FN.enrMap[d.id]) || null;
   var h = '';
   if (e && e.desc) h += '<div class="enr-desc">💬 ' + esc(e.desc) +
     (e.source ? ' <span class="muted">(' + esc(e.source) + ')</span>' : '') + '</div>';
-  if (e && e.site) h += '<div>🌐 <a href="' + esc(e.site) + '" target="_blank" rel="noopener">' + esc(e.site) + '</a></div>';
+  if (e && e.site) h += '<div>🌐 <a href="' + esc(e.site) + '" target="_blank" rel="noopener">' +
+    esc(fnEnrHost(e.site) || e.site) + '</a></div>';
   if (e && e.email) h += '<div>✉️ <a href="mailto:' + esc(e.email) + '">' + esc(e.email) + '</a></div>';
+  if (e && e.page && !e.email) h += '<div>📋 <a href="' + esc(e.page) + '" target="_blank" rel="noopener">Page contact</a></div>';
+  if (e && e.manual) h += '<div class="muted">✏️ saisie manuelle</div>';
+  var attr = ' data-fnenr="' + esc(JSON.stringify(d)) + '"';
   var lab = FN.enrRunning[d.id] ? '⏳ Recherche en cours…'
-    : (e && (e.site || e.email || e.desc) ? '⟳ Re-vérifier' : '✨ Enrich (site web + email)');
-  h += '<span class="enr-btn" data-fnenr="' + esc(JSON.stringify(d)) +
-    '" onclick="FN.enrichGo(this,event)">' + lab + '</span>';
+    : (e && (e.site || e.email || e.desc || e.page) ? '⟳ Re-vérifier' : '✨ Enrich (site web + email)');
+  h += '<span class="enr-btn"' + attr + ' onclick="FN.enrichGo(this,event)">' + lab + '</span>';
+  if (e && !e.manual && (e.site || e.email)) {
+    h += ' <span class="enr-btn" title="Ce résultat est faux : le rejeter et chercher autre chose"' +
+      attr + ' onclick="FN.falseGo(this,event)">⚠️ Faux</span>';
+  }
+  h += ' <span class="enr-btn"' + attr + ' onclick="FN.editGo(this,event)">✏️ Corriger</span>';
   return '<div class="enr-block">' + h + '</div>';
 }
-// Clic ✨ : garde anti-double-clic, chaîne puis re-rendu du bloc en place
-// (popup ouvert ou ligne — le bloc se recrée depuis le cache fraîchement écrit).
+// Re-rendu d'un bloc en place (popup ouverte ou ligne de liste).
+function fnEnrRender(node, d) {
+  var block = null;
+  if (node && node.classList && node.classList.contains && node.classList.contains('enr-block')) block = node;
+  else if (node && node.closest) { try { block = node.closest('.enr-block'); } catch (e) { block = null; } }
+  if (!block || !block.parentNode) return;
+  var wrap = document.createElement('div');
+  wrap.innerHTML = fnEnrBlock(d);
+  if (wrap.firstChild) block.parentNode.replaceChild(wrap.firstChild, block);
+}
+// Clic ✨ : escalier complet (Wikidata → describe → lookup), puis re-rendu.
 FN.enrichGo = function (el, ev) {
   if (ev) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); }
   var d;
@@ -166,72 +220,178 @@ FN.enrichGo = function (el, ev) {
   if (!d || !d.id || FN.enrRunning[d.id]) return;
   FN.enrRunning[d.id] = true;
   el.textContent = '⏳ Recherche en cours…';
-  fnEnrLoad().then(function () {
+  return fnEnrLoad().then(function () {
     return FN.enrich(d);
   }).catch(function () { /* best-effort */ }).then(function () {
     delete FN.enrRunning[d.id];
-    var block = el.closest ? el.closest('.enr-block') : null;
-    if (block && block.parentNode) {
-      var wrap = document.createElement('div');
-      wrap.innerHTML = fnEnrBlock(d);
-      if (wrap.firstChild) block.parentNode.replaceChild(wrap.firstChild, block);
-    }
+    fnEnrRender(el, d);
   });
 };
-// Chaîne enrich : describe → lookup (seedé par le site découvert) → Wikidata.
-// Fusion prudente : on ne remplace jamais une valeur existante par du vide.
+// Clic ⚠️ Faux : blacklist des domaines courants (rec.bad), purge des valeurs
+// automatiques (jamais la saisie manuelle), escalier rejoué avec la blacklist.
+FN.falseGo = function (el, ev) {
+  if (ev) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); }
+  var d;
+  try { d = JSON.parse(el.getAttribute('data-fnenr') || 'null'); } catch (e) { return; }
+  if (!d || !d.id || FN.enrRunning[d.id]) return;
+  FN.enrRunning[d.id] = true;
+  el.textContent = '⏳…';
+  return fnEnrLoad().then(function () {
+    var rec = FN.enrMap[d.id] = FN.enrMap[d.id] || {};
+    var hosts = [];
+    if (rec.site) hosts.push(fnEnrHost(rec.site));
+    if (rec.email) hosts.push(rec.email.split('@')[1]);
+    rec.bad = rec.bad || [];
+    for (var i = 0; i < hosts.length; i++) {
+      if (hosts[i] && !fnEnrBad(rec, hosts[i])) rec.bad.push(hosts[i]);
+    }
+    if (!rec.manual) { // la saisie manuelle n'est JAMAIS purgée
+      delete rec.site; delete rec.email; delete rec.page;
+      delete rec.desc; delete rec.source;
+    }
+    rec.date = Date.now();
+    fnEnrSave();
+    return FN.enrich(d); // escalier rejoué avec la blacklist à jour
+  }).catch(function () { /* best-effort */ }).then(function () {
+    delete FN.enrRunning[d.id];
+    fnEnrRender(el, d);
+  });
+};
+// Clic ✏️ Corriger : formulaire local (site / email / page contact) — la
+// saisie est prioritaire sur toute recherche et n'est jamais écrasée.
+FN.editGo = function (el, ev) {
+  if (ev) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); }
+  var d;
+  try { d = JSON.parse(el.getAttribute('data-fnenr') || 'null'); } catch (e) { return; }
+  if (!d || !d.id) return;
+  var block = null;
+  try { block = el.closest('.enr-block'); } catch (e) { block = null; }
+  if (!block) return;
+  fnEnrLoad().then(function () {
+    var rec = FN.enrMap[d.id] = FN.enrMap[d.id] || {};
+    var form = document.createElement('form');
+    form.className = 'fn-edit';
+    form.addEventListener('submit', function (e2) {
+      e2.preventDefault();
+      var site = form._site.value.trim(), mail = form._mail.value.trim(), page = form._page.value.trim();
+      if (site && !/^https?:\/\//i.test(site)) site = 'https://' + site;
+      if (page && !/^https?:\/\//i.test(page)) page = 'https://' + page;
+      if (mail && !/^[^@\s]+@[^@\s]+\.[a-z]{2,24}$/i.test(mail)) {
+        form._mail.style.outline = '2px solid #dc2626';
+        return;
+      }
+      rec.manual = true;
+      if (site) rec.site = site; else delete rec.site;
+      if (mail) rec.email = mail; else delete rec.email;
+      if (page) rec.page = page; else delete rec.page;
+      rec.date = Date.now();
+      fnEnrSave();
+      fnEnrRender(block, d);
+    });
+    function mk(label, val, ph) {
+      var wrap = document.createElement('label');
+      wrap.className = 'fn-edit-l';
+      var sp = document.createElement('span');
+      sp.textContent = label;
+      var inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = val || '';
+      inp.placeholder = ph || '';
+      wrap.appendChild(sp);
+      wrap.appendChild(inp);
+      form.appendChild(wrap);
+      return inp;
+    }
+    form._site = mk('🌐 Site web', rec.site, 'https://…');
+    form._mail = mk('✉️ Email', rec.email, 'contact@…');
+    form._page = mk('📋 Page contact', rec.page, 'https://…/contact');
+    var rowB = document.createElement('div');
+    rowB.className = 'fn-edit-btns';
+    var ok = document.createElement('button');
+    ok.type = 'submit'; ok.className = 'enr-btn'; ok.textContent = '💾 Enregistrer';
+    var no = document.createElement('button');
+    no.type = 'button'; no.className = 'enr-btn'; no.textContent = '✖ Annuler';
+    no.addEventListener('click', function () { fnEnrRender(block, d); });
+    rowB.appendChild(ok);
+    rowB.appendChild(no);
+    form.appendChild(rowB);
+    block.innerHTML = '';
+    block.appendChild(form);
+  });
+};
+// Escalier déterministe : une promesse par marche, fusion « ne remplit que le
+// vide » — la saisie manuelle (rec.manual) reste reine, jamais écrasée.
 FN.enrich = function (d) {
   return fnEnrLoad().then(function () {
     var rec = FN.enrMap[d.id] = FN.enrMap[d.id] || {};
-    var site = rec.site || '', email = rec.email || '', desc = rec.desc || '',
-      source = rec.source || '';
-    var ent = { type: 'ent', nom: d.nom || '', siren: '', ville: d.ville || '', dep: d.dep || '' };
-    return fetch('/ft/email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ op: 'describe', entity: { type: ent.type, nom: ent.nom, siren: '', ville: ent.ville, dep: ent.dep, siteWeb: site } })
-    }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .then(function (j) {
-        if (j && j.ok && j.best) {
-          if (j.best.website && !site) site = j.best.website;
-          if (j.best.description) { desc = j.best.description; source = j.best.source || 'web'; }
-        }
-      }).catch(function () { /* service indisponible : la chaîne continue */ })
+    var site = rec.site || '', email = rec.email || '', page = rec.page || '',
+      desc = rec.desc || '', source = rec.source || '';
+    var manual = !!rec.manual;
+    var ent = { type: 'ent', nom: d.nom || '', siren: '', ville: d.ville || '', dep: d.dep || '', fnFiche: d.fiche || '' };
+    function post(op, engines) {
+      var body = {
+        op: op,
+        entity: { type: 'ent', nom: ent.nom, siren: '', ville: ent.ville, dep: ent.dep, siteWeb: site, fnFiche: ent.fnFiche }
+      };
+      if (engines) body.engines = engines;
+      return fetch('/ft/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    }
+    // Marche 1 — Wikidata (désambiguïsé par le nom + la ville)
+    var p1 = ((!site || !email) && typeof FAV !== 'undefined' && typeof FAV.wikidata === 'function')
+      ? FAV.wikidata({ type: 'ent', nom: ent.nom, ville: ent.ville }).then(function (w) {
+          if (!w) return;
+          if (!site && w.site && fnEnrOkSite(rec, w.site)) site = w.site;
+          if (!email && w.email && fnEnrOkEmail(rec, w.email)) email = w.email;
+        }).catch(function () { /* moteur best-effort */ })
+      : Promise.resolve();
+    return p1
+      // Marche 2 — describe : description + découverte du site officiel. Si le
+      // site découvert est rejeté (blacklist), sa description l'est aussi.
       .then(function () {
-        return fetch('/ft/email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            op: 'lookup',
-            entity: { type: 'ent', nom: ent.nom, siren: '', ville: ent.ville, dep: ent.dep, siteWeb: site },
-            engines: ['tavily', 'scrape']
-          })
-        }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-          .then(function (j) {
-            if (j && j.ok && j.best) {
-              if (j.best.website && !site) site = j.best.website;
-              if (j.best.email && !email) email = j.best.email;
-            }
-          }).catch(function () { /* best-effort */ });
+        return post('describe').then(function (j) {
+          var b = (j && j.ok && j.best) || null;
+          if (!b) return;
+          var wok = b.website && fnEnrOkSite(rec, b.website);
+          if (!site && wok) site = b.website;
+          if (!manual && b.description && (wok || !b.website)) {
+            desc = b.description;
+            source = b.source || 'web';
+          }
+        }).catch(function () { /* service indisponible : la chaîne continue */ });
       })
+      // Marche 3 — lookup : email, site, page contact ; la fiche France Num
+      // reste le DERNIER recours du serveur (moteur « francenum »).
       .then(function () {
-        if ((!site || !email) && typeof FAV !== 'undefined' && typeof FAV.wikidata === 'function') {
-          return FAV.wikidata({ type: 'ent', nom: ent.nom, ville: ent.ville }).then(function (w) {
-            if (!w) return;
-            if (!site && w.site) site = w.site;
-            if (!email && w.email) email = w.email;
-          }).catch(function () { /* moteur best-effort */ });
-        }
+        return post('lookup', ['tavily', 'scrape', 'francenum']).then(function (j) {
+          var b = (j && j.ok && j.best) || null;
+          if (!b) return;
+          if (!site && b.website && fnEnrOkSite(rec, b.website)) site = b.website;
+          if (!email && b.email && fnEnrOkEmail(rec, b.email)) email = b.email;
+          if (!page && b.contact && fnEnrOkSite(rec, b.contact)) page = b.contact;
+        }).catch(function () { /* best-effort */ });
       })
       .then(function () {
         var changed = false;
         if (site && site !== rec.site) { rec.site = site; changed = true; }
         if (email && !rec.email) { rec.email = email; changed = true; }
-        if (desc && desc !== rec.desc) { rec.desc = desc; rec.source = source; changed = true; }
+        if (page && !rec.page) { rec.page = page; changed = true; }
+        if (!manual && desc && desc !== rec.desc) { rec.desc = desc; rec.source = source; changed = true; }
         if (changed) { rec.date = Date.now(); fnEnrSave(); }
       });
   });
 };
+// Styles minimaux du formulaire ✏️ (auto-injectés : le module reste autonome).
+if (typeof document !== 'undefined' && document.head) {
+  try {
+    var st = document.createElement('style');
+    st.textContent = '.fn-edit-l{display:block;margin:2px 0}.fn-edit-l span{display:inline-block;width:86px;font-size:11px}.fn-edit-l input{width:150px;max-width:100%;font-size:12px;padding:1px 4px}.fn-edit-btns{margin-top:4px}';
+    document.head.appendChild(st);
+  } catch (e) { /* sans DOM : rien */ }
+}
 
 // ---------- Normalisation ----------
 // Noms de départements/villes comparables : apostrophes U+2019 ET U+0027,
