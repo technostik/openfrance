@@ -42,6 +42,10 @@
 // (FAV.starHtml renvoie '' sans id) ; les lignes/marqueurs portent un « shim »
 // compatible associations ({t, o, l, p}) pour que les tooltips de survol
 // d'enrich.js fonctionnent sans modification. Clés marqueurs : 'f:<uuid>'.
+//
+// ✨ Enrich France Num : bouton dédié dans chaque fiche/popup activateur —
+// site web + email + description d'activité (chaîne /ft/email describe puis
+// lookup, Wikidata en repli ; cache IndexedDB dédié, cf. section Enrich).
 
 var FN_URL = '/api/activateurs/exports/json';
 var FN_VERSION = 2;          // bump = invalidation du cache IndexedDB
@@ -56,7 +60,9 @@ var FN = {
   total: 0,          // nombre d'activateurs en base (statuts)
   promise: null,     // chargement en cours (dédoublonné)
   seq: 0,            // jeton anti-course du mode composeur
-  lastExt: null      // dernier annuaire France Num affiché (mode étendu)
+  lastExt: null,     // dernier annuaire France Num affiché (mode étendu)
+  enrMap: null,      // cache enrich : id -> {site, email, desc, source, date}
+  enrRunning: {}     // id -> true (Enrich France Num en cours)
 };
 
 // ---------- IndexedDB dédié (store « kv », clé « all » : {v, date, rows}) ----------
@@ -91,6 +97,141 @@ function fnIdbSet(key, val) {
     });
   }).catch(function () { /* cache best-effort */ });
 }
+
+// ---------- Enrich France Num (site web + email + description) ----------
+// Cache dédié (clé « enr » de la même base IndexedDB, TTL 30 j) + bloc de
+// fiche/popup + chaîne FN.enrich : POST /ft/email describe (description +
+// découverte du site officiel) puis lookup seedé par ce site (tavily puis
+// scrape : email), puis Wikidata (FAV.wikidata de favoris.js, best-effort)
+// pour les manquants. ⚠️ NE PAS seeder avec l'URL France Num du dataset :
+// c'est la fiche du ministère, pas le site de la structure — on y trouverait
+// des emails @francenum.gouv.fr au lieu des contacts de l'activateur.
+var FN_ENR_TTL = 30 * 24 * 3600 * 1000; // 30 jours
+function fnEnrLoad() {
+  if (FN.enrMap) return Promise.resolve(FN.enrMap);
+  return fnIdbGet('enr').then(function (c) {
+    FN.enrMap = (c && c.v === FN_VERSION && c.map) ? c.map : {};
+    var now = Date.now(), dirty = false;
+    for (var k in FN.enrMap) {
+      if (now - (FN.enrMap[k].date || 0) > FN_ENR_TTL) { delete FN.enrMap[k]; dirty = true; }
+    }
+    if (dirty) fnEnrSave();
+    return FN.enrMap;
+  }).catch(function () { FN.enrMap = FN.enrMap || {}; return FN.enrMap; });
+}
+function fnEnrSave() {
+  if (!FN.enrMap) return;
+  fnIdbSet('enr', { v: FN_VERSION, date: Date.now(), map: FN.enrMap });
+}
+// Données minimales portées par le bouton (l'attribut ne tient pas tout le row).
+function fnEnrD(row) {
+  return { id: row.id, nom: row.nom, ville: row.ville, dep: row.dep };
+}
+// Tooltip de survol dédié (lignes + marqueurs) — remplace ENR.tipAsso :
+// type, taille, ville + site/email/description dès qu'ils sont en cache.
+function fnTip(row) {
+  var h = '<b>' + esc(row.nom) + '</b>';
+  if (row.type) h += '<br>🧭 ' + esc(row.type);
+  if (row.taille) h += ' · 👥 ' + esc(row.taille);
+  h += '<br>📍 ' + esc(row.ville || '') + (row.cp ? ' (' + esc(row.cp) + ')' : '');
+  var e = FN.enrMap && FN.enrMap[row.id];
+  if (e) {
+    if (e.desc) h += '<br>💬 ' + esc(String(e.desc).slice(0, 180));
+    if (e.site) h += '<br>🌐 ' + esc(e.site);
+    if (e.email) h += '<br>✉️ ' + esc(e.email);
+  }
+  return h;
+}
+// Bloc enrich des fiches/popups : ce qu'on sait déjà (cache) + bouton ✨.
+function fnEnrBlock(d) {
+  if (!d || !d.id) return '';
+  var e = (FN.enrMap && FN.enrMap[d.id]) || null;
+  var h = '';
+  if (e && e.desc) h += '<div class="enr-desc">💬 ' + esc(e.desc) +
+    (e.source ? ' <span class="muted">(' + esc(e.source) + ')</span>' : '') + '</div>';
+  if (e && e.site) h += '<div>🌐 <a href="' + esc(e.site) + '" target="_blank" rel="noopener">' + esc(e.site) + '</a></div>';
+  if (e && e.email) h += '<div>✉️ <a href="mailto:' + esc(e.email) + '">' + esc(e.email) + '</a></div>';
+  var lab = FN.enrRunning[d.id] ? '⏳ Recherche en cours…'
+    : (e && (e.site || e.email || e.desc) ? '⟳ Re-vérifier' : '✨ Enrich (site web + email)');
+  h += '<span class="enr-btn" data-fnenr="' + esc(JSON.stringify(d)) +
+    '" onclick="FN.enrichGo(this,event)">' + lab + '</span>';
+  return '<div class="enr-block">' + h + '</div>';
+}
+// Clic ✨ : garde anti-double-clic, chaîne puis re-rendu du bloc en place
+// (popup ouvert ou ligne — le bloc se recrée depuis le cache fraîchement écrit).
+FN.enrichGo = function (el, ev) {
+  if (ev) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); }
+  var d;
+  try { d = JSON.parse(el.getAttribute('data-fnenr') || 'null'); } catch (e) { return; }
+  if (!d || !d.id || FN.enrRunning[d.id]) return;
+  FN.enrRunning[d.id] = true;
+  el.textContent = '⏳ Recherche en cours…';
+  fnEnrLoad().then(function () {
+    return FN.enrich(d);
+  }).catch(function () { /* best-effort */ }).then(function () {
+    delete FN.enrRunning[d.id];
+    var block = el.closest ? el.closest('.enr-block') : null;
+    if (block && block.parentNode) {
+      var wrap = document.createElement('div');
+      wrap.innerHTML = fnEnrBlock(d);
+      if (wrap.firstChild) block.parentNode.replaceChild(wrap.firstChild, block);
+    }
+  });
+};
+// Chaîne enrich : describe → lookup (seedé par le site découvert) → Wikidata.
+// Fusion prudente : on ne remplace jamais une valeur existante par du vide.
+FN.enrich = function (d) {
+  return fnEnrLoad().then(function () {
+    var rec = FN.enrMap[d.id] = FN.enrMap[d.id] || {};
+    var site = rec.site || '', email = rec.email || '', desc = rec.desc || '',
+      source = rec.source || '';
+    var ent = { type: 'ent', nom: d.nom || '', siren: '', ville: d.ville || '', dep: d.dep || '' };
+    return fetch('/ft/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ op: 'describe', entity: { type: ent.type, nom: ent.nom, siren: '', ville: ent.ville, dep: ent.dep, siteWeb: site } })
+    }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (j) {
+        if (j && j.ok && j.best) {
+          if (j.best.website && !site) site = j.best.website;
+          if (j.best.description) { desc = j.best.description; source = j.best.source || 'web'; }
+        }
+      }).catch(function () { /* service indisponible : la chaîne continue */ })
+      .then(function () {
+        return fetch('/ft/email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            op: 'lookup',
+            entity: { type: 'ent', nom: ent.nom, siren: '', ville: ent.ville, dep: ent.dep, siteWeb: site },
+            engines: ['tavily', 'scrape']
+          })
+        }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function (j) {
+            if (j && j.ok && j.best) {
+              if (j.best.website && !site) site = j.best.website;
+              if (j.best.email && !email) email = j.best.email;
+            }
+          }).catch(function () { /* best-effort */ });
+      })
+      .then(function () {
+        if ((!site || !email) && typeof FAV !== 'undefined' && typeof FAV.wikidata === 'function') {
+          return FAV.wikidata({ type: 'ent', nom: ent.nom, ville: ent.ville }).then(function (w) {
+            if (!w) return;
+            if (!site && w.site) site = w.site;
+            if (!email && w.email) email = w.email;
+          }).catch(function () { /* moteur best-effort */ });
+        }
+      })
+      .then(function () {
+        var changed = false;
+        if (site && site !== rec.site) { rec.site = site; changed = true; }
+        if (email && !rec.email) { rec.email = email; changed = true; }
+        if (desc && desc !== rec.desc) { rec.desc = desc; rec.source = source; changed = true; }
+        if (changed) { rec.date = Date.now(); fnEnrSave(); }
+      });
+  });
+};
 
 // ---------- Normalisation ----------
 // Noms de départements/villes comparables : apostrophes U+2019 ET U+0027,
@@ -174,6 +315,7 @@ function fnNormalize(r) {
 
 // ---------- Chargement unique (cache IndexedDB + proxy SW) ----------
 function fnEnsure() {
+  fnEnrLoad(); // cache enrich (site/email) — best-effort, sans attendre
   if (FN.rows) return Promise.resolve(FN.rows);
   if (FN.promise) return FN.promise;
   FN.promise = fnIdbGet('all').then(function (cached) {
@@ -260,6 +402,7 @@ function fnShim(row) {
 }
 function fnPopup(row) {
   var html = '<b>' + esc(row.nom) + '</b>';
+  html += fnEnrBlock(fnEnrD(row)); // bloc enrich (site web + email, cf. FN.enrich)
   if (row.type) html += '<br><i>🧭 ' + esc(row.type) + '</i>';
   if (row.adr || row.ville) html += '<br>' + esc(row.adr || '') +
     (row.adr && row.ville ? ' — ' : '') + esc([row.cp, row.ville].filter(Boolean).join(' '));
@@ -301,7 +444,7 @@ function fnRowEl(row, markerBy) {
   // tooltip de survol enrichi (best-effort : enrich.js peut ne pas être là)
   try {
     if (typeof ENR !== 'undefined' && typeof enrWireRow === 'function') {
-      enrWireRow(el, ENR.tipAsso, fnShim(row));
+      enrWireRow(el, fnTip, row);
     }
   } catch (e) { /* sans enrich : pas de tooltip */ }
   return el;
@@ -309,7 +452,7 @@ function fnRowEl(row, markerBy) {
 // Tooltip de survol des marqueurs (best-effort, cf. fnRowEl).
 function fnWireTip(m, row) {
   try {
-    if (typeof ENR !== 'undefined' && ENR.wireMarker) ENR.wireMarker(m, ENR.tipAsso, fnShim(row));
+    if (typeof ENR !== 'undefined' && ENR.wireMarker) ENR.wireMarker(m, fnTip, row);
   } catch (e) { /* sans enrich : pas de tooltip */ }
 }
 // Marqueurs d'un groupe Leaflet (composeur/étendu) + étalement spirale.
@@ -324,7 +467,9 @@ function fnPlaceMarkers(rows, cap) {
     var m = L.circleMarker([row.lat, row.lng], {
       radius: 5, weight: 1, color: '#0f172a', fillColor: FN_COLOR, fillOpacity: 0.85
     });
-    m.bindPopup(fnPopup(row));
+    // popup dynamique : ré-évaluée à chaque ouverture (le bloc enrich se
+    // rafraîchit après un clic ✨ sans re-render de la carte)
+    m.bindPopup(function () { return fnPopup(row); });
     m.addTo(group);
     markerBy['f:' + row.id] = m;
     fnWireTip(m, row);
