@@ -22,7 +22,7 @@
 //    effectifs, CA, labels, état, forme) ne s'appliquent pas ;
 //  - Recherche étendue (corp_ext.js) : #extFnOnly — mode annuaire (comme
 //    French Tech) : ville cible → activateurs du rayon triés par distance ;
-//    champ ville effacé → toute la zone (EXT.zone) triée par nom. Le champ
+//    champ ville effacé → toute la base (comme French Tech) triée par nom. Le champ
 //    « métier » devient un filtre texte local (pas de ROMEO/La Bonne Boite).
 //
 // Chargement UNIQUE (fnEnsure) : fetch du proxy (cache disque service worker
@@ -44,7 +44,9 @@
 // d'enrich.js fonctionnent sans modification. Clés marqueurs : 'f:<uuid>'.
 
 var FN_URL = '/api/activateurs/exports/json';
-var FN_VERSION = 1;          // bump = invalidation du cache IndexedDB
+var FN_VERSION = 2;          // bump = invalidation du cache IndexedDB
+                            // v2 (10/2026) : l'export JSON ODS utilise les noms de champs
+                            // BRUTS snake_case, pas les libellés (piège n°29)
 var FN_TTL = 7 * 24 * 3600 * 1000; // 7 jours (miroir du TTL /api/ du SW)
 var FN_COLOR = '#a78bfa';    // violet France Num (marqueurs + pastilles listes)
 var FN_IDB = 'openfrance-francenum';
@@ -104,6 +106,32 @@ function fld(o, name) {
   var alt = name.indexOf('\u2019') !== -1 ? name.replace(/\u2019/g, "'") : name.replace(/'/g, '\u2019');
   return o[alt];
 }
+// ⚠️ PIÈGE n°29 (bis, vérifié en prod 14/10/2026) : l'export CSV ODS (explore
+// v2.1) est servi avec use_labels=true → colonnes = libellés français (« Nom
+// de la structure »), MAIS l'export JSON est servi SANS use_labels → clés =
+// noms BRUTS snake_case du backend (« nom_de_la_structure »,
+// « perimetre_d_intervention »…) et « geoloc » y est un OBJET {lon, lat}
+// (latitude/longitude en chaînes). Pour chaque champ on tente donc : le nom
+// brut, puis le libellé (variantes d'apostrophe couvertes par fld).
+function fldAny(o, names) {
+  for (var i = 0; i < names.length; i++) {
+    var v = fld(o, names[i]);
+    if (v !== undefined && v !== null) return v;
+  }
+  return null;
+}
+// geoloc : objet {lon, lat} (export JSON) ou chaîne « lat, lng » (CSV).
+function fnGeoloc(o) {
+  var g = fldAny(o, ['geoloc']);
+  if (!g) return null;
+  if (typeof g === 'object') {
+    var la = parseFloat(g.lat), lo = parseFloat(g.lon != null ? g.lon : g.lng);
+    return (!isNaN(la) && !isNaN(lo)) ? [la, lo] : null;
+  }
+  var s = String(g).split(',');
+  var la2 = parseFloat(s[0]), lo2 = parseFloat(s[1]);
+  return (!isNaN(la2) && !isNaN(lo2)) ? [la2, lo2] : null;
+}
 // Valeur texte : les champs séparés peuvent arriver en tableau selon l'export.
 function fnTxt(v) {
   if (v == null) return '';
@@ -111,30 +139,30 @@ function fnTxt(v) {
   return String(v).trim();
 }
 function fnNormalize(r) {
-  var lat = parseFloat(fld(r, 'latitude')), lng = parseFloat(fld(r, 'longitude'));
-  if (isNaN(lat) || isNaN(lng)) { // repli sur geoloc « lat, lng »
-    var g = String(fld(r, 'geoloc') || '').split(',');
-    lat = parseFloat(g[0]); lng = parseFloat(g[1]);
-    if (isNaN(lat) || isNaN(lng)) { lat = null; lng = null; }
+  var lat = parseFloat(fldAny(r, ['latitude'])), lng = parseFloat(fldAny(r, ['longitude']));
+  if (isNaN(lat) || isNaN(lng)) { // repli sur geoloc (objet JSON ou « lat, lng »)
+    var g = fnGeoloc(r);
+    lat = g ? g[0] : null; lng = g ? g[1] : null;
   }
   var row = {
-    id: fnTxt(fld(r, 'Identifiant de la structure')) || fnTxt(fld(r, '__id')),
-    nom: fnTxt(fld(r, 'Nom de la structure')),
-    type: fnTxt(fld(r, 'Type')),
-    cat: fnTxt(fld(r, 'Catégorie')),
-    taille: fnTxt(fld(r, 'Taille de la structure')),
-    date: fnTxt(fld(r, 'Date de création')).slice(0, 10),
-    adr: fnTxt(fld(r, 'Adresse')),
-    cp: fnTxt(fld(r, 'Code postal')),
-    ville: fnTxt(fld(r, 'Ville')),
-    dep: fnTxt(fld(r, 'Département')),
-    region: fnTxt(fld(r, 'Région')),
-    perim: fnTxt(fld(r, 'Périmètre d\u2019intervention')),
-    sect: fnTxt(fld(r, 'Secteurs_domaines_sous_domaines')),
-    labels: fnTxt(fld(r, 'Labels')),
-    certifs: fnTxt(fld(r, 'Certifications')),
-    reseaux: fnTxt(fld(r, 'Réseaux')),
-    url: fnTxt(fld(r, 'Lien url (site France Num)')),
+    id: fnTxt(fldAny(r, ['identifiant_de_la_structure', 'Identifiant de la structure'])) ||
+      fnTxt(fldAny(r, ['__id'])),
+    nom: fnTxt(fldAny(r, ['nom_de_la_structure', 'Nom de la structure'])),
+    type: fnTxt(fldAny(r, ['type', 'Type'])),
+    cat: fnTxt(fldAny(r, ['categorie', 'Catégorie'])),
+    taille: fnTxt(fldAny(r, ['taille_de_la_structure', 'Taille de la structure'])),
+    date: fnTxt(fldAny(r, ['date_de_creation', 'Date de création'])).slice(0, 10),
+    adr: fnTxt(fldAny(r, ['adresse', 'Adresse'])),
+    cp: fnTxt(fldAny(r, ['code_postal', 'Code postal'])),
+    ville: fnTxt(fldAny(r, ['ville', 'Ville'])),
+    dep: fnTxt(fldAny(r, ['departement', 'Département'])),
+    region: fnTxt(fldAny(r, ['region', 'Région'])),
+    perim: fnTxt(fldAny(r, ['perimetre_d_intervention', 'Périmètre d\u2019intervention'])),
+    sect: fnTxt(fldAny(r, ['secteurs_domaines_sous_domaines', 'Secteurs_domaines_sous_domaines'])),
+    labels: fnTxt(fldAny(r, ['labels', 'Labels'])),
+    certifs: fnTxt(fldAny(r, ['certifications', 'Certifications'])),
+    reseaux: fnTxt(fldAny(r, ['reseaux', 'Réseaux'])),
+    url: fnTxt(fldAny(r, ['lien_url_site_france_num', 'Lien url (site France Num)'])),
     lat: lat, lng: lng
   };
   row._dn = fnNormName(row.dep);   // nom de département normalisé (croisement zone)
@@ -334,11 +362,15 @@ function fnCorpSearch() {
   fnEnsure().then(function () {
     if (seq !== FN.seq || !CO.active) return;
     var mode = coMode();
-    var deps = (typeof coZoneDeps === 'function') ? coZoneDeps() : (CO.zone || []);
-    var opts = { deps: deps, q: parseAnnQuery(CO.q || '') };
+    // Ciblage géo identique aux entreprises : near/commune → ville/rayon SANS
+    // filtre zone (le rayon suffit : un activateur d'Essonne à 15 km de Paris
+    // doit sortir), dep → département(s) de la zone.
+    var opts = { q: parseAnnQuery(CO.q || '') };
     if (mode === 'near' || mode === 'commune') {
       opts.target = CO.target;
       opts.radius = mode === 'near' ? CO.radius : 0;
+    } else {
+      opts.deps = (typeof coZoneDeps === 'function') ? coZoneDeps() : (CO.zone || []);
     }
     var rows = fnFilter(opts);
     if (mode === 'near') fnSortByDist(rows); else fnSortByName(rows);
@@ -387,8 +419,9 @@ function fnCorpSearch() {
 
 // ---------- Recherche étendue (corp_ext.js, case #extFnOnly) ----------
 // Mode annuaire (comme French Tech) : ville cible → activateurs du rayon
-// (tri par distance) ; champ ville effacé → toute la zone (tri par nom).
-// Le champ « métier » devient un filtre texte local — pas de ROMEO/LBB.
+// (tri par distance, SANS filtre zone — miroir de extShowFTAround) ; champ
+// ville effacé → toute la base (tri par nom). Le champ « métier » devient un
+// filtre texte local — pas de ROMEO/LBB.
 function extShowFNAround() {
   var status = document.getElementById('extStatus');
   var seq = ++EXT.seq;
@@ -401,8 +434,9 @@ function extShowFNAround() {
   status.textContent = '⏳ Activateurs France Num…';
   fnEnsure().then(function () {
     if (seq !== EXT.seq) return;
-    var deps = (typeof extZoneDeps === 'function') ? extZoneDeps() : (EXT.zone || []);
-    var opts = { deps: deps, q: q };
+    // Comme French Tech (extShowFTAround) : PAS de filtre zone — rayon seul
+    // autour de la ville cible ; champ effacé → base entière.
+    var opts = { q: q };
     if (EXT.target) { opts.target = EXT.target; opts.radius = EXT.radius; }
     var rows = fnFilter(opts);
     if (EXT.target) fnSortByDist(rows); else fnSortByName(rows);
@@ -426,7 +460,7 @@ function fnExtRender() {
 
   status.innerHTML = '🇫🇷 <b>' + data.rows.length.toLocaleString('fr-FR') + ' activateur(s) France Num</b>' +
     (EXT.target ? ' autour de ' + esc(EXT.target.nom) + ' — rayon ' + EXT.radius + ' km' :
-      ' dans la zone ' + esc((typeof extZoneLabel === 'function') ? extZoneLabel() : '')) +
+      ' — France entière') +
     (data.rows.length < data.total ? ' · base : ' + data.total.toLocaleString('fr-FR') : '');
 
   rows.forEach(function (row) { box.appendChild(fnRowEl(row, EXT.markerBySiren)); });
@@ -438,13 +472,13 @@ function fnExtRender() {
   }
   if (!data.rows.length) {
     extInfo('<span class="muted">🇫🇷 0 activateur France Num ' +
-      (EXT.target ? 'dans un rayon de ' + EXT.radius + ' km autour de ' + esc(EXT.target.nom) : 'dans cette zone') +
+      (EXT.target ? 'dans un rayon de ' + EXT.radius + ' km autour de ' + esc(EXT.target.nom) : 'en France entière') +
       ' (sur ' + data.total + ' en base) — élargissez le rayon ou changez de zone.</span>');
     setStatus('Annuaire France Num : 0 activateur dans la zone');
     return;
   }
   extInfo('<span class="muted">✅ ' + data.rows.length + ' activateur(s) France Num' +
-    (EXT.target ? ' autour de ' + esc(EXT.target.nom) + ' (' + EXT.radius + ' km)' : ' dans la zone') +
+    (EXT.target ? ' autour de ' + esc(EXT.target.nom) + ' (' + EXT.radius + ' km)' : ' dans toute la base') +
     ' · 📍 positions = coordonnées du dataset (sièges indicatifs), fiche France Num au clic.</span>');
   setStatus('Annuaire France Num : ' + data.rows.length + ' activateur(s)');
 
