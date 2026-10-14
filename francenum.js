@@ -45,10 +45,11 @@
 //
 // ✨ Enrich France Num : bloc contact dédié dans chaque fiche/popup
 // activateur — description, site web, email, page contact ; escalier
-// DÉTERMINISTE Wikidata → describe → lookup (fiche France Num en dernier
-// recours côté serveur) ; les résultats faux se rejettent (⚠️ : blacklist
-// par domaine, escalier rejoué) et tout se corrige à la main (✏️ prioritaire,
-// jamais écrasé) ; cache IndexedDB dédié, cf. section Enrich.
+// DÉTERMINISTE : fiche France Num D'ABORD (marche 0 — source canonique : le
+// web générique se trompe souvent sur les petites structures locales), puis
+// Wikidata → describe → lookup ; les résultats faux se rejettent (⚠️ :
+// blacklist par domaine, escalier rejoué) et tout se corrige à la main (✏️
+// prioritaire, jamais écrasé) ; cache IndexedDB dédié, cf. section Enrich.
 
 var FN_URL = '/api/activateurs/exports/json';
 var FN_VERSION = 2;          // bump = invalidation du cache IndexedDB
@@ -104,11 +105,16 @@ function fnIdbSet(key, val) {
 // ---------- Enrich France Num : contacts (site web, email, page contact) ----------
 // Bloc contact de chaque fiche/popup + escalier de recherche DÉTERMINISTE
 // (volontairement pas d'agent : une liste fixe de marches, rejouable) :
+//   0. source canonique : lookup moteur « francenum » seul — la fiche France
+//      Num de la structure (site, email, page contact, description), AVANT
+//      le web générique : placé en dernier avec un verrou « site+email
+//      absents », le moteur ne tournait jamais (le web trouvait toujours
+//      *un* site, souvent faux — piège « Nivalis ») ;
 //   1. Wikidata (FAV.wikidata, désambiguïsé par le nom + la ville) ;
-//   2. POST /ft/email op=describe (DDG + meta : description + site officiel) ;
+//   2. POST /ft/email op=describe (DDG + meta : description + site officiel,
+//      seedé par le site de la fiche quand elle l'a donné) ;
 //   3. POST /ft/email op=lookup seedé par le site trouvé (engines tavily puis
-//      scrape : email + page contact, puis francenum : la fiche France Num de
-//      la structure, DERNIER recours côté serveur).
+//      scrape : email + page contact ; francenum y reste en secours).
 // Validation déterministe (fnEnrOkSite/fnEnrOkEmail : domaine pas blacklisté,
 // pas un site du ministère, email plausible) + rejet humain ⚠️ Faux (blacklist
 // par domaine, purge des valeurs auto, escalier rejoué) + saisie manuelle ✏️
@@ -321,6 +327,7 @@ FN.editGo = function (el, ev) {
 };
 // Escalier déterministe : une promesse par marche, fusion « ne remplit que le
 // vide » — la saisie manuelle (rec.manual) reste reine, jamais écrasée.
+// Marche 0 = source canonique (fiche France Num) AVANT le web générique.
 FN.enrich = function (d) {
   return fnEnrLoad().then(function () {
     var rec = FN.enrMap[d.id] = FN.enrMap[d.id] || {};
@@ -340,15 +347,30 @@ FN.enrich = function (d) {
         body: JSON.stringify(body)
       }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
     }
-    // Marche 1 — Wikidata (désambiguïsé par le nom + la ville)
-    var p1 = ((!site || !email) && typeof FAV !== 'undefined' && typeof FAV.wikidata === 'function')
-      ? FAV.wikidata({ type: 'ent', nom: ent.nom, ville: ent.ville }).then(function (w) {
+    // Marche 0 — source canonique : la fiche France Num de la structure, AVANT
+    // le web générique (qui se trompe souvent sur les petites structures
+    // locales). Si la fiche donne le site, tout le reste (describe, scrape)
+    // travaille sur LE BON site — et Tavily ne propose plus de faux relais.
+    var p0 = ent.fnFiche
+      ? post('lookup', ['francenum']).then(function (j) {
+          var b = (j && j.ok && j.best) || null;
+          if (!b) return;
+          if (!site && b.website && fnEnrOkSite(rec, b.website)) site = b.website;
+          if (!email && b.email && fnEnrOkEmail(rec, b.email)) email = b.email;
+          if (!page && b.contact && fnEnrOkSite(rec, b.contact)) page = b.contact;
+          if (!manual && !desc && b.description) { desc = b.description; source = b.source || 'fiche-francenum'; }
+        }).catch(function () { /* fiche injoignable/absente : relais générique */ })
+      : Promise.resolve();
+    return p0
+      // Marche 1 — Wikidata (désambiguïsé par le nom + la ville), en relais
+      .then(function () {
+        if ((site && email) || typeof FAV === 'undefined' || typeof FAV.wikidata !== 'function') return;
+        return FAV.wikidata({ type: 'ent', nom: ent.nom, ville: ent.ville }).then(function (w) {
           if (!w) return;
           if (!site && w.site && fnEnrOkSite(rec, w.site)) site = w.site;
           if (!email && w.email && fnEnrOkEmail(rec, w.email)) email = w.email;
-        }).catch(function () { /* moteur best-effort */ })
-      : Promise.resolve();
-    return p1
+        }).catch(function () { /* moteur best-effort */ });
+      })
       // Marche 2 — describe : description + découverte du site officiel. Si le
       // site découvert est rejeté (blacklist), sa description l'est aussi.
       .then(function () {
@@ -363,8 +385,8 @@ FN.enrich = function (d) {
           }
         }).catch(function () { /* service indisponible : la chaîne continue */ });
       })
-      // Marche 3 — lookup : email, site, page contact ; la fiche France Num
-      // reste le DERNIER recours du serveur (moteur « francenum »).
+      // Marche 3 — lookup générique : email, site, page contact ; le moteur
+      // francenum y reste en secours si la marche 0 n'a rien donné.
       .then(function () {
         return post('lookup', ['tavily', 'scrape', 'francenum']).then(function (j) {
           var b = (j && j.ok && j.best) || null;
@@ -384,6 +406,7 @@ FN.enrich = function (d) {
       });
   });
 };
+
 // Styles minimaux du formulaire ✏️ (auto-injectés : le module reste autonome).
 if (typeof document !== 'undefined' && document.head) {
   try {

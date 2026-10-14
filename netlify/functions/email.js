@@ -4,7 +4,7 @@
 //   POST /ft/email  { op:'lookup', entity:{ type:'ent'|'asso'|'commune', nom, siren, siret,
 //                                            insee, ville, dep, siteWeb },
 //                     engines:[ 'officiel'|'tavily'|'scrape'|'prospector'|'francenum' ] }
-//   → { ok:true, best:{ email, website, contact, source, confidence }, results:[{ engine, ... }] }
+//   → { ok:true, best:{ email, website, contact, description, source, confidence }, results:[{ engine, ... }] }
 //   POST /ft/email  { op:'describe', entity:{ type, nom, siren, ville, siteWeb } }
 //   → { ok:true, best:{ description, source, confidence, siteUrl }, results:[{ engine, ... }] }
 //   Moteurs describe : ddg (snippets DuckDuckGo + découverte du site officiel, annuaires/
@@ -30,10 +30,11 @@
 //                Tier gratuit : 50 vérifs/jour (PROSPECTOR_TIER). Opt-in côté front ;
 //                dégrade proprement si le package n'est pas installé.
 //   francenum  : fiche France Num de la structure (entity.fnFiche, activateurs,
-//                dernier recours) : scrap de la fiche → site web, email, page
-//                contact de la structure, en excluant tout ce qui appartient au
-//                ministère (francenum.gouv.fr, data.gouv.fr, economie.gouv.fr) ;
-//                MX contrôlé comme scrape.
+//                source canonique — jouée en PREMIER par le client France Num) :
+//                scrap de la fiche → site web, email, page contact, description
+//                d'activité (meta de la fiche, boilerplate ministère exclu) de
+//                la structure, en excluant tout ce qui appartient au ministère
+//                (francenum.gouv.fr, data.gouv.fr, economie.gouv.fr) ; MX contrôlé.
 //
 // Budget : fonctions Netlify synchrones ~10 s → budget total 9 s, chaque moteur reçoit
 // le temps restant ; les suivants sont sautés si le temps manque. Erreurs applicatives
@@ -370,7 +371,7 @@ async function engProspector(siteUrl, budgetMs) {
   return out;
 }
 
-// ---------- Moteur 5 : fiche France Num (activateurs, dernier recours) ----------
+// ---------- Moteur 5 : fiche France Num (activateurs, source canonique) ----------
 // La fiche France Num d'une structure (entity.fnFiche) affiche souvent SON
 // PROPRE site web et son email : on extrait les contacts de la structure en
 // excluant tout ce qui appartient au ministère (francenum.gouv.fr, data.gouv.fr,
@@ -417,10 +418,23 @@ async function engFrancenum(ent, budgetMs) {
     } catch (e) { mx = false; }
     if (!mx) { out.note = 'email trouvé mais domaine sans MX'; email = null; }
   }
+  // description d'activité : meta/JSON-LD de la fiche, hors boilerplate
+  // ministère (« France Num, le service public… » ne décrit pas la structure)
+  let fdesc = '';
+  const fjd = html.match(/"description"\s*:\s*"([^"]{25,500})"/i);
+  if (fjd) fdesc = fjd[1];
+  if (!fdesc) {
+    const fm = html.match(/<meta[^>]+content="([^"]{25,500})"[^>]+(?:name|property)="(?:og:)?description"/i) ||
+      html.match(/<meta[^>]+(?:name|property)="(?:og:)?description"[^>]+content="([^"]{25,500})"/i);
+    if (fm) fdesc = fm[1];
+  }
+  fdesc = ddgStrip(fdesc);
+  if (fdesc && /(france\s*num|minist[eè]re|république fran[cç]aise|service public)/i.test(fdesc)) fdesc = '';
   if (site) out.website = site;
   if (email) out.email = email;
   if (contact) out.contact = contact;
-  if (out.website || out.email || out.contact) {
+  if (fdesc) out.description = fdesc.slice(0, 320);
+  if (out.website || out.email || out.contact || out.description) {
     out.confidence = 55;
     out.note = 'extrait de la fiche France Num';
   } else {
@@ -594,13 +608,14 @@ async function opLookup(body) {
   const wants = function (id) { return engines.indexOf(id) !== -1; };
   const started = Date.now();
   const left = function () { return DEADLINE_MS - (Date.now() - started); };
-  const ctx = { website: cleanUrl(ent.siteWeb) || null, email: null, contact: null, source: null, confidence: 0 };
+  const ctx = { website: cleanUrl(ent.siteWeb) || null, email: null, contact: null, description: null, source: null, confidence: 0 };
   const results = [];
   function absorb(r) {
     if (!r) return;
     results.push(r);
     if (r.website && !ctx.website) ctx.website = r.website;
     if (r.contact && !ctx.contact) ctx.contact = r.contact;
+    if (r.description && !ctx.description) ctx.description = r.description;
     if (r.email && (r.confidence || 0) > ctx.confidence) {
       ctx.email = r.email;
       ctx.source = r.source || r.engine;
@@ -612,8 +627,8 @@ async function opLookup(body) {
   if (ctx.website && wants('scrape') && left() > 2000) absorb(await engScrape(ctx.website, left() - 300));
   if (ctx.website && wants('prospector') && left() > 3000) absorb(await engProspector(ctx.website, left() - 200));
   if (wants('francenum') && ent.fnFiche && (!ctx.email || !ctx.website) && left() > 2500) absorb(await engFrancenum(ent, left() - 300));
-  const best = (ctx.email || ctx.website || ctx.contact)
-    ? { email: ctx.email, website: ctx.website, contact: ctx.contact, source: ctx.source, confidence: ctx.confidence }
+  const best = (ctx.email || ctx.website || ctx.contact || ctx.description)
+    ? { email: ctx.email, website: ctx.website, contact: ctx.contact, description: ctx.description, source: ctx.source, confidence: ctx.confidence }
     : null;
   return { ok: true, type: ent.type || '', best: best, results: results };
 }
