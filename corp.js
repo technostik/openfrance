@@ -7,8 +7,9 @@
 // codes NAF exacts), tranche d'effectifs, catégorie (PME/ETI/GE), chiffre d'affaires,
 // forme juridique, labels (ESS, Bio, Qualiopi, RGE…), état administratif, texte libre.
 // Résultats sous forme de marqueurs sur la carte (les établissements correspondants à
-// la zone) + liste cliquable ; clic sur une entreprise → fiche détaillée (identité,
-// siège, dirigeants, labels, établissements, lien vers l'annuaire officiel).
+// la zone) + liste cliquable ; clic sur une ligne → popup de l'item SUR LA CARTE
+// (harmonisé avec l'annuaire), fiche détaillée (identité, siège, dirigeants, labels,
+// établissements, lien vers l'annuaire officiel) via le lien « 📋 Fiche détaillée ».
 //
 // ⚠️ Contraintes de l'API (vérifiées empiriquement, voir docs/ETAT-PROJET.md) :
 //  - /search : TOUS les filtres côté serveur (code_commune, departement, NAF exact —
@@ -41,7 +42,7 @@ var CO = {
   pagesLoaded: 0, maxPages: 0, total: 0,
   seq: 0,
   // carte
-  markers: null, markerBySiret: {}, circle: null, targetMk: null, spread: null,
+  markers: null, markerBySiret: {}, markerBySiren: {}, circle: null, targetMk: null, spread: null,
   uiReady: false
 };
 
@@ -428,7 +429,15 @@ function coRenderResults() {
       ((e.siege && e.siege.libelle_commune) || '') +
       (e.nombre_etablissements_ouverts ? ' · ' + e.nombre_etablissements_ouverts + ' établissement(s) ouvert(s)' : '');
     row.appendChild(head); row.appendChild(sub);
-    row.addEventListener('click', function () { coOpenFiche(e.siren); });
+    // Harmonisé avec l'annuaire : clic = popup de l'item SUR LA CARTE ; la
+    // fiche détaillée reste accessible depuis le lien « 📋 Fiche détaillée »
+    // de la popup. Repli sur la fiche si l'entreprise n'a pas de marqueur
+    // (hors cap CO_MAX_MARKERS ou sans coordonnées).
+    row.addEventListener('click', function () {
+      var mk = CO.markerBySiren[e.siren];
+      if (mk) { map.panTo(mk.getLatLng()); mk.openPopup(); }
+      else coOpenFiche(e.siren);
+    });
     box.appendChild(row);
   });
   if (!CO.shown.length) {
@@ -448,6 +457,7 @@ function coRenderResults() {
 function coClearMap() {
   if (CO.markers) { map.removeLayer(CO.markers); CO.markers = null; }
   CO.markerBySiret = {};
+  CO.markerBySiren = {};
   if (CO.circle) { map.removeLayer(CO.circle); CO.circle = null; }
   if (CO.targetMk) { map.removeLayer(CO.targetMk); CO.targetMk = null; }
   CO.spread = null;
@@ -494,6 +504,9 @@ function coSyncMarkers() {
     m.bindPopup(coPopupHtml(en.e, en.et));
     m.addTo(CO.markers);
     CO.markerBySiret[en.key.slice(2)] = m;
+    // index SIREN -> premier marqueur de l'unité légale (clic sur une ligne de
+    // la liste : ouvrir la popup carte, comme dans l'annuaire)
+    if (!CO.markerBySiren[en.e.siren]) CO.markerBySiren[en.e.siren] = m;
     // des établissements peuvent partager des coordonnées identiques (même
     // adresse, géolocalisation approximative) : base de l'étalement spirale
     spreadItems.push({ m: m, base: en.latlng });
