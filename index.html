@@ -24,6 +24,7 @@
       <option value="economie">Économie</option>
       <option value="politique">Politique</option>
       <option value="annuaire">Associations & entreprises</option>
+      <option value="evenements">Évènements</option>
       <option value="score31">Composeur de critères</option>
       <option value="corp">Composeur d'entreprises</option>
       <option value="corp_ext">Recherche étendue d'entreprises</option>
@@ -69,7 +70,35 @@
     </label>
     <button id="annSearchBtn" type="button" title="Relancer la recherche">🔎</button>
   </div>
-  <div id="scoreControls" style="display:none">
+    <div id="evControls" style="display:none">
+    <label>Recherche
+      <input id="evSearch" type="text" placeholder="ex. concert + festival - gratuit">
+    </label>
+    <label>Période
+      <select id="evPeriod" title="Horizon de recherche : évènements à venir">
+        <option value="7">7 jours</option>
+        <option value="30" selected>30 jours</option>
+        <option value="90">3 mois</option>
+        <option value="365">1 an</option>
+      </select>
+    </label>
+    <label id="evCityWrap">Ville
+      <input id="evCity" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
+      <div id="evCityDrop" class="sc-drop"></div>
+    </label>
+    <label>Zone
+      <select id="evRadius" title="Périmètre : la ville seule ou un rayon autour de la ville">
+        <option value="0">Dans la ville</option>
+        <option value="5">± 5 km</option>
+        <option value="10">± 10 km</option>
+        <option value="20">± 20 km</option>
+        <option value="50">± 50 km</option>
+      </select>
+    </label>
+    <button id="evSearchBtn" type="button" title="Relancer la recherche d'évènements">🔎</button>
+  </div>
+
+<div id="scoreControls" style="display:none">
     <label id="scTargetWrap">Ville cible
       <input id="scTarget" type="text" placeholder="Commencez à taper un nom…" autocomplete="off">
       <div id="scTargetDrop" class="sc-drop"></div>
@@ -169,6 +198,8 @@
 </section>
 <p id="annHint" class="muted" style="display:none">💡 Recherche : mots simples = tous requis (ET) · <b>+mot</b> = OU (dès qu'il y a un +, la requête devient « au moins un de ces mots ») · <b>-mot</b> = exclure · <b>"mot"</b> = mot exact (frontières de mot). Espaces autour des <b>+</b>/<b>-</b> acceptés. Les entreprises nécessitent un mot-clé (l'API ne liste pas tout un département). Ville : tapez un nom de commune pour filtrer « dans la ville » ou par rayon.</p>
 <p id="annQueryExp" class="muted" style="display:none"></p>
+<p id="evHint" class="muted" style="display:none">💡 Évènements : OpenAgenda (agendas du département/zone ou de la ville) + Meetup (si configuré) — recherche par thématique et par période, filtre ville/rayon. Même syntaxe multi-opérateurs que l'annuaire (<b>+mot</b> = OU, <b>-mot</b> = exclure, <b>"mot"</b> = exact). Eventbrite n'est pas inclus : sa recherche publique d'évènements a été retirée (2020).</p>
+<p id="evQueryExp" class="muted" style="display:none"></p>
 <p id="coModeHint" class="muted" style="display:none"></p>
 
 <main>
@@ -186,6 +217,11 @@
       <h2>Résultats</h2>
       <p id="annStatus" class="muted"></p>
       <div id="annResults"></div>
+    </div>
+    <div id="evPanel" style="display:none">
+      <h2>Évènements</h2>
+      <p id="evStatus" class="muted"></p>
+      <div id="evResults"></div>
     </div>
     <div id="coPanel" style="display:none">
       <h2>Entreprises</h2>
@@ -252,6 +288,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 <script src="annuaire.js"></script>
+<script src="evenements.js"></script>
 <script src="score.js"></script>
 <script src="corp.js"></script>
 <script src="corp_ext.js"></script>

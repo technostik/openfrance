@@ -15,6 +15,7 @@ app.js          — Logique générale (registre d'indicateurs, parsers CSV, req
 mafrance.html   — Page étendue « /mafrance » : catégories Délinquance + MaFrance (window.MF_PAGE = true) ; la page principale (index.html) reste « politiquement correcte » (défaut : Économie)
 mafrance.js     — Page /mafrance : six indices composites de mafrance.app (base 100 = France métropolitaine) par département/commune via /api/mafrance/*, IndexedDB openfrance-mafrance, critère « mf » du Composeur de critères
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
+evenements.js   — Mode Évènements : recherche unifiée OpenAgenda + Meetup (thématique, département/zone ou ville+rayon, période), marqueurs + liste, caches IndexedDB (« ev|… »)
 score.js        — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (ex-score31.js, renommé 10/2026)
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
 corp_ext.js     — Mode Recherche étendue : ROMEO → ROME 4.0 → La Bonne Boite → croisement listes curatées Supabase (branche de test corp_ext)
@@ -65,6 +66,11 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
 - `annEnter`/`annLeave` : **conservent le territoire courant** (département ou zone, pas de retour forcé à la France) ; `annEnter` hérite/restaure la zone puis relance `setTimeout(annRefresh, 0)` (ordre des listeners, bug n°27).
 - Le SW_API_LABELS de la page cache mentionne `/api/ent` (composeur d'entreprises) et le compteur RAM inclut les résultats du composeur.
+
+### evenements.js — mode « Évènements »
+- **Recherche unifiée d'évènements par thématique sur un territoire** : département / zone multi-départements (`evZoneDeps()`, comme l'annuaire) ou ville cible + rayon 0–50 km (autocomplete réutilisé de l'annuaire) ; période 7 j → 1 an ; même syntaxe multi-opérateurs que l'annuaire (`parseAnnQuery` réutilisé : `+mot` OU, `-mot` exclusion, `"mot"` exact).
+- **Fonction Netlify events.js** (servie sous `/events`, port Vercel `api/events.js`) : `op=sources` (diagnostic des clés) et `op=search` (params `q`, `deps`, `city`, `lat`/`lon`, `radius`, `days`). OpenAgenda v2 : découverte des agendas du territoire (recherche `<ville|département>`, tri `recentlyAddedEvents.desc`, 20 max, cache 12 h) puis évènements par agenda (filtres `search`/`timings` gte-lte, `adminLevel2[]`, `adminLevel4[]`, pagination curseur `after[]`, 2 pages/agenda, 8 agendas en parallèle, budget 8,5 s, plafond 300 évènements, cache résultat 20 min) — header `key` (`OPENAGENDA_KEY`, requise). Meetup GraphQL `searchEvents` (lat/lon requis) si `MEETUP_TOKEN` — sinon source désactivée proprement. Erreurs applicatives en HTTP 200 {ok:false} (piège n°16).
+- **Front evenements.js** : auto-câblé comme corp.js (listener propre sur `#categorySelect`, aucune modification d'app.js hors exclusion de la zone) ; caches RAM → IndexedDB (clés `ev|<q>|<deps>|<city>|<days>|<radius>`, TTL 1 h, visibles et supprimables dans la page 🗒️ Cache — branche `ev|` du rendu + suppression générique `idbDelete` dans annuaire.js) ; marqueurs par différence (`evSyncMarkers` + MK_SPREAD), clic liste = popup carte (piège n°29) ; dégradation explicite sans OPENAGENDA_KEY (statut `#evStatus` + diagnostic `op=sources`).
 
 ### score.js — mode « Composeur de critères » (ex-score31.js)
 - **Généralisation de l'ancien « Score perso »** : indice composite **personnalisable** des communes de **n'importe quel département**, **hors REGISTRY** (`scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` de app.js via `typeof` guards).
@@ -157,6 +163,11 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Associations : RNA agrégé national (Waldec) — voir architecture ci-dessus
 - Entreprises : API Recherche d'entreprises (DINUM) — gratuit, sans clé, résultats cachés IndexedDB pour économiser le quota
 
+### Évènements
+- **OpenAgenda** (API v2, clé OPENAGENDA_KEY en variable d'environnement Netlify — requise) : agendas publics + évènements (titre, dates, lieu géocodé, description, catégorie), via la fonction Netlify events.js (caches serveur 12 h / 20 min).
+- **Meetup** (API GraphQL, MEETUP_TOKEN OAuth client credentials — optionnelle) : évènements des groupes autour de la ville cible.
+- **Eventbrite exclu** : la recherche publique d'évènements a été retirée de l'API (02/2020) — aucune source Eventbrite, documenté dans events.js et le README.
+
 ### Composeur de critères
 - Loyers d'annonce prédits par commune : « Carte des loyers » 2025 (Ministère de la Transition écologique, dataset `693aa2feed1bf4da603faa49`), resource `55b34088-...` (colonnes `INSEE_C`, `loypredm2`) via `/api/loyers/`, filtre `DEP__exact=<dept>` (généralisé à tout département) — une valeur par commune, même pour les petites (prédiction par maille).
 - Tous les autres critères réutilisent les sources existantes (france-geojson, délinquance communale, Filosofi, DVF, élections agrégées, RNA) — aucune copie de données.
@@ -223,6 +234,8 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 29. **Harmonisation des listes de résultats : survol = bulle, clic = popup carte** (10/2026) : comportement auparavant incohérent — l'annuaire ouvrait déjà la popup carte au clic (modèle de référence, `ANN.markerIndex`), mais le Composeur (`coOpenFiche`) et la Recherche étendue LBB/French Tech (`extOpenFiche`) ouvraient la fiche modale. Désormais **partout** : clic sur une ligne → `map.panTo()` + `marker.openPopup()` sur le marqueur de l'item (nouvel index `CO.markerBySiren` dans corp.js : SIREN → premier marqueur de l'unité légale, rempli dans `coSyncMarkers`, vidé dans `coClearMap` ; `EXT.markerBySiren` côté corp_ext) ; **repli sur la fiche détaillée si aucun marqueur** (hors cap `CO_MAX_MARKERS`, sans coordonnées, French Tech sans ville cible) ; la fiche reste accessible par le lien « 📋 Fiche détaillée » présent dans les popups. Le survol en bulle de détails (`#enrTip`, enrich.js) couvrait déjà toutes les listes et tous les marqueurs — aucun changement. Précautions : les étoiles favoris (favoris.js, `stopPropagation`) et le sous-texte `.ann-obj` « SIREN xxx » (relu par favoris.js/enrich.js pour les lignes LBB) ne doivent pas être modifiés.
 
 30. **Agent : écriture des fichiers récupérés depuis GitHub** (10/2026) : une copie locale de `corp.js` écrite depuis le `.resource.text` de `get_file_contents` s'est retrouvée **double-encodée** (é → Ã© sur tout le fichier — mojibake intégral si poussée telle quelle). Avant tout push d'un fichier récupéré du dépôt : écrire depuis le `.resource.blob` (base64, décodage `base64 -d` byte-exact) quand il est disponible, sinon vérifier l'affichage des accents, et **contrôler par md5** que local = source GitHub + modifications. Syntaxe toujours vérifiée par `new Function()` avant push (piège n°23).
+
+31. **Évènements : Eventbrite injoignable + OpenAgenda paginée par curseur** (10/2026) : la recherche publique d'évènements Eventbrite a été retirée de l'API (02/2020) — seule la lecture de ses propres évènements existe : source écartée, le mode s'appuie sur OpenAgenda (clé OPENAGENDA_KEY requise — sans elle, message explicite dans #evStatus, résultat vide mais l'UI ne casse pas) et Meetup optionnel (MEETUP_TOKEN). L'API OpenAgenda v2 pagine par curseur (`after[]`, pas par numéro de page) et la découverte d'agendas par ville/département est approximative (recherche texte) : les évènements sont donc re-filtrés côté front (haystack + zone/ville/rayon), jamais pris tels quels.
 
 ## 🚀 Deploys & workflow
 

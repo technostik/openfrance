@@ -107,6 +107,10 @@
       "destination": "https://api-adresse.data.gouv.fr/:path*"
     },
     {
+      "source": "/events",
+      "destination": "/api/events"
+    },
+    {
       "source": "/ft/ft",
       "destination": "/api/ft"
     },
