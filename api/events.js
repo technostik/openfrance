@@ -3,7 +3,7 @@
 // OpenAgenda + Meetup optionnel) — même logique, adaptateur HTTP (req, res).
 //
 // Route (vercel.json) : GET /events → /api/events — mêmes paramètres que la
-// fonction Netlify (op=sources|search, q, deps, city, lat, lon, radius, days).
+// fonction Netlify (op=sources|debug|search, q, deps, city, lat, lon, radius, days).
 // Secrets : OPENAGENDA_KEY (obligatoire), MEETUP_TOKEN (optionnel).
 // Erreurs applicatives en HTTP 200 {ok:false} (convention du repo).
 
@@ -101,33 +101,39 @@ function normalizeOA(e, agendaTitle) {
   };
 }
 
-// Évènements d'un agenda, pagination par curseur 'after[]' (max 2 pages)
-async function agendaEvents(agenda, params, deadline) {
+// URL d'interrogation d'un agenda : filtres search / timings / adminLevel2 /
+// adminLevel4 + curseur 'after[]'. NB (piège n°33) : timings[gte]/[lte]
+// attendent des dates ISO 8601 (pas des epoch ms) et le curseur de pagination
+// est la clé 'after' au premier niveau de la réponse (pas sous 'pagination').
+function oaEventsUrl(agenda, params, after) {
   var base = OA_BASE + '/agendas/' + encodeURIComponent(agenda.uid) + '/events' +
-    '?lang=fr&size=100' +
+    '?lang=fr&size=100&monolingual=fr' +
     (EV_ENV.key ? '&key=' + encodeURIComponent(EV_ENV.key) : '');
   if (params.q) base += '&search=' + encodeURIComponent(params.q);
-  base += '&timings%5Bgte%5D=' + (Date.now() - 3600 * 1000);
-  base += '&timings%5Blte%5D=' + (Date.now() + params.days * 24 * 3600 * 1000);
+  base += '&timings%5Bgte%5D=' + encodeURIComponent(new Date(Date.now() - 3600 * 1000).toISOString());
+  base += '&timings%5Blte%5D=' + encodeURIComponent(new Date(Date.now() + params.days * 24 * 3600 * 1000).toISOString());
   (params.deps || []).forEach(function (d) {
     base += '&adminLevel2%5B%5D=' + encodeURIComponent(d);
   });
   if (params.city) base += '&adminLevel4%5B%5D=' + encodeURIComponent(params.city);
+  if (after) {
+    (after instanceof Array ? after : [after]).forEach(function (a) {
+      base += '&after%5B%5D=' + encodeURIComponent(a);
+    });
+  }
+  return base;
+}
+
+// Évènements d'un agenda, pagination par curseur 'after[]' (max 2 pages)
+async function agendaEvents(agenda, params, deadline) {
   var out = [], after = null, page = 0;
   while (page < EV_CAPS.pagesPerAgenda) {
     if (Date.now() > deadline) break;
-    var url = base;
-    if (after) {
-      (after instanceof Array ? after : [after]).forEach(function (a) {
-        url += '&after%5B%5D=' + encodeURIComponent(a);
-      });
-    }
     var js;
-    try { js = await oaFetch(url); } catch (err) { break; }
-    var evs = js.events || (js.data && js.data.events) || js.data || [];
+    try { js = await oaFetch(oaEventsUrl(agenda, params, after)); } catch (err) { break; }
+    var evs = js.events || [];
     for (var i = 0; i < evs.length; i++) out.push(normalizeOA(evs[i], agenda.title));
-    var pg = js.pagination || {};
-    after = pg.after || null;
+    after = js.after || null; // curseur au premier niveau de la réponse
     if (!after || evs.length === 0) break;
     page++;
   }
@@ -273,6 +279,44 @@ function evParseParams(query) {
   };
 }
 
+// ---- Diagnostic (op=debug) : découverte + détail par agenda ----
+async function eventsDebug(params) {
+  var out = {
+    ok: true,
+    keyPresent: !!EV_ENV.key,
+    term: params.city || (params.deps && params.deps[0]) || 'France',
+    agendasFound: 0, agendas: [], warnings: []
+  };
+  var agendas = [];
+  try {
+    agendas = await discoverAgendas(out.term);
+    if ((!agendas || !agendas.length) && params.deps && params.deps.length) {
+      out.termFallback = params.deps[0];
+      agendas = await discoverAgendas(params.deps[0]);
+    }
+  } catch (err) {
+    out.warnings.push('OpenAgenda (découverte) : ' + (err && err.message ? err.message : String(err)));
+  }
+  out.agendasFound = agendas.length;
+  out.agendas = await evRunLimited(agendas.slice(0, EV_CAPS.agendas).map(function (a) {
+    return function () {
+      return oaFetch(oaEventsUrl(a, params, null)).then(function (js) {
+        var evs = js.events || [];
+        return {
+          uid: a.uid, title: a.title,
+          total: (js.total == null ? evs.length : js.total), got: evs.length,
+          after: js.after || null,
+          url: oaEventsUrl(a, params, null).replace(/([?&])key=[^&]+/, '$1key=***'),
+          sample: evs.slice(0, 3).map(function (e) { return (e.title && (e.title.fr || e.title)) || ''; })
+        };
+      }).catch(function (err) {
+        return { uid: a.uid, title: a.title, error: String((err && err.message) || err) };
+      });
+    };
+  }), EV_CAPS.parallel);
+  return out;
+}
+
 // --- Adaptateur Vercel (port de netlify/functions/events.js — logique identique) ---
 // Vercel Node Function : (req, res) style Express. Les erreurs applicatives restent
 // en HTTP 200 {ok:false} (convention du repo), seules les erreurs transport en 4xx/5xx.
@@ -288,6 +332,9 @@ module.exports = async function (req, res) {
           { id: 'meetup', label: 'Meetup', ready: !!EV_ENV.meetupToken }
         ]
       });
+    }
+    if (String(query.op || '') === 'debug') {
+      return send(await eventsDebug(evParseParams(query)));
     }
     const params = evParseParams(query);
     const out = await eventsSearch(params);
