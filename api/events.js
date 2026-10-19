@@ -9,7 +9,7 @@
 
 var OA_BASE = 'https://api.openagenda.com/v2';
 var EV_ENV = {
-  key: process.env.OPENAGENDA_KEY || '',
+  key: process.env.OPENAGENDA_KEY || process.env.OPENAGENDA_API_KEY || '',
   meetupToken: process.env.MEETUP_TOKEN || ''
 };
 

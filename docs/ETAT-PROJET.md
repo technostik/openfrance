@@ -237,6 +237,8 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 
 31. **Évènements : Eventbrite injoignable + OpenAgenda paginée par curseur** (10/2026) : la recherche publique d'évènements Eventbrite a été retirée de l'API (02/2020) — seule la lecture de ses propres évènements existe : source écartée, le mode s'appuie sur OpenAgenda (clé OPENAGENDA_KEY requise — sans elle, message explicite dans #evStatus, résultat vide mais l'UI ne casse pas) et Meetup optionnel (MEETUP_TOKEN). L'API OpenAgenda v2 pagine par curseur (`after[]`, pas par numéro de page) et la découverte d'agendas par ville/département est approximative (recherche texte) : les évènements sont donc re-filtrés côté front (haystack + zone/ville/rayon), jamais pris tels quels.
 
+32. **Évènements : utilitaires annuaire dépendants des contours de communes** (10/2026) : `annZoneCentroids()`/`annCityListZone()` (annuaire.js) lisent `state.communesGeo[dep].features` SANS charger les contours — l'annuaire les charge dans son propre `annRefresh`, mais le mode Évènements appelait ces utilitaires directement → crash « Cannot read properties of undefined (reading 'features') » dès qu'on cliquait un département en mode Évènements sans être passé par une catégorie ayant chargé les communes. Correction : `evEnsureZoneGeo(deps)` dans evenements.js (même chargement par département que annRefresh), appelé en parallèle de la requête `/events` dans `evRefresh` et avant chaque autocomplete ville. Alias de clé accepté : `OPENAGENDA_API_KEY` (repli de `OPENAGENDA_KEY`) dans events.js et api/events.js.
+
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)

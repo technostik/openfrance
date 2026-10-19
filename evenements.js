@@ -48,6 +48,21 @@ function evZoneDeps() {
   return (state.view === 'dep' && state.dep && state.dep.code) ? [state.dep.code] : [];
 }
 
+// ---------- Contours de communes de la zone ----------
+// annZoneCentroids()/annCityListZone() (annuaire.js) lisent state.communesGeo[dep]
+// SANS le charger : l'annuaire le fait dans son propre annRefresh, pas le mode
+// Évènements — il faut donc garantir le chargement avant tout usage (sinon crash
+// « reading 'features' » au clic sur un département, piège n°32).
+function evEnsureZoneGeo(deps) {
+  return Promise.all(deps.map(function (code) {
+    if (state.communesGeo[code]) return Promise.resolve(state.communesGeo[code]);
+    return fetchJSONCached('/geo/communes/departements/' + DEP_FOLDERS[code] +
+      '/communes-' + DEP_FOLDERS[code] + '.geojson')
+      .then(function (g) { state.communesGeo[code] = g; return g; });
+  }));
+}
+
+
 // ---------- Recherche serveur (RAM → IndexedDB → fonction /events) ----------
 function evParams() {
   var deps = evZoneDeps().map(depNom);
@@ -297,8 +312,9 @@ function evRefresh() {
     '⏳ Interrogation d\'OpenAgenda (agendas de ' + zoneLbl + ')…';
   var p = evParams();
   EV.key = evParamsKey(p);
-  evFetch(p).then(function (js) {
+  Promise.all([evFetch(p), evEnsureZoneGeo(deps)]).then(function (res) {
     if (seq !== EV.seq) return; // réponse obsolète
+    var js = res[0];
     EV.last = js;
     // recadrage : ville cible si définie, sinon la zone
     if (EV.target) {
@@ -465,23 +481,35 @@ function evInitUI() {
     clearTimeout(cityDeb);
     if (!cityIn.value.trim()) { evCityDropEl(false); evClearTarget(); return; }
     cityDeb = setTimeout(function () {
-      annCityListZone(evZoneDeps()); // peuple ANN.cities pour annCitySearch
-      evCityRender(annCitySearch(cityIn.value));
+      var dz = evZoneDeps();
+      evEnsureZoneGeo(dz).then(function () { // contours requis par annCityListZone
+        annCityListZone(dz); // peuple ANN.cities pour annCitySearch
+        evCityRender(annCitySearch(cityIn.value));
+      }).catch(function (err) {
+        console.warn('[OpenFrance] Autocomplete ville évènements :', err);
+        evCityRender([]);
+      });
     }, 120);
   });
   cityIn.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
       e.preventDefault();
-      annCityListZone(evZoneDeps());
-      var m = annCitySearch(cityIn.value);
-      if (m.length) { evSetTarget(m[0].code, m[0].nom); evCityDropEl(false); }
+      var dz = evZoneDeps();
+      evEnsureZoneGeo(dz).then(function () {
+        annCityListZone(dz);
+        var m = annCitySearch(cityIn.value);
+        if (m.length) { evSetTarget(m[0].code, m[0].nom); evCityDropEl(false); }
+      });
     } else if (e.key === 'Escape') evCityDropEl(false);
   });
   cityIn.addEventListener('blur', function () { setTimeout(function () { evCityDropEl(false); }, 150); });
   cityIn.addEventListener('focus', function () {
     if (cityIn.value.trim()) {
-      annCityListZone(evZoneDeps());
-      evCityRender(annCitySearch(cityIn.value));
+      var dz = evZoneDeps();
+      evEnsureZoneGeo(dz).then(function () {
+        annCityListZone(dz);
+        evCityRender(annCitySearch(cityIn.value));
+      });
     }
   });
   document.getElementById('evRadius').addEventListener('change', function () {
