@@ -1,3 +1,5 @@
+successfully downloaded text file (SHA: ef998f62f9b02ba05c3ccfe8cc0e9c4454cc8beb)
+resource
 # OpenFrance — État du projet (octobre 2026)
 
 > **Ce document est la mémoire du projet.** Il doit être mis à jour à CHAQUE nouvelle fonctionnalité, correction ou changement d'architecture. Voir `AGENTS.md` pour les règles de maintenance de cette doc.
@@ -15,6 +17,7 @@ app.js          — Logique générale (registre d'indicateurs, parsers CSV, req
 mafrance.html   — Page étendue « /mafrance » : catégories Délinquance + MaFrance (window.MF_PAGE = true) ; la page principale (index.html) reste « politiquement correcte » (défaut : Économie)
 mafrance.js     — Page /mafrance : six indices composites de mafrance.app (base 100 = France métropolitaine) par département/commune via /api/mafrance/*, IndexedDB openfrance-mafrance, critère « mf » du Composeur de critères
 annuaire.js     — Mode Annuaire : associations RNA + entreprises, recherche multi-opérateurs, caches IndexedDB, page de gestion du cache
+evenements.js   — Mode Évènements : recherche unifiée OpenAgenda + Meetup (thématique, département/zone ou ville+rayon, période), marqueurs + liste, caches IndexedDB (« ev|… »)
 score.js        — Mode Composeur de critères : indice ad hoc généralisé, département + ville cible + critères cumulables/pondérables (ex-score31.js, renommé 10/2026)
 corp.js         — Mode Composeur d'entreprises : recherche multicritère (NAF, effectifs, CA, labels…), ciblage ville+rayon / commune / département, fiche détaillée (branche de test `corp_search`)
 corp_ext.js     — Mode Recherche étendue : ROMEO → ROME 4.0 → La Bonne Boite → croisement listes curatées Supabase (branche de test corp_ext)
@@ -65,6 +68,11 @@ netlify.toml    — Proxys redirects (same-origin → pas de CORS) : /data/*, /g
 - Variables globales d'app.js utilisées : `state`, `map`, `geoLayer`, `refresh`, `openDepartment`, `setStatus`, `showError`, `hideError`, `fetchJSONCached`, `fetchCache`, `DEP_FOLDERS`, `catColor`, `ELECAGR`.
 - `annEnter`/`annLeave` : **conservent le territoire courant** (département ou zone, pas de retour forcé à la France) ; `annEnter` hérite/restaure la zone puis relance `setTimeout(annRefresh, 0)` (ordre des listeners, bug n°27).
 - Le SW_API_LABELS de la page cache mentionne `/api/ent` (composeur d'entreprises) et le compteur RAM inclut les résultats du composeur.
+
+### evenements.js — mode « Évènements »
+- **Recherche unifiée d'évènements par thématique sur un territoire** : département / zone multi-départements (`evZoneDeps()`, comme l'annuaire) ou ville cible + rayon 0–50 km (autocomplete réutilisé de l'annuaire) ; période 7 j → 1 an ; même syntaxe multi-opérateurs que l'annuaire (`parseAnnQuery` réutilisé : `+mot` OU, `-mot` exclusion, `"mot"` exact).
+- **Fonction Netlify events.js** (servie sous `/events`, port Vercel `api/events.js`) : `op=sources` (diagnostic des clés) et `op=search` (params `q`, `deps`, `city`, `lat`/`lon`, `radius`, `days`). OpenAgenda v2 : découverte des agendas du territoire (recherche `<ville|département>`, tri `recentlyAddedEvents.desc`, 20 max, cache 12 h) puis évènements par agenda (filtres `search`/`timings` gte-lte, `adminLevel2[]`, `adminLevel4[]`, pagination curseur `after[]`, 2 pages/agenda, 8 agendas en parallèle, budget 8,5 s, plafond 300 évènements, cache résultat 20 min) — header `key` (`OPENAGENDA_KEY`, requise). Meetup GraphQL `searchEvents` (lat/lon requis) si `MEETUP_TOKEN` — sinon source désactivée proprement. Erreurs applicatives en HTTP 200 {ok:false} (piège n°16).
+- **Front evenements.js** : auto-câblé comme corp.js (listener propre sur `#categorySelect`, aucune modification d'app.js hors exclusion de la zone) ; caches RAM → IndexedDB (clés `ev|<q>|<deps>|<city>|<days>|<radius>`, TTL 1 h, visibles et supprimables dans la page 🗒️ Cache — branche `ev|` du rendu + suppression générique `idbDelete` dans annuaire.js) ; marqueurs par différence (`evSyncMarkers` + MK_SPREAD), clic liste = popup carte (piège n°29) ; dégradation explicite sans OPENAGENDA_KEY (statut `#evStatus` + diagnostic `op=sources`).
 
 ### score.js — mode « Composeur de critères » (ex-score31.js)
 - **Généralisation de l'ancien « Score perso »** : indice composite **personnalisable** des communes de **n'importe quel département**, **hors REGISTRY** (`scoreEnter`/`scoreLeave` appelés depuis le listener `#categorySelect` de app.js via `typeof` guards).
@@ -157,6 +165,11 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 - Associations : RNA agrégé national (Waldec) — voir architecture ci-dessus
 - Entreprises : API Recherche d'entreprises (DINUM) — gratuit, sans clé, résultats cachés IndexedDB pour économiser le quota
 
+### Évènements
+- **OpenAgenda** (API v2, clé OPENAGENDA_KEY en variable d'environnement Netlify — requise) : agendas publics + évènements (titre, dates, lieu géocodé, description, catégorie), via la fonction Netlify events.js (caches serveur 12 h / 20 min).
+- **Meetup** (API GraphQL, MEETUP_TOKEN OAuth client credentials — optionnelle) : évènements des groupes autour de la ville cible.
+- **Eventbrite exclu** : la recherche publique d'évènements a été retirée de l'API (02/2020) — aucune source Eventbrite, documenté dans events.js et le README.
+
 ### Composeur de critères
 - Loyers d'annonce prédits par commune : « Carte des loyers » 2025 (Ministère de la Transition écologique, dataset `693aa2feed1bf4da603faa49`), resource `55b34088-...` (colonnes `INSEE_C`, `loypredm2`) via `/api/loyers/`, filtre `DEP__exact=<dept>` (généralisé à tout département) — une valeur par commune, même pour les petites (prédiction par maille).
 - Tous les autres critères réutilisent les sources existantes (france-geojson, délinquance communale, Filosofi, DVF, élections agrégées, RNA) — aucune copie de données.
@@ -224,10 +237,19 @@ Toutes via proxys `netlify.toml` (URLs exactes dedans). Les sources restent à j
 
 30. **Agent : écriture des fichiers récupérés depuis GitHub** (10/2026) : une copie locale de `corp.js` écrite depuis le `.resource.text` de `get_file_contents` s'est retrouvée **double-encodée** (é → Ã© sur tout le fichier — mojibake intégral si poussée telle quelle). Avant tout push d'un fichier récupéré du dépôt : écrire depuis le `.resource.blob` (base64, décodage `base64 -d` byte-exact) quand il est disponible, sinon vérifier l'affichage des accents, et **contrôler par md5** que local = source GitHub + modifications. Syntaxe toujours vérifiée par `new Function()` avant push (piège n°23).
 
+31. **Évènements : Eventbrite injoignable + OpenAgenda paginée par curseur** (10/2026) : la recherche publique d'évènements Eventbrite a été retirée de l'API (02/2020) — seule la lecture de ses propres évènements existe : source écartée, le mode s'appuie sur OpenAgenda (clé OPENAGENDA_KEY requise — sans elle, message explicite dans #evStatus, résultat vide mais l'UI ne casse pas) et Meetup optionnel (MEETUP_TOKEN). L'API OpenAgenda v2 pagine par curseur (`after[]`, pas par numéro de page) et la découverte d'agendas par ville/département est approximative (recherche texte) : les évènements sont donc re-filtrés côté front (haystack + zone/ville/rayon), jamais pris tels quels.
+
+32. **Évènements : utilitaires annuaire dépendants des contours de communes** (10/2026) : `annZoneCentroids()`/`annCityListZone()` (annuaire.js) lisent `state.communesGeo[dep].features` SANS charger les contours — l'annuaire les charge dans son propre `annRefresh`, mais le mode Évènements appelait ces utilitaires directement → crash « Cannot read properties of undefined (reading 'features') » dès qu'on cliquait un département en mode Évènements sans être passé par une catégorie ayant chargé les communes. Correction : `evEnsureZoneGeo(deps)` dans evenements.js (même chargement par département que annRefresh), appelé en parallèle de la requête `/events` dans `evRefresh` et avant chaque autocomplete ville. Alias de clé accepté : `OPENAGENDA_API_KEY` (repli de `OPENAGENDA_KEY`) dans events.js et api/events.js.
+
+33. **Évènements : OpenAgenda timings ISO + curseur after au premier niveau** (10/2026) : deux bugs silencieux dans events.js — (1) `timings[gte]/[lte]` attendent des dates **ISO 8601** (`2025-07-16T12:19:00.000Z`), pas des epoch millisecondes ; (2) le curseur de pagination est la clé `after` **au premier niveau** de la réponse (pas sous `pagination`). Symptôme : 0 évènement sans aucune erreur (les échecs par agenda étaient avalés par le catch de pagination) alors que la base OpenAgenda est bien remplie. Correction : `oaEventsUrl()` (ISO + `js.after`) ; ajout de `op=debug` (même signature que op=search) : terme de découverte, agendas trouvés, total/got par agenda, URL masquée et 3 titres d'exemple — diagnostic direct dans le navigateur. **Validé le 19/10/2026** en local (recherche « concert + Toulouse + 1 an » conforme).
+
+34. **Évènements : « 0 résultat » persistant = caches ou serveur local non relancé** (10/2026) : un fix de fonction n'est actif qu'après relance de `netlify dev`, et un résultat vide reste collé **1 h** en IndexedDB navigateur (clés `ev|…`, purgeables dans la page 🗂 Cache) — côté serveur, cache résultats 20 min / découverte 12 h. Diagnostic systématique : `/events?op=debug&q=…&city=…&days=…&deps=…` (keyPresent, total/got et erreurs par agenda, URL masquée). Architecture OpenAgenda v2 confirmée : **pas de recherche globale d'évènements** — (1) découverte d'agendas par mot-clé (`search=<ville|département>` : titre + termes clés dérivés des évènements publiés), (2) sous-recherche par agenda (`search=<thématique>` plein texte, `timings` ISO 8601, `adminLevel2[]`/`adminLevel4[]` par nom exact, curseur `after[]`) ; `threshold=auto` disponible pour écarter les correspondances faibles de `search`.
+
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
 - **Workflow** (validé 10/2026) : branche dédiée → PR vers `hidden` → merge → PR `hidden` → `main` → merge ; test local `netlify dev` (port 8888, proxys actifs) = 1 seul deploy par évolution
+- **Branche `feature/evenements`** (mode Évènements : evenements.js, netlify/functions/events.js, api/events.js) — validée en local le 19/10/2026 (`netlify dev`, « concert + Toulouse + 1 an » OK), mergée `hidden` puis `main` le 19/10/2026 ; ⚠️ pour la prod Netlify : configurer `OPENAGENDA_KEY` (ou `OPENAGENDA_API_KEY`) en variable d'environnement du site.
 - Branches de test **historiques, toutes MERGÉES** (10/2026) : `score31` (Composeur de critères), `corp_search` (Composeur d'entreprises), `corp_ext` (Recherche étendue), `get_email` (Favoris/Enrich/email.js), `multi-dep` (zone multi-départements), `hidden` (page /mafrance) — la branche `hidden` a été resynchronisée sur `main` le 13/10/2026 (page /mafrance désormais sur `main`).
 - **Double déploiement Vercel RÉALISÉ** (10/2026) : `vercel.json` (rewrites équivalents) + `api/` (ports des fonctions ft/curated/email) + `package.json` racine — le repo se déploie tel quel sur Vercel en parallèle de Netlify (voir `docs/VERCEL.md`)
 - Contours communes : dossier par dept (`DEP_FOLDERS` map complète code→dossier dans `app.js`)
