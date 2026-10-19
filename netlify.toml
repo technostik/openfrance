@@ -198,6 +198,17 @@
   to = "/mafrance.html"
   status = 200
 
+# --- Évènements (evenements.js) : fonction Netlify events.js ---
+# Recherche unifiée OpenAgenda (API v2) + Meetup (GraphQL, optionnel).
+# Secrets : OPENAGENDA_KEY (requise) — MEETUP_TOKEN (optionnelle, OAuth client credentials).
+# Le service worker ne met PAS /events en cache (données dynamiques fraîches).
+[[redirects]]
+  from = "/events"
+  to = "/.netlify/functions/events"
+  status = 200
+  force = true
+
+
 # --- Développement local : port fixe pour une origine stable ---
 # Service worker, IndexedDB et localStorage sont cloisonnés par origine
 # (protocole + hôte + port) : un port qui change à chaque lancement de

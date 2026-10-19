@@ -332,7 +332,15 @@ function extRenderFT() {
     sub.textContent = 'SIREN ' + rec.siren + ((rec.domaines || []).length ? ' · ' + rec.domaines.join(', ') : '');
     el.appendChild(head);
     el.appendChild(sub);
-    el.addEventListener('click', function () { extOpenFiche(rec.siren); });
+    // Harmonisé avec l'annuaire : clic = popup de l'item SUR LA CARTE ; la
+    // fiche détaillée reste accessible depuis le lien « 📋 Fiche détaillée »
+    // de la popup. Repli sur la fiche si aucun marqueur (sans ville cible,
+    // les entreprises FT ne sont pas sur la carte).
+    el.addEventListener('click', function () {
+      var mk = EXT.markerBySiren[rec.siren];
+      if (mk) { map.panTo(mk.getLatLng()); mk.openPopup(); }
+      else extOpenFiche(rec.siren);
+    });
     box.appendChild(el);
   });
   if (data.rows.length > EXT_MAX_LIST) {
@@ -723,7 +731,14 @@ function extRenderResults(lbb, curated) {
       (cur && (cur.domaines || []).length ? ' · ' + cur.domaines.join(', ') : '');
     row.appendChild(head);
     row.appendChild(sub);
-    row.addEventListener('click', function () { extOpenFiche(c.siren); });
+    // Harmonisé avec l'annuaire : clic = popup de l'item SUR LA CARTE ; la
+    // fiche détaillée reste accessible depuis le lien « 📋 Fiche détaillée »
+    // de la popup. Repli sur la fiche si aucun marqueur (hors cap/sans coords).
+    row.addEventListener('click', function () {
+      var mk = EXT.markerBySiren[c.siren];
+      if (mk) { map.panTo(mk.getLatLng()); mk.openPopup(); }
+      else extOpenFiche(c.siren);
+    });
     box.appendChild(row);
   });
   if (!comps.length) {

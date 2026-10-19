@@ -1484,7 +1484,7 @@ function initUI() {
     // Persistance de la zone multi-départements entre catégories : en revenant
     // d'une catégorie sans carte (composeur, entreprises…), on rétablit la vue zone.
     if (state.view !== 'dep' && state.zone && state.zone.length &&
-        ['annuaire', 'score31', 'corp', 'corp_ext'].indexOf(state.category) === -1 &&
+        ['annuaire', 'evenements', 'score31', 'corp', 'corp_ext'].indexOf(state.category) === -1 &&
         DEP_FOLDERS[state.zone[0]]) {
       state.view = 'dep';
       state.dep = { code: state.zone[0], nom: depNom(state.zone[0]) };

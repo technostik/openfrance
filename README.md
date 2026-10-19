@@ -16,6 +16,13 @@ Application web de visualisation des données ouvertes françaises (data.gouv.fr
 - Recherche multi-mots-clés locale : `ninjutsu + mma - boxe` → contient « ninjutsu » OU « mma » mais pas « boxe » ; mots simples = tous requis (ET), `+mot` = OU, `-mot` = exclusion, `"expression entre guillemets"` supportée.
 - Marqueurs sur la carte (centroïde de la commune pour les assos, coordonnées du siège pour les entreprises) + liste de résultats cliquables.
 
+**Évènements** (catégorie « Évènements ») :
+- Recherche unifiée d'évènements par thématique sur un territoire — département, zone multi-départements ou ville + rayon (0–50 km) — et sur une période (7 jours → 1 an), avec la même syntaxe multi-opérateurs que l'annuaire (`+mot` = OU, `-mot` = exclure, `"mot"` = mot exact).
+- **OpenAgenda** (API v2, clé `OPENAGENDA_KEY` requise — variable d'environnement) : découverte des agendas du territoire (recherche ville/département, 20 max, cache serveur 12 h) puis évènements de chaque agenda (pagination par curseur, plafond 300 évènements, cache 20 min).
+- **Meetup** (API GraphQL `searchEvents`, optionnel, `MEETUP_TOKEN` — OAuth client credentials) : évènements autour de la ville cible ; sans ville ou sans token, la source est simplement absente.
+- **Eventbrite exclu** : sa recherche publique d'évènements a été retirée de l'API (2020) — aucune source Eventbrite.
+- Fonction Netlify `events.js` servie sous `/events` (`op=sources` diagnostic des clés, `op=search` recherche) ; port Vercel `api/events.js` (rewrite `/events`). Marqueurs sur la carte + liste cliquable, caches navigateur (IndexedDB, clés « ev|… », TTL 1 h, purge depuis la page 🗒️ Cache) ; dégradation propre et message explicite si la clé OpenAgenda est absente.
+
 **Composeur d'entreprises** (catégorie « Composeur d'entreprises ») :
 - [API Recherche d'entreprises](https://recherche-entreprises.api.gouv.fr/) (DINUM) en mode **recherche multicritère** : activité (code NAF exact ou section), tranche d'effectifs (min/max), catégorie (PME/ETI/GE), nature juridique, chiffre d'affaires (min/max), labels (ESS, Qualiopi, RGE, bio, spectacle, organisme de formation…), état administratif, recherche texte optionnelle.
 - **Ciblage géographique** : rayon configurable autour d'une ville (recherche géographique avec cercle sur la carte) ou, à rayon nul, toutes les entreprises de la commune ; sans ville, tout un département — ou toute une zone multi-départements (une requête par département, « Charger plus » fusionne les pages de chaque département, plafond de pages divisé par leur nombre).
@@ -56,13 +63,13 @@ La page principale (index.html) reste la version « politiquement correcte » : 
 
 ## Stack
 
-Site statique sans build : HTML + CSS + JS, [Leaflet](https://leafletjs.com) + fond de carte OSM/CARTO. Les données sont chargées directement dans le navigateur depuis data.gouv.fr (proxy Netlify, aucun serveur requis). Service worker pour le cache disque persistant (stale-while-revalidate). Trois fonctions Netlify (netlify/functions/ft.js, curated.js, email.js) proxifient les APIs France Travail, Supabase (listes curatées) et la recherche email/site web des favoris, pour la recherche étendue (secrets en variables d'environnement, jamais dans le repo).
+Site statique sans build : HTML + CSS + JS, [Leaflet](https://leafletjs.com) + fond de carte OSM/CARTO. Les données sont chargées directement dans le navigateur depuis data.gouv.fr (proxy Netlify, aucun serveur requis). Service worker pour le cache disque persistant (stale-while-revalidate). Quatre fonctions Netlify (netlify/functions/ft.js, curated.js, email.js, events.js) proxifient les APIs France Travail, Supabase (listes curatées), la recherche email/site web des favoris (recherche étendue) et la recherche d'évènements OpenAgenda + Meetup (catégorie Évènements, clé OPENAGENDA_KEY requise + MEETUP_TOKEN optionnelle — jamais dans le repo) (secrets en variables d'environnement, jamais dans le repo).
 
 ## Développement local
 
 `netlify dev` sert le site avec les redirections `/api/*` actives (nécessaire pour l'annuaire : associations, nomenclature, entreprises — et pour le composeur d'entreprises : `/api/ent`).
 
-Pour la recherche étendue, les fonctions Netlify et les redirections /ft/* sont actives avec « netlify dev » ; les secrets vont dans .env local (gitignoré) : FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY — et dans l'interface Netlify pour la production.
+Pour la recherche étendue, les fonctions Netlify et les redirections /ft/* sont actives avec « netlify dev » ; les secrets vont dans .env local (gitignoré) : FT_CLIENT_ID, FT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_ANON_KEY, OPENAGENDA_KEY (évènements OpenAgenda — requise), MEETUP_TOKEN (évènements Meetup — optionnelle) — et dans l'interface Netlify pour la production.
 
 Import French Tech (listes curatées) : les lauréats viennent des sources officielles uniquement (annuaire Numeum + pages lafrenchtech.gouv.fr — le « fichier » Salesdorado s'est révélé être un aimant à emails avec lien 404, écarté). Collecte : `node tools/collect-numeum.mjs` (~520 fiches, tags programme + année, sortie locale), fusion avec les listes officielles (promo 2026, Green20/Agri20/DeepNum20), puis résolution SIREN + upsert : `node tools/resolve-sirens.mjs` (dry-run) puis `--apply` (écriture avec la clé service_role `SUPABASE_SERVICE_KEY` en .env local — la clé ANON est en lecture seule). Base actuelle : 449 entreprises (72 FT2030 + ~380 Next40/FT120/thématiques 2021→2026).
 

@@ -1049,6 +1049,14 @@ function renderCachePage() {
             ' · « ' + esc((c.terms || []).join(' ')) + ' »' +
             (c.section ? ' · section NAF ' + esc(c.section) : '');
           detail = ((c.rows || []).length).toLocaleString('fr-FR') + ' entreprise(s)';
+        } else if (e.key.indexOf('ev|') === 0) {
+          // Recherche d'évènements (evenements.js) — même IndexedDB, clés « ev|… »
+          var evp = e.key.split('|'); // ev|<q>|<deps>|<city>|<days>|<radius>
+          var evn = e.v && e.v.events && e.v.events.events ? e.v.events.events.length : 0;
+          label = 'Recherche évènements — ' + esc(evp[2] || '?') +
+            (evp[1] ? ' · « ' + esc(evp[1]) + ' »' : '') +
+            (evp[3] ? ' · ' + esc(evp[3]) : '');
+          detail = evn.toLocaleString('fr-FR') + ' évènement(s)';
         } else {
           label = e.key;
           detail = '';
@@ -1161,6 +1169,11 @@ function annCacheButtonAction(btn) {
           }
           after('Cache de la recherche entreprises supprimé (relancée à la prochaine saisie)');
         });
+      });
+    } else {
+      // Autres entrées IndexedDB (ex. recherches d'évènements « ev|… », evenements.js)
+      idbDelete(id).then(function () {
+        after('Cache « ' + id + ' » supprimé (relancé à la prochaine recherche)');
       });
     }
   } else if (type === 'sw') {

@@ -44,6 +44,8 @@ main { display: flex; height: calc(100vh - 150px); min-height: 480px; }
 #annCity { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 10px 14px; font-size: 1.05rem; width: 100%; }
 #annCity:focus { outline: 1px solid #2563eb; }
 #annCityWrap .sc-drop { width: 100%; min-width: 0; }
+#evCityWrap { position: relative; } /* ancêtre positionné pour le dropdown .sc-drop (piège n°26) */
+#evCityWrap .sc-drop { width: 100%; min-width: 0; }
 #annSearchBtn, #annCacheBtn { background: #1d4ed8; color: white; border: none; border-radius: 6px; padding: 10px 14px; font-size: .95rem; cursor: pointer; align-self: center; }
 #annSearchBtn:hover, #annCacheBtn:hover { background: #2563eb; }
 #annHint { padding: 4px 24px 10px; font-size: .78rem; }
