@@ -454,8 +454,10 @@ function findFiles(dir, re) {
 // BD Forêt V2 : SHP par département -> data/essences-foret/d<dep>.json
 // ============================================================
 async function buildForet(dep, entries, opts) {
-  // dernière entrée SHP L93 du département
-  const cands = entries.filter(t => new RegExp('BDFORET_2-0__SHP_LAMB93_D' + dep + '_').test(t)).sort();
+  // dernière entrée SHP L93 du département — piège n°41(f) : le catalogue
+  // code les départements sur 3 caractères (D001 pour l'Ain, D082, D02A/D02B
+  // pour la Corse) — regex tolérante D0*<dep>_ (matche aussi un éventuel D<dep>_)
+  const cands = entries.filter(t => new RegExp('BDFORET_2-0__SHP_LAMB93_D0*' + dep + '_').test(t)).sort();
   if (!cands.length) { console.warn('⚠ Pas d\'entrée BD Forêt V2 (SHP) pour ' + dep + ' — ignorer ?'); return null; }
   const entry = cands[cands.length - 1];
   console.log('— ' + dep + ' : ' + entry);

@@ -454,6 +454,11 @@ function plRefresh() {
   if (state.view === 'france' || !state.dep) { plRenderFrance(); return; }
   var deps = plZoneDeps();
   if (!deps.length) { plRenderFrance(); return; }
+  // Piège n°40 : on va dessiner la carte pollens -> retirer le choroplèthe de
+  // la catégorie précédente (ex. prix du m² DVF), sinon il resterait affiché
+  // et cliquable SOUS la nouvelle couche. (Vue France : geoLayer conservé,
+  // c'est le sélecteur de départements cliquables.)
+  if (typeof geoLayer !== 'undefined' && geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   var zoneLbl = zoneLabel(deps);
   document.getElementById('backBtn').hidden = false;
   document.getElementById('levelTitle').textContent = 'Pollens — ' + zoneLbl;
@@ -495,12 +500,14 @@ function plRefresh() {
 // ---------- Entrée/sortie de catégorie ----------
 function plEnter() {
   POL.active = true;
-  // Retirer le choroplèthe de la catégorie précédente (ex. prix du m² DVF) :
-  // le mode Pollens dessine ses propres couches (quotidienne par commune /
-  // structurelle par département) — geoLayer (app.js) resterait sinon affiché
-  // et cliquable SOUS la carte pollens. La catégorie suivante le recrée via
-  // refresh() -> renderChoropleth (bug signalé 10/2026, piège n°40).
-  if (typeof geoLayer !== 'undefined' && geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
+  // NB piège n°40 (régression corrigée 10/2026) : geoLayer n'est PAS retiré
+  // ici. En vue France, geoLayer EST la carte des départements cliquables —
+  // le SEUL moyen de sélectionner un département en mode Pollens (clic ->
+  // openDepartment -> refresh() = plRefresh). Le retirer dans plEnter rendait
+  // la vue France vide : plus rien à cliquer, carte des indices inutilisable.
+  // Le choroplèthe de la catégorie précédente est retiré par plRefresh, au
+  // moment de dessiner la carte pollens d'un département/zone (jamais SOUS la
+  // carte pollens).
   POL.prevRefresh = refresh;
   refresh = plRefresh; // openDepartment/backToFrance appellent refresh()
   document.getElementById('plControls').style.display = 'flex';
