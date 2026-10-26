@@ -52,6 +52,10 @@
 //             --from-dir tools/.cache/essences/…  (déjà téléchargé/extrait)
 //             --force (retélécharger), --clean (supprimer le cache après)
 //
+// Le portail data.geopf.fr limite en débit (HTTP 429 si on pagine en rafale) :
+// le script espace ses requêtes (~2/s max) et réessaie automatiquement avec
+// backoff exponentiel + Retry-After (5 tentatives) — pas de relance à la main.
+//
 // 🤖 Généré avec Vibe — données sous licence ouverte (IGN/ASP) ; les JSON de
 // sortie sont des agrégats statistiques (superficies par essence × commune).
 
@@ -313,9 +317,37 @@ function candidatePoints(rings) {
 // ============================================================
 // Réseau : flux Atom (JSON) + téléchargements .7z + extraction
 // ============================================================
+// Le portail data.geopf.fr limite en débit (HTTP 429) si on pagine en rafale :
+// espacement minimum entre requêtes catalogue + retry exponentiel avec
+// Retry-After (constaté à la première exécution : 429 dès la page 9).
+const GEOPF_MIN_INTERVAL_MS = 500;
+let _geopfLastReq = 0;
+async function politeWait() {
+  const wait = _geopfLastReq + GEOPF_MIN_INTERVAL_MS - Date.now();
+  if (wait > 0) await new Promise(res => setTimeout(res, wait));
+  _geopfLastReq = Date.now();
+}
+
+async function fetchRetry(url, opts, tries) {
+  tries = tries || 5;
+  for (let i = 0; i < tries; i++) {
+    await politeWait();
+    const r = await fetch(url, opts);
+    if (r.ok) return r;
+    if ((r.status === 429 || r.status >= 500) && i < tries - 1) {
+      // backoff exponentiel ; le header Retry-After (secondes) fait foi
+      const ra = +(r.headers.get('retry-after') || 0);
+      const wait = Math.max(ra * 1000, 2000 * Math.pow(2, i));
+      process.stderr.write('  HTTP ' + r.status + ' (' + url + ') — nouvelle tentative ' + (i + 2) + '/' + tries + ' dans ' + Math.round(wait / 1000) + ' s\n');
+      await new Promise(res => setTimeout(res, wait));
+      continue;
+    }
+    throw new Error('HTTP ' + r.status + ' sur ' + url);
+  }
+}
+
 async function fetchJSON(url) {
-  const r = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!r.ok) throw new Error('HTTP ' + r.status + ' sur ' + url);
+  const r = await fetchRetry(url, { headers: { Accept: 'application/json' } });
   const t = await r.text();
   try { return JSON.parse(t); } catch (e) { return { __xml: t }; }
 }
@@ -354,7 +386,7 @@ async function entryDownloadLinks(resource, entry) {
 async function download(url, dest, force) {
   if (!force && fs.existsSync(dest) && fs.statSync(dest).size > 0) return dest;
   await fsp.mkdir(path.dirname(dest), { recursive: true });
-  const r = await fetch(url);
+  const r = await fetchRetry(url);
   if (!r.ok) throw new Error('Téléchargement HTTP ' + r.status + ' : ' + url);
   const total = +(r.headers.get('content-length') || 0);
   let done = 0;
@@ -508,25 +540,23 @@ async function loadCultureGroups(millesime) {
   // referential CODE_CULTURE -> libellé de groupe ; essayer <millesime> puis 2024
   for (const y of [millesime, 2024]) {
     const url = 'https://data.geopf.fr/annexes/ressources/documentation/REF_CULTURES_GROUPES_CULTURES_' + y + '.csv';
-    try {
-      const r = await fetch(url);
-      if (!r.ok) continue;
-      const rows = parseCsv(await r.text());
-      const head = rows[0].map(h => norm(h));
-      const iCode = head.findIndex(h => /^code_culture/.test(h) || h === 'code');
-      const iGrp = head.findIndex(h => /groupe/.test(h) && /libell|label|^groupe_cultures$/.test(h));
-      const iGrp2 = head.findIndex(h => /groupe/.test(h)); // repli
-      const use = iGrp !== -1 ? iGrp : iGrp2;
-      if (iCode === -1 || use === -1) continue;
-      const map = {};
-      for (const row of rows.slice(1)) {
-        const code = (row[iCode] || '').trim();
-        const grp = (row[use] || '').trim();
-        if (!code) continue;
-        for (const [re, g] of RPG_GROUPS) if (re.test(grp)) { map[code] = g; break; }
-      }
-      if (Object.keys(map).length) { console.log('Référentiel cultures ' + y + ' : ' + Object.keys(map).length + ' codes'); return map; }
-    } catch (e) { /* essayer l'année suivante */ }
+    let r = null;
+    try { r = await fetchRetry(url); } catch (e) { continue; }
+    const rows = parseCsv(await r.text());
+    const head = rows[0].map(h => norm(h));
+    const iCode = head.findIndex(h => /^code_culture/.test(h) || h === 'code');
+    const iGrp = head.findIndex(h => /groupe/.test(h) && /libell|label|^groupe_cultures$/.test(h));
+    const iGrp2 = head.findIndex(h => /groupe/.test(h)); // repli
+    const use = iGrp !== -1 ? iGrp : iGrp2;
+    if (iCode === -1 || use === -1) continue;
+    const map = {};
+    for (const row of rows.slice(1)) {
+      const code = (row[iCode] || '').trim();
+      const grp = (row[use] || '').trim();
+      if (!code) continue;
+      for (const [re, g] of RPG_GROUPS) if (re.test(grp)) { map[code] = g; break; }
+    }
+    if (Object.keys(map).length) { console.log('Référentiel cultures ' + y + ' : ' + Object.keys(map).length + ' codes'); return map; }
   }
   throw new Error('Référentiel des cultures introuvable (REF_CULTURES_GROUPES_CULTURES) — voir piège n°41');
 }
@@ -646,7 +676,9 @@ async function main() {
     process.exit(1);
   }
   if (opts.list) {
-    const [bdf, rpg] = await Promise.all([feedEntries('BDFORET'), feedEntries('RPG')]);
+    // SÉQUENTIEL : les deux catalogues en parallèle doublent le rythme -> 429
+    const bdf = await feedEntries('BDFORET');
+    const rpg = await feedEntries('RPG');
     console.log('BDFORET (échantillon) :'); bdf.slice(-15).forEach(t => console.log('  ' + t));
     console.log('RPG millésimes récents :'); rpg.filter(t => /RPG_[34]-\d__GPKG_LAMB93_(R\d\d|FXX)_202[45]/.test(t)).forEach(t => console.log('  ' + t));
     return;
