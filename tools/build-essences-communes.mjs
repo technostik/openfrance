@@ -26,9 +26,9 @@
 //     sont donc affectés à la commune dominante du centroïde ;
 //   - les superficies sont les aires planaires Lambert-93 (m²), converties en
 //     hectares (2 décimales) dans le JSON de sortie ;
-//   - les contours communaux utilisés sont CEUX DU REPO
-//     (geo/communes/departements/<dossier>/communes-<dossier>.geojson) :
-//     les codes INSEE de sortie matcheront l'application par construction.
+//   - les contours communaux utilisés sont ceux du proxy /geo/communes/* de
+//     l'app (france-geojson, raw.githubusercontent) : les codes INSEE de sortie
+//     matcheront l'application par construction (piège n°41(g)).
 //
 // Sortie (dossier data/, embarqué dans le repo — style naf.js, aucune requête
 // réseau au chargement de l'app) :
@@ -136,11 +136,17 @@ const TFV_MAP = [
 ];
 
 // ---------- Groupes de cultures RPG retenus (proxy graminées, cf. TACCT) ----------
-const RPG_GROUPS = [
-  [/cereale/i, 'cereales'],
-  [/prairie\s*permanente/i, 'prairies'],
-  [/prairie\s*temporaire/i, 'prairies']
-];
+// Piège n°41(h) : on matche sur CODE_GROUPE_CULTURE (colonne numérique), PAS sur
+// le libellé — les labels sont accentués (« Autres céréales » : /cereale/ ne
+// matche pas) et surtout ÉCLATÉS (1=Blé tendre, 2=Maïs, 3=Orge, 14=Riz : aucun
+// ne contient « céréales »). Groupes officiels : céréales = 1,2,3,4,14 ;
+// prairies (permanentes+temporaires) = 18,19.
+const RPG_CEREALES_GROUPS = [1, 2, 3, 4, 14];
+const RPG_PRAIRIES_GROUPS = [18, 19];
+// Repli statique embarqué (REF_CULTURES_GROUPES_CULTURES, IGN/ASP, licence
+// ouverte) si le CSV est injoignable depuis votre machine (CDN/WAF) :
+const RPG_CEREALES_CODES = ['AVH', 'AVP', 'BDH', 'BDP', 'BTH', 'BTP', 'CAG', 'MCR', 'MID', 'MIS', 'MLT', 'ORH', 'ORP', 'RIZ', 'SGH', 'SGP', 'SOG', 'SRS', 'TTH', 'TTP', 'CAH', 'MCS'];
+const RPG_PRAIRIES_CODES = ['PPH', 'PTR'];
 
 // ============================================================
 // Helpers géométriques (purs, testés)
@@ -281,18 +287,38 @@ function wkbRings(buf, off, little) {
   return rings;
 }
 
-// ---------- Communes du repo : index spatial minimal (PIP) ----------
+// ---------- Communes : contours france-geojson (MÊME source que l'app) ----------
+// Piège n°41(g) : le repo NE CONTIENT PAS geo/communes/ — l'app les charge via
+// le proxy /geo/communes/* (netlify.toml) vers raw.githubusercontent.com
+// (gregoiredavid/france-geojson). Le script télécharge exactement les mêmes
+// fichiers (codes INSEE identiques à l'app par construction), avec cache
+// disque local ; repli sur une copie locale si elle existe.
+const GEO_RAW_BASE = 'https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements';
 async function loadCommunes(dep) {
   const fold = DEP_FOLDERS[dep];
   if (!fold) throw new Error('Département inconnu (DEP_FOLDERS) : ' + dep);
-  const p = path.join(GEO_DIR, fold, 'communes-' + fold + '.geojson');
-  const g = JSON.parse(await fsp.readFile(p, 'utf8'));
+  const cache = path.join(CACHE, 'geo', 'communes-' + fold + '.geojson');
+  let text = null;
+  if (fs.existsSync(cache)) {
+    text = await fsp.readFile(cache, 'utf8');
+  } else {
+    const local = path.join(GEO_DIR, fold, 'communes-' + fold + '.geojson');
+    if (fs.existsSync(local)) text = await fsp.readFile(local, 'utf8');
+  }
+  if (text === null) {
+    const url = GEO_RAW_BASE + '/' + fold + '/communes-' + fold + '.geojson';
+    const r = await fetchRetry(url); // même source que le proxy /geo/communes/*
+    text = await r.text();
+    await fsp.mkdir(path.dirname(cache), { recursive: true });
+    await fsp.writeFile(cache, text); // cache disque : une seule fois par dép
+  }
+  const g = JSON.parse(text);
   const index = [];
   for (const f of g.features || []) {
     const code = f.properties && (f.properties.code || f.properties.insee);
     if (!code) continue;
     for (const r of ringsOfGeometry(f.geometry)) {
-      // les communes du repo sont en WGS84 ; on indexe en lon/lat
+      // les communes sont en WGS84 ; on indexe en lon/lat
       index.push({ code, outer: r.outer, holes: r.holes });
     }
   }
@@ -472,8 +498,14 @@ async function buildForet(dep, entries, opts) {
   let totalForetM2 = 0, nPoly = 0;
   for (const sf of shpFiles) {
     const reader = await shpMod.open(sf);
-    let it;
-    while ((it = await reader.read()) && it.geometry) {
+    // Piège n°41(i) : l'API du paquet npm « shapefile » renvoie
+    // { done: boolean, value: Feature } — PAS le Feature directement.
+    // while ((it = await reader.read()) && it.geometry) sortait dès la 1re
+    // lecture (it.geometry === undefined) → sorties VIDES sans aucune erreur.
+    let res;
+    while ((res = await reader.read()) && !res.done) {
+      const it = res.value || res;
+      if (!it || !it.geometry) continue;
       const props = it.properties || {};
       const tfvKey = Object.keys(props).find(k => /^TFV$/i.test(k));
       if (!tfvKey) continue;
@@ -539,28 +571,36 @@ function parseCsv(text) {
 }
 
 async function loadCultureGroups(millesime) {
-  // referential CODE_CULTURE -> libellé de groupe ; essayer <millesime> puis 2024
-  for (const y of [millesime, 2024]) {
+  // referentiel CODE_CULTURE -> 'cereales' | 'prairies' ; essayer <millesime>,
+  // puis 2024/2025 ; en dernier recours REPLI sur le référentiel statique
+  // embarqué (piège n°41(h) : matcher sur CODE_GROUPE_CULTURE, pas sur le
+  // libellé accentué/éclaté).
+  for (const y of [...new Set([millesime, 2024, 2025])]) {
     const url = 'https://data.geopf.fr/annexes/ressources/documentation/REF_CULTURES_GROUPES_CULTURES_' + y + '.csv';
     let r = null;
-    try { r = await fetchRetry(url); } catch (e) { continue; }
+    try {
+      r = await fetchRetry(url, { headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) OpenFrance-build', Accept: 'text/csv' } });
+    } catch (e) { continue; }
     const rows = parseCsv(await r.text());
     const head = rows[0].map(h => norm(h));
     const iCode = head.findIndex(h => /^code_culture/.test(h) || h === 'code');
-    const iGrp = head.findIndex(h => /groupe/.test(h) && /libell|label|^groupe_cultures$/.test(h));
-    const iGrp2 = head.findIndex(h => /groupe/.test(h)); // repli
-    const use = iGrp !== -1 ? iGrp : iGrp2;
-    if (iCode === -1 || use === -1) continue;
+    const iGrpCode = head.findIndex(h => /code_groupe/.test(h)); // CODE_GROUPE_CULTURE fait foi
+    if (iCode === -1 || iGrpCode === -1) continue;
     const map = {};
     for (const row of rows.slice(1)) {
       const code = (row[iCode] || '').trim();
-      const grp = (row[use] || '').trim();
-      if (!code) continue;
-      for (const [re, g] of RPG_GROUPS) if (re.test(grp)) { map[code] = g; break; }
+      const grp = +((row[iGrpCode] || '').trim());
+      if (!code || !grp) continue;
+      if (RPG_CEREALES_GROUPS.includes(grp)) map[code] = 'cereales';
+      else if (RPG_PRAIRIES_GROUPS.includes(grp)) map[code] = 'prairies';
     }
-    if (Object.keys(map).length) { console.log('Référentiel cultures ' + y + ' : ' + Object.keys(map).length + ' codes'); return map; }
+    if (Object.keys(map).length) { console.log('Référentiel cultures ' + y + ' : ' + Object.keys(map).length + ' codes (céréales + prairies)'); return map; }
   }
-  throw new Error('Référentiel des cultures introuvable (REF_CULTURES_GROUPES_CULTURES) — voir piège n°41');
+  const map = {};
+  RPG_CEREALES_CODES.forEach(c => map[c] = 'cereales');
+  RPG_PRAIRIES_CODES.forEach(c => map[c] = 'prairies');
+  console.log('Référentiel cultures : REPLI statique embarqué (' + Object.keys(map).length + ' codes, REF_CULTURES_GROUPES_CULTURES 2024/2025 — CDN injoignable)');
+  return map;
 }
 
 async function buildRpg(region, deps, entries, opts) {
