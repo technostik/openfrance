@@ -99,6 +99,12 @@
     <button id="evSearchBtn" type="button" title="Relancer la recherche d'évènements">🔎</button>
   </div>
     <div id="plControls" style="display:none">
+    <label>Vue
+      <select id="plView" title="Indice quotidien : indice pollen par commune (AASQA) · Essences & exposition : carte structurelle par département « en général » (déménagement)">
+        <option value="jour">Indice quotidien</option>
+        <option value="ess">Essences & exposition</option>
+      </select>
+    </label>
     <label>Taxon
       <select id="plTaxon" title="Taxon affiché : indice synthétique (sous-indice le plus élevé) ou sous-indice d'un taxon"></select>
     </label>
@@ -108,6 +114,9 @@
     <label id="plEssWrap">Essence
       <input id="plEssence" type="text" placeholder="ex. bouleau, cyprès, ambroisie…" autocomplete="off" title="Rechercher une essence : affiche sa notation allergénique (0–5) et bascule la carte sur son taxon s'il est suivi par l'indice national">
       <div id="plEssenceDrop" class="sc-drop"></div>
+    </label>
+    <label id="plEsWrap" style="display:none">Exposition
+      <select id="plEsSel" title="Essence ou groupe : superficie forestière (IFN 2024), chorologie indicative (occurrences GBIF) ou proxy cultures (Agreste RGA 2020) — exposition relative 1–5 par département"></select>
     </label>
   </div>
 
@@ -213,7 +222,7 @@
 <p id="annQueryExp" class="muted" style="display:none"></p>
 <p id="evHint" class="muted" style="display:none">💡 Évènements : OpenAgenda (agendas du département/zone ou de la ville) + Meetup (si configuré) — recherche par thématique et par période, filtre ville/rayon. Même syntaxe multi-opérateurs que l'annuaire (<b>+mot</b> = OU, <b>-mot</b> = exclure, <b>"mot"</b> = exact). Eventbrite n'est pas inclus : sa recherche publique d'évènements a été retirée (2020).</p>
 <p id="evQueryExp" class="muted" style="display:none"></p>
-<p id="plHint" class="muted" style="display:none">💡 Pollens : indice quotidien par commune des AASQA (Atmo France, licence ODbL) — 6 taxons (ambroisie, armoise, aulne, bouleau, graminées, olivier) + indice synthétique, échéances aujourd'hui → après-demain (publication 13h), France métropolitaine et Corse. Champ « Essence » : notation allergénique indicative 0–5 (RNSA/ANSES). Le critère 🌾 du Composeur de critères réutilise le même indice.</p>
+<p id="plHint" class="muted" style="display:none">💡 Pollens : indice quotidien par commune des AASQA (Atmo France, licence ODbL) — 6 taxons (ambroisie, armoise, aulne, bouleau, graminées, olivier) + indice synthétique, échéances aujourd'hui → après-demain (publication 13h), France métropolitaine et Corse. Champ « Essence » : notation allergénique indicative 0–5 (RNSA/ANSES). Le critère 🌾 du Composeur de critères réutilise le même indice. Vue « Essences & exposition » : carte structurelle par département « en général » (IFN 2024, chorologie indicative GBIF, proxy cultures Agreste RGA 2020) pour comparer les régions avant un déménagement.</p>
 <p id="plNotation" class="muted" style="display:none"></p>
 <p id="coModeHint" class="muted" style="display:none"></p>
 
@@ -241,6 +250,7 @@
     <div id="plPanel" style="display:none">
       <h2>Pollens</h2>
       <p id="plStatus" class="muted"></p>
+      <div id="plEsInfo" class="muted" style="display:none"></div>
       <div id="plLegend"></div>
       <div id="plResults"></div>
     </div>
@@ -312,6 +322,7 @@
 <script src="evenements.js"></script>
 <script src="score.js"></script>
 <script src="pollens.js"></script>
+<script src="pollens-essences.js"></script>
 <script src="corp.js"></script>
 <script src="corp_ext.js"></script>
 <script src="favoris.js"></script>
