@@ -495,6 +495,12 @@ function plRefresh() {
 // ---------- Entrée/sortie de catégorie ----------
 function plEnter() {
   POL.active = true;
+  // Retirer le choroplèthe de la catégorie précédente (ex. prix du m² DVF) :
+  // le mode Pollens dessine ses propres couches (quotidienne par commune /
+  // structurelle par département) — geoLayer (app.js) resterait sinon affiché
+  // et cliquable SOUS la carte pollens. La catégorie suivante le recrée via
+  // refresh() -> renderChoropleth (bug signalé 10/2026, piège n°40).
+  if (typeof geoLayer !== 'undefined' && geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   POL.prevRefresh = refresh;
   refresh = plRefresh; // openDepartment/backToFrance appellent refresh()
   document.getElementById('plControls').style.display = 'flex';

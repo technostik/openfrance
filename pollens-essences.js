@@ -1607,6 +1607,51 @@ function pleLeaveCleanup() { // sortie de la catégorie Pollens (plLeave de poll
   var i = document.getElementById('plEsInfo'); if (i) { i.innerHTML = ''; i.style.display = 'none'; }
 }
 
+// ---------- Critère « Essence & exposition (structurel) » du Composeur ----------
+// pollens-essences.js s'enregistre dans SC_TYPES au chargement (comme pollens.js
+// pour l'indice quotidien) : aucune modification de score.js. Valeur = exposition
+// relative 1-5 du DÉPARTEMENT de la commune — CONSTANTE au sein d'un département
+// (utile surtout pour départager les départements d'une zone multi-départements) ;
+// département non couvert par la source -> commune absente -> part neutre.
+// Sens ⬇ par défaut : moins d'exposition = mieux.
+var PLE_ZONE_COMMUNES = { zk: null, codes: [] };
+if (typeof SC_TYPES !== 'undefined') {
+  SC_TYPES.ples = {
+    icon: '🌳', label: 'Essence & exposition (département, structurel)', dir: 'min', cfg: 'select', field: 'ind',
+    defCfg: function () { return { ind: 'betula' }; },
+    key: function (cfg) { return 'ples|' + cfg.ind; },
+    cfgOptions: function () {
+      return PLE_ES.map(function (e) {
+        return { v: e.id, l: e.label + ' — exposition 1–5 (' + PLE_GR_LIB[e.groupe] + ')' };
+      });
+    },
+    describe: function (cfg) {
+      var e = pleInd(cfg.ind);
+      return 'Exposition ' + (e ? e.label : '?') + ' (département — ' + (e ? PLE_GR_LIB[e.groupe] : '') + ')';
+    },
+    defDir: function () { return 'min'; },
+    ensure: function () { // précharge la liste des communes de la zone (geo déjà en cache app.js)
+      return mergedZoneGeo(SC.zone.slice()).then(function (geo) {
+        var codes = [];
+        (geo.features || []).forEach(function (f) { var c = f.properties && f.properties.code; if (c) codes.push(c); });
+        PLE_ZONE_COMMUNES = { zk: SC.zone.join('+'), codes: codes };
+      });
+    },
+    vals: function (cfg) {
+      var ind = pleInd(cfg.ind) || PLE_ES[0];
+      var computed = pleCompute(ind);
+      var out = {};
+      if (PLE_ZONE_COMMUNES.zk !== SC.zone.join('+')) return out; // zone non encore chargée par ensure()
+      PLE_ZONE_COMMUNES.codes.forEach(function (c) {
+        var v = computed[depOfCommune(c)];
+        if (v) out[c] = v.ix; // département non couvert -> absent (part neutre)
+      });
+      return out;
+    },
+    fmt: function (v) { return v + '/5'; }
+  };
+}
+
 // ---------- Branchement UI ----------
 function pleInitUI() {
   var catSel = document.getElementById('categorySelect');
