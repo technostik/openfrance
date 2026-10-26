@@ -1,4 +1,4 @@
-// OpenFrance — Pollens (2/2) : vue « Essences & exposition » (structurelle, PAR DÉPARTEMENT).
+// OpenFrance — Pollens (2/2) : vue « Essences & exposition » (structurelle — par département, et par commune quand les données du build local sont présentes).
 //
 // Complément de pollens.js (indice quotidien par commune) : où vit-on, « en
 // général », à proximité de quelles essences allergisantes ? Objectif :
@@ -27,6 +27,16 @@
 //  - Notation allergénique 0–5 et calendriers de pollinisation : RNSA
 //    (pollens.fr) et rapport ANSES 2019 « Qualité de l'air ambiant — pollens »
 //    (référentiel statique curé, aucune copie de données volumineuses).
+//
+// 10/2026 — NIVEAU COMMUNE (même fichier, aucune nouvelle requête au chargement
+// tant que les données sont absentes) : dès qu'un département/zone est actif et
+// que les agrégats du build local existent (data/essences-foret/d<dep>.json +
+// data/essences-rpg/d<dep>.json — produits par tools/build-essences-communes.mjs
+// à partir de la BD Forêt V2 et du RPG, licences ouvertes IGN/ASP), la vue
+// dessine les COMMUNES (superficies ha de l'essence, exposition 1–5 par quintiles
+// au sein de la zone) et le critère du Composeur 🌳 VARIE AU SEIN d'un
+// département. Sans ces fichiers (HTTP 404) : repli niveau département, sans
+// erreur — comportement d'origine.
 //
 // Méthode : exposition relative 1–5 par QUINTILES (5 = les 20 % de départements
 // les plus exposés) — pour la superficie (IFN/Agreste) : % de la superficie du
@@ -1458,8 +1468,176 @@ function pleDepsGeo() { // contours departements (proxy /data/departements.json,
 function pleDraw() {
   if (!PLE.active || !PLE.ind) return;
   var ind = PLE.ind;
+  // Niveau COMMUNE dès qu'un département/zone est actif et que les données du
+  // build local (data/essences-*) sont présentes ; sinon carte départements.
+  var deps = (typeof plZoneDeps === 'function' && POL.active) ? plZoneDeps() : [];
+  if (deps && deps.length) { pleDrawCommunes(ind, deps); return; }
+  pleDrawFrance(ind, null);
+}
+
+// ---------- Niveau COMMUNE (BD Forêt V2 + RPG × contours, build local) ----------
+// Données produites par tools/build-essences-communes.mjs et committées dans
+// data/essences-foret/d<dep>.json + data/essences-rpg/d<dep>.json (agrégats
+// statistiques, licences ouvertes IGN/ASP ; codes INSEE identiques aux contours
+// de l'app par construction — piège n°41(g)). Tant qu'elles ne sont pas dans le
+// repo (HTTP 404), repli sur la carte départements (niveau d'origine).
+var PLE_COM = { foret: {}, rpg: {}, tries: {} }; // caches mémoire par département
+// id PLE_ES -> clés du JSON « essences-foret » (sorties tfvGroup du script) ou
+// champ du JSON « essences-rpg ». Essences absentes (noisetier, platane, cyprès,
+// olivier, ambroisie, armoise…) -> pas de source communale -> niveau département.
+var PLE_ES_COM = {
+  chenes: { foret: ['chene'] }, hetre: { foret: ['hetre'] }, charme: { foret: ['charme'] },
+  chataignier: { foret: ['chataignier'] }, frene: { foret: ['frene'] }, pins: { foret: ['pins'] },
+  conif_alt: { foret: ['sapin', 'epicea', 'douglas'] },
+  betula: { foret: ['bouleau'] }, alnus: { foret: ['aulne'] }, populus: { foret: ['peuplier'] },
+  cedrus: { foret: ['cedre'] },
+  cer: { rpg: 'cereales' }, herbe: { rpg: 'prairies' }
+};
+var PLE_COM_LIB = {
+  foret: 'BD Forêt V2 (IGN) — superficies par essence, build local',
+  rpg: 'RPG (ASP/IGN) — cultures par parcelle, build local'
+};
+function pleComLoad(dep) { // Promise<[foret|null, rpg|null]> ; 404 = pas buildé/committé
+  if (!PLE_COM.tries[dep]) {
+    PLE_COM.tries[dep] = Promise.all([
+      fetchJSONCached('/data/essences-foret/d' + dep + '.json').catch(function () { return null; }),
+      fetchJSONCached('/data/essences-rpg/d' + dep + '.json').catch(function () { return null; })
+    ]).then(function (r) { PLE_COM.foret[dep] = r[0]; PLE_COM.rpg[dep] = r[1]; return r; });
+  }
+  return PLE_COM.tries[dep];
+}
+function pleComSrc(ind) { // source du niveau commune pour l'essence, ou null
+  var m = PLE_ES_COM[ind.id];
+  return m ? (m.foret ? 'foret' : 'rpg') : null;
+}
+// Valeurs par commune (codes fournis) : { code: { m: ha, ix: 1..5 } } ou null.
+// Quintiles AU SEIN de la zone (0 participe comme « très faible », cf. méthode
+// du niveau département) ; département sans données -> communes exclues.
+function pleComVals(deps, ind, codes) {
+  var m = PLE_ES_COM[ind.id];
+  if (!m) return null;
+  var kind = m.foret ? 'foret' : 'rpg';
+  var avail = {}, any = false;
+  deps.forEach(function (d) {
+    var src = (kind === 'foret' ? PLE_COM.foret : PLE_COM.rpg)[d];
+    if (src && src.communes) { avail[d] = src; any = true; }
+  });
+  if (!any) return null;
+  var ha = {};
+  codes.forEach(function (c) {
+    var src = avail[depOfCommune(c)];
+    if (!src) return;
+    var o = src.communes[c];
+    var v = 0;
+    if (o) {
+      if (m.foret) m.foret.forEach(function (k) { v += o[k] || 0; });
+      else v = o[m.rpg] || 0;
+    }
+    ha[c] = v;
+  });
+  var keys = Object.keys(ha).sort(function (a, b) { return ha[a] - ha[b]; });
+  var n = keys.length, out = {};
+  keys.forEach(function (c, i) {
+    out[c] = { m: ha[c], ix: Math.min(5, 1 + Math.floor((i / Math.max(1, n)) * 5)) };
+  });
+  return out;
+}
+var PLE_COM_NOMS = {}; // code INSEE -> nom (rempli au rendu depuis mergedZoneGeo)
+function pleNomCommune(code, fallback) { // nom via l'index de la zone affichée
+  return PLE_COM_NOMS[code] || fallback || code;
+}
+function pleDrawCommunes(ind, deps) {
+  var kind = pleComSrc(ind);
+  Promise.all([mergedZoneGeo(deps.slice())].concat(deps.map(pleComLoad))).then(function (r) {
+    if (!PLE.active) return; // réponse obsolète (changement de vue entre-temps)
+    var geo = r[0];
+    PLE_COM_NOMS = {}; // index des noms pour tooltips + top communes
+    (geo.features || []).forEach(function (f) {
+      var p = f.properties || {};
+      if (p.code) PLE_COM_NOMS[p.code] = p.nom || p.name || p.code;
+    });
+    var vals = pleComVals(deps, ind, (geo.features || []).map(function (f) {
+      return f.properties && f.properties.code;
+    }).filter(Boolean));
+    if (!vals) { // pas de données communales -> carte départements d'origine
+      pleDrawFrance(ind, 'Données communales absentes (' + PLE_COM_LIB[kind || 'foret'] +
+        ') — exécuter tools/build-essences-communes.mjs puis committer data/essences-*/');
+      return;
+    }
+    PLE.vals = vals;
+    if (PLE.layer) { map.removeLayer(PLE.layer); PLE.layer = null; }
+    document.getElementById('backBtn').hidden = false;
+    document.getElementById('levelTitle').textContent = 'Pollens — essences & exposition (' +
+      (typeof zoneLabel === 'function' ? zoneLabel(deps) : deps.join(', ')) + ')';
+    PLE.layer = L.geoJSON(geo, {
+      style: function (f) {
+        var v = vals[f.properties.code];
+        return { weight: 1, color: '#0f172a',
+                 fillColor: v ? PLE_COLORS[v.ix - 1] : PLE_GREY,
+                 fillOpacity: v ? 0.85 : 0.25 };
+      },
+      onEachFeature: function (f, l) {
+        l.bindTooltip(function () {
+          var code = f.properties.code;
+          var v = vals[code];
+          var html = '<b>' + esc(pleNomCommune(code, f.properties.nom)) + '</b>';
+          if (!v) html += '<br><i>Pas de données</i>';
+          else {
+            html += '<br>' + esc(ind.label) + ' : <b style="color:' + PLE_COLORS[v.ix - 1] + '">' +
+              (v.m >= 100 ? Math.round(v.m) + ' ha' : v.m.toFixed(1).replace('.', ',') + ' ha') + '</b>';
+            html += '<br>Exposition relative : <b>' + v.ix + '/5 — ' + PLE_IX_LABELS[v.ix - 1] + '</b>';
+          }
+          return html;
+        }, { sticky: true });
+      }
+    }).addTo(map);
+    map.fitBounds(PLE.layer.getBounds(), { padding: [30, 30] });
+    pleLegendCom(ind, kind);
+    pleResultsCom(vals, ind);
+    pleStatusCom(ind, vals, kind);
+  }).catch(function (err) {
+    console.error('[OpenFrance] Pollens essences (communes) :', err);
+    setStatus('Erreur pollens (essences)');
+    showError('Impossible de charger les contours communaux.', err.message);
+  });
+}
+function pleLegendCom(ind, kind) {
+  var el = document.getElementById('plLegend');
+  var html = '';
+  PLE_IX_LABELS.forEach(function (lb, i) {
+    html += '<div class="legend-row"><span class="legend-color" style="background:' + PLE_COLORS[i] + '"></span>' +
+            '<span>' + (i + 1) + ' — ' + lb + '</span></div>';
+  });
+  html += '<div class="legend-row"><span class="legend-color" style="background:' + PLE_GREY + '"></span>' +
+          '<span>Pas de données / hors zone</span></div>';
+  html += '<div class="muted" style="margin-top:6px">Exposition relative PAR COMMUNE (quintiles au sein de la zone).<br>' +
+          esc(ind.label) + ' — ' + esc(PLE_COM_LIB[kind || 'foret']) + '</div>';
+  el.innerHTML = html;
+}
+function pleResultsCom(vals, ind) { // top 15 communes
+  var el = document.getElementById('plResults');
+  var arr = [];
+  for (var c in vals) arr.push({ code: c, m: vals[c].m, ix: vals[c].ix });
+  arr.sort(function (a, b) { return b.m - a.m || (a.code < b.code ? -1 : 1); });
+  var html = '<p class="muted" style="margin:4px 0 2px">Top 15 communes — ' + esc(ind.label) +
+    ' · classement par superficie</p>';
+  arr.slice(0, 15).forEach(function (a, i) {
+    html += '<div class="top-row"><span>' + (i + 1) + '. ' + esc(pleNomCommune(a.code)) + '</span>' +
+      '<span style="color:' + PLE_COLORS[a.ix - 1] + '"><b>' + a.m.toFixed(0) + ' ha</b> · ' + a.ix + '/5</span></div>';
+  });
+  el.innerHTML = html;
+}
+function pleStatusCom(ind, vals, kind) {
+  var n = 0; for (var c in vals) n++;
+  document.getElementById('plStatus').innerHTML = '<b>' + esc(ind.label) + '</b> — exposition relative PAR COMMUNE (1–5, quintiles) · ' +
+    n + ' commune(s) avec données · source : ' + esc(PLE_COM_LIB[kind || 'foret']) + '.';
+}
+
+function pleDrawFrance(ind, note) { // carte départements (vue France — niveau d'origine)
   var vals = pleCompute(ind);
   PLE.vals = vals;
+  document.getElementById('backBtn').hidden = true;
+  document.getElementById('levelTitle').textContent = 'Pollens — essences & exposition (France)';
   pleDepsGeo().then(function (geo) {
     if (!PLE.active) return; // reponse obsolète (changement de vue entre-temps)
     if (PLE.layer) { map.removeLayer(PLE.layer); PLE.layer = null; }
@@ -1483,12 +1661,16 @@ function pleDraw() {
           }
           return html;
         }, { sticky: true });
+        l.on('click', function () { // niveau commune : cliquer un département
+          openDepartment(f.properties.code, f.properties.nom);
+        });
       }
     }).addTo(map);
     map.fitBounds(PLE.layer.getBounds(), { padding: [30, 30] });
     pleLegend(ind);
     pleResults(vals, ind);
     pleStatus(ind, vals);
+    if (note) setStatus('⚠️ ' + note);
   }).catch(function (err) {
     console.error('[OpenFrance] Pollens essences :', err);
     setStatus('Erreur pollens (essences)');
@@ -1578,8 +1760,13 @@ function pleShowView(v) {
     if (!PLE.prevRefresh) PLE.prevRefresh = refresh;
     refresh = pleRefresh; // clics de zone / retours France : garder la carte essences
     if (POL.active && POL.layer) { map.removeLayer(POL.layer); POL.layer = null; }
-    document.getElementById('backBtn').hidden = true;
-    document.getElementById('levelTitle').textContent = 'Pollens — essences & exposition (France)';
+    // Niveau commune : le bouton retour et le titre suivent l'état (dép/zone
+    // sélectionné dans la vue quotidienne, ou clic département ci-dessous).
+    var depsEss = (typeof plZoneDeps === 'function' && POL.active) ? plZoneDeps() : [];
+    document.getElementById('backBtn').hidden = !depsEss.length;
+    document.getElementById('levelTitle').textContent = depsEss.length
+      ? 'Pollens — essences & exposition (' + (typeof zoneLabel === 'function' ? zoneLabel(depsEss) : depsEss.join(', ')) + ')'
+      : 'Pollens — essences & exposition (France)';
     pleInfoUpdate(PLE.ind);
     pleDraw();
     setStatus('🌳 Pollens — essences & exposition (structurel)');
@@ -1609,39 +1796,54 @@ function pleLeaveCleanup() { // sortie de la catégorie Pollens (plLeave de poll
 
 // ---------- Critère « Essence & exposition (structurel) » du Composeur ----------
 // pollens-essences.js s'enregistre dans SC_TYPES au chargement (comme pollens.js
-// pour l'indice quotidien) : aucune modification de score.js. Valeur = exposition
-// relative 1-5 du DÉPARTEMENT de la commune — CONSTANTE au sein d'un département
-// (utile surtout pour départager les départements d'une zone multi-départements) ;
-// département non couvert par la source -> commune absente -> part neutre.
+// pour l'indice quotidien) : aucune modification de score.js. Deux niveaux :
+//  - COMMUNE (par défaut si les données du build local sont présentes dans
+//    data/essences-*) : hectares de l'essence dans la commune -> exposition
+//    1-5 (quintiles au sein de la zone) — VARIE au sein d'un département ;
+//  - DÉPARTEMENT (repli) : exposition constante du département (indicateurs
+//    IFN/GBIF/Agreste embarqués) — départage les départements d'une zone.
+// Département non couvert par la source -> commune absente -> part neutre.
 // Sens ⬇ par défaut : moins d'exposition = mieux.
 var PLE_ZONE_COMMUNES = { zk: null, codes: [] };
 if (typeof SC_TYPES !== 'undefined') {
   SC_TYPES.ples = {
-    icon: '🌳', label: 'Essence & exposition (département, structurel)', dir: 'min', cfg: 'select', field: 'ind',
+    icon: '🌳', label: 'Essence & exposition (commune, structurel)', dir: 'min', cfg: 'select', field: 'ind',
     defCfg: function () { return { ind: 'betula' }; },
     key: function (cfg) { return 'ples|' + cfg.ind; },
     cfgOptions: function () {
       return PLE_ES.map(function (e) {
-        return { v: e.id, l: e.label + ' — exposition 1–5 (' + PLE_GR_LIB[e.groupe] + ')' };
+        var com = PLE_ES_COM[e.id];
+        return { v: e.id, l: e.label + ' — exposition 1–5 (' + (com ? 'commune : ' + PLE_COM_LIB[com.foret ? 'foret' : 'rpg'] : PLE_GR_LIB[e.groupe]) + ')' };
       });
     },
     describe: function (cfg) {
       var e = pleInd(cfg.ind);
-      return 'Exposition ' + (e ? e.label : '?') + ' (département — ' + (e ? PLE_GR_LIB[e.groupe] : '') + ')';
+      return 'Exposition ' + (e ? e.label : '?') + ' (' + (PLE_ES_COM[cfg.ind] ? 'commune — BD Forêt/RPG' : 'département — ' + (e ? PLE_GR_LIB[e.groupe] : '')) + ')';
     },
     defDir: function () { return 'min'; },
-    ensure: function () { // précharge la liste des communes de la zone (geo déjà en cache app.js)
+    ensure: function () { // précharge communes de la zone + données communales du build
       return mergedZoneGeo(SC.zone.slice()).then(function (geo) {
         var codes = [];
         (geo.features || []).forEach(function (f) { var c = f.properties && f.properties.code; if (c) codes.push(c); });
         PLE_ZONE_COMMUNES = { zk: SC.zone.join('+'), codes: codes };
+        return Promise.all(SC.zone.map(pleComLoad)).catch(function () { return null; });
       });
     },
     vals: function (cfg) {
       var ind = pleInd(cfg.ind) || PLE_ES[0];
-      var computed = pleCompute(ind);
       var out = {};
       if (PLE_ZONE_COMMUNES.zk !== SC.zone.join('+')) return out; // zone non encore chargée par ensure()
+      // 1. niveau COMMUNE si les données du build local sont présentes
+      var com = pleComVals(SC.zone.slice(), ind, PLE_ZONE_COMMUNES.codes);
+      if (com) {
+        PLE_ZONE_COMMUNES.codes.forEach(function (c) {
+          var v = com[c];
+          if (v) out[c] = v.ix; // commune hors données -> absent (part neutre)
+        });
+        return out;
+      }
+      // 2. repli : exposition du DÉPARTEMENT (constante au sein du département)
+      var computed = pleCompute(ind);
       PLE_ZONE_COMMUNES.codes.forEach(function (c) {
         var v = computed[depOfCommune(c)];
         if (v) out[c] = v.ix; // département non couvert -> absent (part neutre)
