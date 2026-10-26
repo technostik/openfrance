@@ -111,6 +111,10 @@
       "destination": "/api/events"
     },
     {
+      "source": "/wfs/pollen",
+      "destination": "https://data.atmo-france.org/geoserver/ind_pol/ows"
+    },
+    {
       "source": "/ft/ft",
       "destination": "/api/ft"
     },

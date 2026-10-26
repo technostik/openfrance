@@ -209,6 +209,21 @@
   force = true
 
 
+# --- Pollens (pollens.js) : WFS Atmo France « Indice pollen » (ODbL, sans clé) ---
+# Indice quotidien PAR COMMUNE (France métropolitaine + Corse), 6 taxons
+# (ambroisie, armoise, aulne, bouleau, graminées, olivier) + synthétique,
+# échéances J/J+1/J+2. La requête est construite côté client (CQL_FILTER par
+# préfixes de départements + PROPERTYNAME sans géométrie). La query string est
+# transmise telle quelle. Le service worker ne met PAS /wfs/ en cache
+# (données quotidiennes) ; TTL géré côté client (IndexedDB « pl|… », 6 h).
+# NB : l'API Atmo Data (admindata.atmo-france.org) exige une inscription + token → exclue.
+[[redirects]]
+  from = "/wfs/pollen"
+  to = "https://data.atmo-france.org/geoserver/ind_pol/ows"
+  status = 200
+  force = true
+
+
 # --- Développement local : port fixe pour une origine stable ---
 # Service worker, IndexedDB et localStorage sont cloisonnés par origine
 # (protocole + hôte + port) : un port qui change à chaque lancement de

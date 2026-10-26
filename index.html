@@ -25,6 +25,7 @@
       <option value="politique">Politique</option>
       <option value="annuaire">Associations & entreprises</option>
       <option value="evenements">Évènements</option>
+      <option value="pollens">Pollens</option>
       <option value="score31">Composeur de critères</option>
       <option value="corp">Composeur d'entreprises</option>
       <option value="corp_ext">Recherche étendue d'entreprises</option>
@@ -96,6 +97,18 @@
       </select>
     </label>
     <button id="evSearchBtn" type="button" title="Relancer la recherche d'évènements">🔎</button>
+  </div>
+    <div id="plControls" style="display:none">
+    <label>Taxon
+      <select id="plTaxon" title="Taxon affiché : indice synthétique (sous-indice le plus élevé) ou sous-indice d'un taxon"></select>
+    </label>
+    <label>Échéance
+      <select id="plEcheance" title="Jour de l'indice : aujourd'hui, demain ou après-demain (publication quotidienne à 13h)"></select>
+    </label>
+    <label id="plEssWrap">Essence
+      <input id="plEssence" type="text" placeholder="ex. bouleau, cyprès, ambroisie…" autocomplete="off" title="Rechercher une essence : affiche sa notation allergénique (0–5) et bascule la carte sur son taxon s'il est suivi par l'indice national">
+      <div id="plEssenceDrop" class="sc-drop"></div>
+    </label>
   </div>
 
 <div id="scoreControls" style="display:none">
@@ -200,6 +213,8 @@
 <p id="annQueryExp" class="muted" style="display:none"></p>
 <p id="evHint" class="muted" style="display:none">💡 Évènements : OpenAgenda (agendas du département/zone ou de la ville) + Meetup (si configuré) — recherche par thématique et par période, filtre ville/rayon. Même syntaxe multi-opérateurs que l'annuaire (<b>+mot</b> = OU, <b>-mot</b> = exclure, <b>"mot"</b> = exact). Eventbrite n'est pas inclus : sa recherche publique d'évènements a été retirée (2020).</p>
 <p id="evQueryExp" class="muted" style="display:none"></p>
+<p id="plHint" class="muted" style="display:none">💡 Pollens : indice quotidien par commune des AASQA (Atmo France, licence ODbL) — 6 taxons (ambroisie, armoise, aulne, bouleau, graminées, olivier) + indice synthétique, échéances aujourd'hui → après-demain (publication 13h), France métropolitaine et Corse. Champ « Essence » : notation allergénique indicative 0–5 (RNSA/ANSES). Le critère 🌾 du Composeur de critères réutilise le même indice.</p>
+<p id="plNotation" class="muted" style="display:none"></p>
 <p id="coModeHint" class="muted" style="display:none"></p>
 
 <main>
@@ -223,6 +238,12 @@
       <p id="evStatus" class="muted"></p>
       <div id="evResults"></div>
     </div>
+    <div id="plPanel" style="display:none">
+      <h2>Pollens</h2>
+      <p id="plStatus" class="muted"></p>
+      <div id="plLegend"></div>
+      <div id="plResults"></div>
+    </div>
     <div id="coPanel" style="display:none">
       <h2>Entreprises</h2>
       <p id="coStatus" class="muted"></p>
@@ -237,7 +258,7 @@
       <div id="extResults"></div>
     </div>
     <p class="hint">💡 Cliquez sur un département pour voir ses communes (sauf sièges de députés, au niveau circonscription).</p>
-    <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF, RNA (associations), API Recherche d'entreprises (DINUM), France Travail (ROMEO, ROME 4.0, La Bonne Boite), listes curatées (Supabase)</p>
+    <p class="source">Sources : <a href="https://www.data.gouv.fr/" target="_blank" rel="noopener">data.gouv.fr</a> — Ministère de l'Intérieur, INSEE/Filosofi (Geoptis), DGFIP/DVF, RNA (associations), API Recherche d'entreprises (DINUM), France Travail (ROMEO, ROME 4.0, La Bonne Boite), listes curatées (Supabase), Atmo France / AASQA (indice pollen, ODbL)</p>
   </aside>
 </main>
 
@@ -290,6 +311,7 @@
 <script src="annuaire.js"></script>
 <script src="evenements.js"></script>
 <script src="score.js"></script>
+<script src="pollens.js"></script>
 <script src="corp.js"></script>
 <script src="corp_ext.js"></script>
 <script src="favoris.js"></script>
