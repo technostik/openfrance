@@ -39,7 +39,9 @@
 // avec la raison (on NE remonte PAS à la carte France tant qu'une zone est
 // sélectionnée) ; la carte par départements reste le défaut quand AUCUN
 // département n'est sélectionné. Ex æquos : mêmes hectares -> même classe ;
-// tout à 0 -> 1/5 partout (les 0 sont des surfaces réellement nulles).
+// tout à 0 -> 1/5 partout (les 0 sont des surfaces réellement nulles) ;
+// clé absente de toutes les communes -> gris « pas de données » (ex. bouleau,
+// aulne, charme, frêne : non distingués par la BD Forêt V2 — piège n°41(n)).
 //
 // Méthode : exposition relative 1–5 par QUINTILES (5 = les 20 % de départements
 // les plus exposés) — pour la superficie (IFN/Agreste) : % de la superficie du
@@ -1526,15 +1528,15 @@ function pleComVals(deps, ind, codes) {
     if (src && src.communes) { avail[d] = src; any = true; }
   });
   if (!any) return null;
-  var ha = {};
+  var ha = {}, cleVue = false; // clé d'essence présente dans au moins une commune ?
   codes.forEach(function (c) {
     var src = avail[depOfCommune(c)];
     if (!src) return;
     var o = src.communes[c];
     var v = 0;
     if (o) {
-      if (m.foret) m.foret.forEach(function (k) { v += o[k] || 0; });
-      else v = o[m.rpg] || 0;
+      if (m.foret) m.foret.forEach(function (k) { if (o[k] !== undefined) cleVue = true; v += o[k] || 0; });
+      else { if (o[m.rpg] !== undefined) cleVue = true; v = o[m.rpg] || 0; }
     }
     ha[c] = v;
   });
@@ -1546,6 +1548,10 @@ function pleComVals(deps, ind, codes) {
   // sur 1–5 par un simple rang (bug constaté : 0 ha affiché « élevée 4/5 »).
   var max = 0;
   keys.forEach(function (c) { if (ha[c] > max) max = ha[c]; });
+  // clé absente de TOUTES les communes (ex. bouleau/aulne/charme/frêne : non
+  // distingués par la BD Forêt V2, piège n°41(n)) -> null = gris « pas de
+  // données » au lieu d'un trompeur « très faible 0 ha » vert uniforme.
+  if (max <= 0 && !cleVue) return null;
   if (max <= 0) {
     keys.forEach(function (c) { out[c] = { m: 0, ix: 1 }; });
     return out;
@@ -1559,6 +1565,24 @@ function pleComVals(deps, ind, codes) {
   return out;
 }
 var PLE_COM_NOMS = {}; // code INSEE -> nom (rempli au rendu depuis mergedZoneGeo)
+function pleComEssenceDistinguee(deps, ind) { // la clé d'essence existe-t-elle dans un JSON chargé ? (piège n°41(n))
+  var m = PLE_ES_COM[ind.id];
+  if (!m) return false;
+  var kind = m.foret ? 'foret' : 'rpg';
+  var vu = false;
+  deps.forEach(function (d) {
+    var src = (kind === 'foret' ? PLE_COM.foret : PLE_COM.rpg)[d];
+    if (!src || !src.communes) return;
+    Object.keys(src.communes).some(function (c) {
+      var o = src.communes[c];
+      if (!o) return false;
+      if (m.foret) vu = m.foret.some(function (k) { return o[k] !== undefined; });
+      else vu = o[m.rpg] !== undefined;
+      return vu;
+    });
+  });
+  return vu;
+}
 function pleNomCommune(code, fallback) { // nom via l'index de la zone affichée
   return PLE_COM_NOMS[code] || fallback || code;
 }
@@ -1581,7 +1605,9 @@ function pleDrawCommunes(ind, deps) {
       // carte France tant qu'une zone est sélectionnée.
       vals = {};
       raison = kind
-        ? 'données communales absentes (' + PLE_COM_LIB[kind] + ') — exécuter tools/build-essences-communes.mjs puis committer data/essences-*/'
+        ? (pleComEssenceDistinguee(deps, ind)
+            ? 'données communales absentes (' + PLE_COM_LIB[kind] + ') — exécuter tools/build-essences-communes.mjs puis committer data/essences-*/'
+            : 'essence non distinguée par la source (' + PLE_COM_LIB[kind] + ') — exposition disponible au niveau département uniquement')
         : 'pas de source communale pour cette essence — exposition disponible au niveau département uniquement';
       setStatus('⚠️ ' + raison.charAt(0).toUpperCase() + raison.slice(1) + '.');
     }

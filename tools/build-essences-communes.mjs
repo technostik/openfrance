@@ -4,8 +4,11 @@
 // Construit UNE FOIS POUR TOUTES des données statiques PAR COMMUNE (croisement à
 // faire sur votre machine — trop volumineux pour un build en ligne) :
 //
-//   1. BD Forêt V2 (IGN, licence ouverte) : superficies par essence forestière
-//      (boulaie, aulnaie, chênaies, …) par commune — la donnée officielle qui
+//   1. BD Forêt V2 (IGN, licence ouverte) : superficies par formation végétale
+//      (TFV, phrases de nomenclature : « Forêt fermée de chênes décidus purs »,
+//      « Peupleraie », « Forêt fermée de sapin ou épicéa »… — piège n°41(n) :
+//      bouleau/aulne/charme/frêne ne sont PAS distingués par la V2, rangés dans
+//      « d'un autre feuillu pur ») par commune — la donnée officielle qui
 //      manque à l'agrégat IFN par département (pollens-essences.js).
 //      Téléchargement : https://data.geopf.fr/telechargement/resource/BDFORET
 //      (attention : le catalogue s'appelle « BDFORET », pas « BDFORET-V2 »).
@@ -130,25 +133,44 @@ const DEP_TO_R = {
 };
 
 // ---------- Mapping TFV (BD Forêt V2) → groupes d'essences ----------
-// Le libellé TFV (type de formation végétale, ~53 valeurs) est normalisé (accents
-// NFD supprimés, minuscules) puis matché par mot-clé. Les formations « mélange »
-// ne sont pas attribuées (ambiguës) ; elles restent dans le total forestier.
+// Piège n°41(n) : les libellés TFV de la BD Forêt V2 sont des PHRASES de la
+// nomenclature IGN (« Forêt fermée de chênes décidus purs », « Forêt fermée
+// de sapin ou épicéa », « Forêt fermée de pin laricio ou pin noir pur »,
+// « Peupleraie »…), PAS les libellés courts « Boulaie / Chênaie / Hêtraie »
+// supposés le 26/10 (jamais constatés) : l'ancien TFV_MAP ne matchait que
+// « Peupleraie » → 99 % de surface sans essence attribuée (« que le peuplier
+// remonte », constaté 08/11/2026 via --diag foret 31). Le libellé est
+// normalisé (accents NFD supprimés, minuscules) puis matché par mot-clé. Les
+// formations « mélange », landes, herbacées et îlots génériques ne sont pas
+// attribuées (ambiguës/sans essence) ; elles restent dans le total forestier.
+// NB : bouleau, aulne, charme et frêne ne sont PAS distingués par la V2
+// (« Forêt fermée d'un autre feuillu pur ») — clés absentes du JSON, l'app
+// les affiche en gris « pas de données » (pollens-essences.js, piège n°41(n)).
 const TFV_MAP = [
+  // ordre important : « sapin » AVANT « pin » (« sapin » contient « pin »)
+  ['sapin', 'sapin'],        // « Forêt fermée de sapin ou épicéa » -> sapin (pas de catégorie épicéa propre)
+  ['douglas', 'douglas'],
+  ['meleze', 'meleze'],
+  ['cedre', 'cedre'],
+  ['pin', 'pins'],           // pin maritime / sylvestre / laricio ou pin noir / autre pin
+  ['peuplier', 'peuplier'],
+  ['robinier', 'robinier'],
+  ['chataignier', 'chataignier'],
+  ['hetre', 'hetre'],
+  ['chene', 'chene'],        // chênes décidus / chêne vert / chêne pubescent
+  // repli libellés courts (BD Forêt V1 — jamais constatés, au cas où) :
   ['boulaie', 'bouleau'],
   ['aulnaie', 'aulne'],
-  ['chenaie', 'chene'],          // sessile/pédonculée/pubescente/verte/(autre)
+  ['chenaie', 'chene'],
   ['hetraie', 'hetre'],
   ['charmaie', 'charme'],
   ['chataigneraie', 'chataignier'],
   ['frenaie', 'frene'],
-  ['pineraie', 'pins'],         // maritime, sylvestre, noir…
   ['sapiniere', 'sapin'],
   ['pessiere', 'epicea'],
   ['douglaseraie', 'douglas'],
   ['melezin', 'meleze'],
-  ['cedraie', 'cedre'],
-  ['peupleraie', 'peuplier'],
-  ['robinieraie', 'robinier']
+  ['cedraie', 'cedre']
 ];
 
 // ---------- Groupes de cultures RPG retenus (proxy graminées, cf. TACCT) ----------
@@ -174,8 +196,9 @@ function norm(s) { // minuscule + accents NFD supprimés
 function tfvGroup(tfv) {
   const t = norm(tfv);
   if (/melange|galerie/.test(t)) return null; // ambigüe -> non attribuée
+  if (/autre conifere/.test(t)) return null; // « d'un autre conifère pur autre que pin » contient « pin » mais n'est PAS un pin (piège n°41(n))
   for (const [kw, g] of TFV_MAP) if (t.indexOf(kw) !== -1) return g;
-  return null; // « Autre feuillu », « Forêt galerie », etc.
+  return null; // « Autre feuillu », landes, herbacées, îlots génériques, etc.
 }
 
 // Piège n°41(m) : le paquet npm shapefile décode le DBF en windows-1252 PAR
