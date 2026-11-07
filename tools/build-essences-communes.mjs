@@ -16,7 +16,12 @@
 //      surfaces de céréales et de prairies (proxy graminées, cf. TACCT par EPCI
 //      du niveau département) MAIS au niveau de la commune.
 //      Téléchargement : https://data.geopf.fr/telechargement/resource/RPG
-//      Fichiers GPKG Lambert-93 PAR RÉGION (R11…R94), millésimes 2024/2025.
+//      Fichiers SHP Lambert-93 PAR RÉGION (R11…R94), millésime 2023 — piège
+//      n°41(k) : depuis l'édition 2024 le RPG est scindé en produits et les
+//      archives GPKG régionales « RPG_4-0 » (2024/2025) ne contiennent que des
+//      îlots anonymes (fid, geom, num_ilot : aucune culture) + SNA + ZDH ; les
+//      parcelles avec CODE_CULTURE n'existent que dans les éditions SHP
+//      2015-2023 (on prend la dernière : 2023, ~2,6 Go compressés au total).
 //      Référentiel cultures : REF_CULTURES_GROUPES_CULTURES_<année>.csv
 //      (https://data.geopf.fr/annexes/ressources/documentation/).
 //
@@ -35,15 +40,15 @@
 //   data/essences-foret/d<dep>.json   { meta, communes: { "<insee>": { <groupe>: ha, …, _foret: ha } } }
 //   data/essences-rpg/d<dep>.json     { meta, communes: { "<insee>": { cereales: ha, prairies: ha, _rpg: ha } } }
 //
-// Prérequis (Node.js ≥ 22.13 recommandé — node:sqlite natif, AUCUN addon à compiler) :
-//   npm install --save-dev shapefile proj4 better-sqlite3   (better-sqlite3 = repli
-//     uniquement, pour Node < 22.5 — piège n°41(j) : segfaults connus de
-//     better-sqlite3 au premier new Database() selon le couple Node/version)
+// Prérequis (Node.js ≥ 18, paquets 100 % JS — plus AUCUN module natif ni
+// SQLite depuis le passage du RPG aux parcelles SHP 2023, cf. piège n°41(k)) :
+//   npm install --save-dev shapefile proj4
 //   + un exécutable 7z dans le PATH (paquet p7zip-full / p7zip, brew install
 //     p7zip, ou 7-Zip.org ; les archives IGN sont des .7z, parfois multi-part
 //     .7z.001/.002 — 7z les extrait directement).
-//   Node 22.5–22.12 : node:sqlite existe mais sous flag — le script se relance
-//     automatiquement avec --experimental-sqlite.
+//   Historique piège n°41(j) : la lecture des GPKG RPG passait par better-sqlite3
+//   puis node:sqlite (segfaults connus au premier new Database() selon le couple
+//   Node/version) — caduc, le RPG lu est désormais en SHP.
 //
 // Usage :
 //   node tools/build-essences-communes.mjs --list            # entrées disponibles
@@ -52,7 +57,7 @@
 //   node tools/build-essences-communes.mjs --rpg            # RPG, toutes régions métropole
 //   node tools/build-essences-communes.mjs --rpg --dep 01,69 # régions nécessaires
 //   node tools/build-essences-communes.mjs --all            # les deux
-//   Options : --millesime 2024 (RPG ; BD Forêt prend toujours le dernier)
+//   Options : --millesime 2023 (RPG ; BD Forêt prend toujours le dernier)
 //             --from-dir tools/.cache/essences/…  (déjà téléchargé/extrait)
 //             --force (retélécharger), --clean (supprimer le cache après)
 //
@@ -100,7 +105,7 @@ const DEP_FOLDERS = {
   '94':'94-val-de-marne','95':'95-val-d-oise'
 };
 
-// Départements métropole → région du flux RPG (GPKG par région, cf. piège n°41).
+// Départements métropole → région du flux RPG (SHP par région, cf. pièges n°41/41(k)).
 const DEP_TO_R = {
   '75':'R11','77':'R11','78':'R11','91':'R11','92':'R11','93':'R11','94':'R11','95':'R11',
   '18':'R24','28':'R24','36':'R24','37':'R24','41':'R24','45':'R24',
@@ -225,72 +230,6 @@ function pointInPolygonAnyHole(x, y, outer, holes) {
   return true;
 }
 
-// ---------- Lecture du GeoPackage binary (gpkg geometry blob -> rings L93) ----------
-// Spec GeoPackage : magic 'GP', version, flags (bit0 = byteOrder, bits1-3 = envelope),
-// envelope (0/4/6/8 doubles), puis la géométrie WKB standard.
-function gpkgRings(buf) {
-  if (!buf || buf.length < 8 || buf[0] !== 0x47 || buf[1] !== 0x50) return [];
-  const flags = buf[3];
-  const little = (flags & 1) === 1;
-  const envCode = (flags >> 1) & 7;
-  const envDoubles = [0, 4, 4, 6, 6, 8, 8, 0][envCode] || 0; // 1=XY(4),2=XYZ(6? non: XYZ=6 doubles -> code 2 => 6),3=XYM,4=XYZM(8)
-  let off = 8 + envDoubles * 8;
-  try {
-    return wkbRings(buf, off, little);
-  } catch (e) {
-    return [];
-  }
-}
-
-function wkbRings(buf, off, little) {
-  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const rd32 = (o, le) => le ? dv.getUint32(o, true) : dv.getUint32(o, false);
-  const rdD = (o, le) => le ? dv.getFloat64(o, true) : dv.getFloat64(o, false);
-  let o = off;
-  let bom = rd32(o, little); o += 4;
-  if (bom !== 0 && bom !== 1) bom = rd32(o - 4, !little); // tolérance : header et WKB d'endianness distincts
-  const le = bom === 1; // le BOM WKB fait foi : 1 = little, 0 = big
-  const typeRaw = rd32(o, le); o += 4;
-  const baseType = typeRaw % 1000; // 3 = Polygon, 6 = MultiPolygon
-  const hasZ = typeRaw >= 1000 && typeRaw < 2000;
-  const hasM = typeRaw >= 2000 && typeRaw < 3000;
-  const stride = 16 + (hasZ ? 8 : 0) + (hasM ? 8 : 0); // pas des points (Z/M ignorés)
-  const readRing = (oo, le2) => {
-    const n = rd32(oo, le2); oo += 4;
-    const ring = [];
-    for (let i = 0; i < n; i++) { ring.push([rdD(oo, le2), rdD(oo + 8, le2)]); oo += stride; }
-    return { ring, o: oo };
-  };
-  const readPolygon = (oo, le2) => { // lit un WKB Polygon à oo, renvoie {polys:[ring…], o}
-    const b2 = rd32(oo, le2); oo += 4; // byteOrder sous-géométrie
-    const le3 = b2 === 1;
-    const t2 = rd32(oo, le3); oo += 4; // type (supposé Polygon)
-    const stride2 = 16 + (t2 >= 1000 && t2 < 2000 ? 8 : 0) + (t2 >= 2000 && t2 < 3000 ? 8 : 0);
-    const nR = rd32(oo, le3); oo += 4;
-    const polys = [];
-    for (let i = 0; i < nR; i++) {
-      const n = rd32(oo, le3); oo += 4;
-      const ring = [];
-      for (let k = 0; k < n; k++) { ring.push([rdD(oo, le3), rdD(oo + 8, le3)]); oo += stride2; }
-      polys.push(ring);
-    }
-    return { polys, o: oo };
-  };
-  const rings = [];
-  if (baseType === 3) { // Polygon
-    const p = readPolygon(o - 8, le); // -8 : relit le byteOrder+type du polygone courant
-    rings.push({ outer: p.polys[0] || [], holes: p.polys.slice(1) });
-  } else if (baseType === 6) { // MultiPolygon
-    const nP = rd32(o, le); o += 4;
-    for (let i = 0; i < nP; i++) {
-      const p = readPolygon(o, le);
-      rings.push({ outer: p.polys[0] || [], holes: p.polys.slice(1) });
-      o = p.o;
-    }
-  }
-  return rings;
-}
-
 // ---------- Communes : contours france-geojson (MÊME source que l'app) ----------
 // Piège n°41(g) : le repo NE CONTIENT PAS geo/communes/ — l'app les charge via
 // le proxy /geo/communes/* (netlify.toml) vers raw.githubusercontent.com
@@ -322,15 +261,26 @@ async function loadCommunes(dep) {
     const code = f.properties && (f.properties.code || f.properties.insee);
     if (!code) continue;
     for (const r of ringsOfGeometry(f.geometry)) {
-      // les communes sont en WGS84 ; on indexe en lon/lat
-      index.push({ code, outer: r.outer, holes: r.holes });
+      // les communes sont en WGS84 ; on indexe en lon/lat (+ bbox de l'anneau
+      // externe pour écarter vite les candidats : le RPG, ce sont des millions
+      // de parcelles à tester contre quelques milliers d'anneaux)
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of r.outer) {
+        if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+        if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+      }
+      index.push({ code, outer: r.outer, holes: r.holes, bbox: [minX, minY, maxX, maxY] });
     }
   }
   return index;
 }
 
 function communeOfPoint(index, x, y) {
-  for (const c of index) if (pointInPolygonAnyHole(x, y, c.outer, c.holes)) return c.code;
+  for (const c of index) {
+    const b = c.bbox;
+    if (b && (x < b[0] || y < b[1] || x > b[2] || y > b[3])) continue; // pré-filtre bbox
+    if (pointInPolygonAnyHole(x, y, c.outer, c.holes)) return c.code;
+  }
   return null;
 }
 
@@ -555,7 +505,7 @@ async function buildForet(dep, entries, opts) {
 }
 
 // ============================================================
-// RPG : GPKG par région -> data/essences-rpg/d<dep>.json (pour chaque dép de la région)
+// RPG : SHP parcelles par région -> data/essences-rpg/d<dep>.json (pour chaque dép de la région)
 // ============================================================
 function parseCsv(text) {
   const rows = [];
@@ -607,50 +557,34 @@ async function loadCultureGroups(millesime) {
   return map;
 }
 
-// ---------- Backend SQLite pour les GPKG (piège n°41(j)) ----------
-// better-sqlite3 est le SEUL module natif du script et segfault au premier
-// `new Database()` sur plusieurs couples Node/version connus (13.0.x sur
-// Node 20/22 : WiseLibs/better-sqlite3#1514 ; 12.x sur Node ≥ 24.19 lors de la
-// finalisation GC : nodejs/node#65446). node:sqlite est intégré à Node
-// (≥ 22.5, ≥ 22.13 sans flag) : zéro addon natif -> pas de crash possible.
-// Lecture par PAGES de rowid (portable node:sqlite/better-sqlite3 : iterate()
-// n'existe pas sur toutes les versions de StatementSync ; mémoire bornée ;
-// WHERE rowid > ? ORDER BY rowid = parcours d'index, pas de tri).
-let _SQL = null;
-async function sqliteBackend() {
-  if (_SQL) return _SQL;
-  try {
-    const ns = await import('node:sqlite');
-    const probe = new ns.DatabaseSync(':memory:'); // smoke test
-    probe.close();
-    _SQL = { name: 'node:sqlite', open: p => new ns.DatabaseSync(p, { readOnly: true }) };
-    console.log('Backend SQLite : node:sqlite (natif Node ' + process.versions.node + ')');
-    return _SQL;
-  } catch (e) { /* Node < 22.5, ou sous flag --experimental-sqlite (relance auto dans main) */ }
-  const Database = (await import('better-sqlite3')).default;
-  console.warn('⚠ Backend SQLite : better-sqlite3 (node:sqlite indisponible sur Node ' + process.versions.node + ').');
-  console.warn('  En cas d\'« Erreur de segmentation » : npm i -D better-sqlite3@12.11.1,');
-  console.warn('  ou passer à Node ≥ 22.13 (node:sqlite natif, aucun addon à compiler).');
-  _SQL = { name: 'better-sqlite3', open: p => new Database(p, { readonly: true }) };
-  return _SQL;
-}
-
 async function buildRpg(region, deps, entries, opts) {
   const mil = opts.millesime;
-  const cands = entries.filter(t => new RegExp('RPG_4-0__GPKG_LAMB93_' + region + '_' + mil + '-01-01$').test(t));
-  let entry = cands[0];
-  if (!entry) { // repli : dernier millésime disponible pour la région
-    const all = entries.filter(t => new RegExp('RPG_\\d-\\d__GPKG_LAMB93_' + region + '_').test(t)).sort();
-    if (!all.length) { console.warn('⚠ Pas d\'entrée RPG pour ' + region); return null; }
+  // Piège n°41(k) : les GPKG « RPG_4-0 » (2024/2025) ne sont que des îlots
+  // anonymes (fid, geom, num_ilot) — AUCUNE culture. Les parcelles avec
+  // CODE_CULTURE n'existent qu'en SHP (éditions 2015-2023) : on prend 2023.
+  const cands = entries.filter(t => new RegExp('RPG_\\d-\\d__SHP_LAMB93_' + region + '_' + mil + '-01-01$').test(t)).sort();
+  let entry = cands[cands.length - 1];
+  if (!entry) { // repli : dernière édition SHP parcelles de la région
+    const all = entries.filter(t => new RegExp('RPG_\\d-\\d__SHP_LAMB93_' + region + '_').test(t)).sort();
+    if (!all.length) { console.warn('⚠ Pas d\'entrée RPG (SHP parcelles) pour ' + region); return null; }
     entry = all[all.length - 1];
     console.log('  (repli sur ' + entry + ')');
   }
+  const year = (entry.match(/_(\d{4})-01-01$/) || [])[1] || mil;
   console.log('— Région ' + region + ' : ' + entry + ' (départements : ' + deps.join(', ') + ')');
   const dir = opts.fromDir || await ensureExtracted('RPG', entry, opts.force);
-  const gpkgs = findFiles(dir, /\.gpkg$/i);
-  if (!gpkgs.length) throw new Error('Aucun .gpkg extrait pour ' + entry);
-  const sql = await sqliteBackend(); // piège n°41(j)
-  const groups = await loadCultureGroups(mil);
+  const shpFiles = findFiles(dir, /\.shp$/i);
+  if (!shpFiles.length) throw new Error('Aucun .shp extrait pour ' + entry);
+  // parcelles uniquement : les éditions 2015-2023 contiennent AUSSI les îlots
+  // (géométrie plus grossière, sans culture) — ne pas les compter 2 fois.
+  let parcelleShps = shpFiles.filter(p => /parcelle/i.test(p) && !/ilot/i.test(p));
+  if (!parcelleShps.length) {
+    parcelleShps = shpFiles.filter(p => !/ilot/i.test(p));
+    if (!parcelleShps.length) throw new Error('Aucun .shp parcelles dans ' + entry + ' (trouvé : ' + shpFiles.map(p => path.basename(p)).slice(0, 8).join(', ') + ')');
+    console.warn('  ⚠ aucun .shp « parcelles » explicite — ' + parcelleShps.length + ' .shp hors îlots retenus');
+  }
+  const shpMod = await import('shapefile');
+  const groups = await loadCultureGroups(year);
   // index communes de tous les départements de la région (en WGS84)
   const communesByDep = {};
   for (const d of deps) communesByDep[d] = await loadCommunes(d);
@@ -659,31 +593,26 @@ async function buildRpg(region, deps, entries, opts) {
   // accumule { dep -> { code -> { cereales, prairies, _rpg } } } en m²
   const acc = {}; deps.forEach(d => acc[d] = {});
   let nRows = 0;
-  for (const gp of gpkgs) {
-    const db = sql.open(gp); // node:sqlite natif sinon better-sqlite3 (piège n°41(j))
-    const contents = db.prepare("SELECT table_name FROM gpkg_contents WHERE data_type='features'").all();
-    let table = (contents.map(c => c.table_name).find(t => /parcelle/i.test(t)))
-      || (contents.map(c => c.table_name).find(t => /ilot/i.test(t)));
-    if (!table) { console.warn('  ⚠ ' + path.basename(gp) + ' : aucune table parcelles/îlots'); db.close(); continue; }
-    const cols = db.prepare('SELECT name FROM pragma_table_info(?)').all(table).map(c => c.name);
-    const colGeom = cols.find(c => /geom/i.test(c));
-    const colCode = cols.find(c => /^code_culture$/i.test(c)) || cols.find(c => /culture/i.test(c));
-    const colSurf = cols.find(c => /surf/i.test(c)); // surfaces déclarées si présentes
-    if (!colGeom || !colCode) { console.warn('  ⚠ colonnes inattendues : ' + cols.join(',')); db.close(); continue; }
-    const PAGE = 20000;
-    const sel = 'SELECT rowid AS __rid, "' + colCode + '" AS cc' + (colSurf ? ', "' + colSurf + '" AS surf' : '') +
-                ', "' + colGeom + '" AS geom FROM "' + table + '" WHERE rowid > ? ORDER BY rowid LIMIT ' + PAGE;
-    const stmt = db.prepare(sel);
-    let lastRid = 0;
-    for (;;) {
-      const rows = stmt.all(lastRid);
-      for (const row of rows) {
+  for (const sf of parcelleShps) {
+    const reader = await shpMod.open(sf);
+    // Piège n°41(i) : reader.read() renvoie { done, value } — PAS le Feature
+    let res;
+    while ((res = await reader.read()) && !res.done) {
+      const it = res.value || res;
+      if (!it || !it.geometry) continue;
+      const props = it.properties || {};
+      // colonnes DBF ≤ 10 caractères : CODE_CULTURE peut être tronqué
+      // (CODE_CULTU…) — matcher /culture/i. NB : la surface déclarée SURF_PARC
+      // est en HECTARES (piège d'unité : +100× vs m²) — on l'IGNORE et on
+      // calcule l'aire planaire Lambert-93, comme pour la BD Forêt.
+      const cKey = Object.keys(props).find(k => /culture/i.test(k));
+      if (!cKey) continue;
       nRows++;
-      const g = groups[String(row.cc).trim()];
+      const g = groups[String(props[cKey]).trim()];
       if (!g) continue; // hors céréales/prairies
-      let rings = gpkgRings(row.geom);
+      const rings = ringsOfGeometry(it.geometry); // coordonnées L93 (m)
       if (!rings.length) continue;
-      const areaM2 = colSurf && row.surf > 0 ? +row.surf : polygonAreaM2(rings);
+      const areaM2 = polygonAreaM2(rings);
       if (areaM2 <= 0) continue;
       let code = null, dep = null;
       for (const pt of candidatePoints(rings)) {
@@ -697,11 +626,7 @@ async function buildRpg(region, deps, entries, opts) {
       if (!code) continue;
       const o = acc[dep][code] = acc[dep][code] || { cereales: 0, prairies: 0, _rpg: 0 };
       o[g] += areaM2; o._rpg += areaM2;
-      }
-      if (rows.length < PAGE) break;
-      lastRid = rows[rows.length - 1].__rid;
     }
-    db.close();
   }
   await fsp.mkdir(OUT_RPG, { recursive: true });
   for (const d of deps) {
@@ -716,7 +641,7 @@ async function buildRpg(region, deps, entries, opts) {
     }
     const out = {
       meta: {
-        source: 'RPG ' + (entry.match(/_(\d{4})-01-01$/) || [])[1] + ' (ASP/IGN, licence ouverte) — ' + entry,
+        source: 'RPG ' + year + ' (ASP/IGN, licence ouverte) — ' + entry,
         dep: d, unite: 'ha',
         methode: 'parcelle RPG -> commune par centroïde (ray-casting) ; groupes Céréales + Prairies (permanentes & temporaires)',
         nParcelles: nRows
@@ -733,7 +658,7 @@ async function buildRpg(region, deps, entries, opts) {
 // CLI
 // ============================================================
 function parseArgs(argv) {
-  const o = { deps: [], millesime: 2024, force: false, fromDir: null, list: false, foret: false, rpg: false, all: false, clean: false };
+  const o = { deps: [], millesime: 2023, force: false, fromDir: null, list: false, foret: false, rpg: false, all: false, clean: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--foret') o.foret = true;
@@ -743,7 +668,7 @@ function parseArgs(argv) {
     else if (a === '--force') o.force = true;
     else if (a === '--clean') o.clean = true;
     else if (a === '--dep') o.deps = (argv[++i] || '').split(',').map(s => s.trim()).filter(Boolean);
-    else if (a === '--millesime') o.millesime = +(argv[++i] || 2024);
+    else if (a === '--millesime') o.millesime = +(argv[++i] || 2023);
     else if (a === '--from-dir') o.fromDir = argv[++i];
     else { console.error('Option inconnue : ' + a); process.exit(1); }
   }
@@ -753,20 +678,6 @@ function parseArgs(argv) {
 
 async function main() {
   const opts = parseArgs(process.argv);
-  // Piège n°41(j) : node:sqlite existe dès Node 22.5 mais sous flag jusqu'à
-  // 22.12 — relancer automatiquement avec --experimental-sqlite plutôt que de
-  // retomber sur better-sqlite3 (segfaults connus selon le couple Node/version).
-  if (!process.env.OF_ESSENCES_REEXEC) {
-    try { await import('node:sqlite'); }
-    catch (e) {
-      if (e && (e.code === 'ERR_SQLITE_EXPERIMENTAL' || /experimental-sqlite/i.test(e.message || ''))) {
-        console.log('node:sqlite nécessite --experimental-sqlite (Node ' + process.versions.node + ') — relance automatique avec le flag…');
-        const r = spawnSync(process.execPath, ['--experimental-sqlite'].concat(process.argv.slice(1)),
-          { stdio: 'inherit', env: Object.assign({}, process.env, { OF_ESSENCES_REEXEC: '1' }) });
-        process.exit(r.status === null ? 1 : r.status);
-      }
-    }
-  }
   if (!opts.foret && !opts.rpg && !opts.list) {
     console.error('Donner --foret, --rpg, --all ou --list (voir en-tête du script).');
     process.exit(1);
@@ -776,7 +687,9 @@ async function main() {
     const bdf = await feedEntries('BDFORET');
     const rpg = await feedEntries('RPG');
     console.log('BDFORET (échantillon) :'); bdf.slice(-15).forEach(t => console.log('  ' + t));
-    console.log('RPG millésimes récents :'); rpg.filter(t => /RPG_[34]-\d__GPKG_LAMB93_(R\d\d|FXX)_202[45]/.test(t)).forEach(t => console.log('  ' + t));
+    console.log('RPG parcelles (SHP, éditions 2015-2023 — la dernière est 2023) :');
+    rpg.filter(t => /RPG_\d-\d__SHP_LAMB93_R\d\d_2023/.test(t)).forEach(t => console.log('  ' + t));
+    console.log('⚠ les GPKG RPG_4-0 2024/2025 ne sont que des îlots anonymes sans culture (piège n°41(k))');
     return;
   }
   const deps = opts.deps.length ? opts.deps : Object.keys(DEP_FOLDERS);
