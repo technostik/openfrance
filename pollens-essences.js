@@ -35,8 +35,11 @@
 // à partir de la BD Forêt V2 et du RPG, licences ouvertes IGN/ASP), la vue
 // dessine les COMMUNES (superficies ha de l'essence, exposition 1–5 par quintiles
 // au sein de la zone) et le critère du Composeur 🌳 VARIE AU SEIN d'un
-// département. Sans ces fichiers (HTTP 404) : repli niveau département, sans
-// erreur — comportement d'origine.
+// département. Sans ces fichiers (HTTP 404) : communes de la zone en GRISÉ
+// avec la raison (on NE remonte PAS à la carte France tant qu'une zone est
+// sélectionnée) ; la carte par départements reste le défaut quand AUCUN
+// département n'est sélectionné. Ex æquos : mêmes hectares -> même classe ;
+// tout à 0 -> 1/5 partout (les 0 sont des surfaces réellement nulles).
 //
 // Méthode : exposition relative 1–5 par QUINTILES (5 = les 20 % de départements
 // les plus exposés) — pour la superficie (IFN/Agreste) : % de la superficie du
@@ -1537,8 +1540,21 @@ function pleComVals(deps, ind, codes) {
   });
   var keys = Object.keys(ha).sort(function (a, b) { return ha[a] - ha[b]; });
   var n = keys.length, out = {};
+  if (!n) return out; // aucune commune couverte -> carte grise
+  // Ex æquos : mêmes hectares -> même exposition (ix du premier rang du groupe,
+  // le plus favorable) ; TOUT à 0 ha -> exposition 1/5 partout, jamais étalée
+  // sur 1–5 par un simple rang (bug constaté : 0 ha affiché « élevée 4/5 »).
+  var max = 0;
+  keys.forEach(function (c) { if (ha[c] > max) max = ha[c]; });
+  if (max <= 0) {
+    keys.forEach(function (c) { out[c] = { m: 0, ix: 1 }; });
+    return out;
+  }
+  var ixByVal = {};
   keys.forEach(function (c, i) {
-    out[c] = { m: ha[c], ix: Math.min(5, 1 + Math.floor((i / Math.max(1, n)) * 5)) };
+    var v = ha[c], k = String(v);
+    if (ixByVal[k] === undefined) ixByVal[k] = Math.min(5, 1 + Math.floor((i / n) * 5));
+    out[c] = { m: v, ix: ixByVal[k] };
   });
   return out;
 }
@@ -1559,10 +1575,15 @@ function pleDrawCommunes(ind, deps) {
     var vals = pleComVals(deps, ind, (geo.features || []).map(function (f) {
       return f.properties && f.properties.code;
     }).filter(Boolean));
-    if (!vals) { // pas de données communales -> carte départements d'origine
-      pleDrawFrance(ind, 'Données communales absentes (' + PLE_COM_LIB[kind || 'foret'] +
-        ') — exécuter tools/build-essences-communes.mjs puis committer data/essences-*/');
-      return;
+    var raison = null;
+    if (!vals) {
+      // Pas de données communales : communes en GRISÉ — on NE remonte PAS à la
+      // carte France tant qu'une zone est sélectionnée.
+      vals = {};
+      raison = kind
+        ? 'données communales absentes (' + PLE_COM_LIB[kind] + ') — exécuter tools/build-essences-communes.mjs puis committer data/essences-*/'
+        : 'pas de source communale pour cette essence — exposition disponible au niveau département uniquement';
+      setStatus('⚠️ ' + raison.charAt(0).toUpperCase() + raison.slice(1) + '.');
     }
     PLE.vals = vals;
     if (PLE.layer) { map.removeLayer(PLE.layer); PLE.layer = null; }
@@ -1592,16 +1613,16 @@ function pleDrawCommunes(ind, deps) {
       }
     }).addTo(map);
     map.fitBounds(PLE.layer.getBounds(), { padding: [30, 30] });
-    pleLegendCom(ind, kind);
-    pleResultsCom(vals, ind);
-    pleStatusCom(ind, vals, kind);
+    pleLegendCom(ind, kind, raison);
+    pleResultsCom(vals, ind, raison);
+    pleStatusCom(ind, vals, kind, raison);
   }).catch(function (err) {
     console.error('[OpenFrance] Pollens essences (communes) :', err);
     setStatus('Erreur pollens (essences)');
     showError('Impossible de charger les contours communaux.', err.message);
   });
 }
-function pleLegendCom(ind, kind) {
+function pleLegendCom(ind, kind, raison) {
   var el = document.getElementById('plLegend');
   var html = '';
   PLE_IX_LABELS.forEach(function (lb, i) {
@@ -1610,14 +1631,19 @@ function pleLegendCom(ind, kind) {
   });
   html += '<div class="legend-row"><span class="legend-color" style="background:' + PLE_GREY + '"></span>' +
           '<span>Pas de données / hors zone</span></div>';
-  html += '<div class="muted" style="margin-top:6px">Exposition relative PAR COMMUNE (quintiles au sein de la zone).<br>' +
-          esc(ind.label) + ' — ' + esc(PLE_COM_LIB[kind || 'foret']) + '</div>';
+  html += '<div class="muted" style="margin-top:6px">Exposition relative PAR COMMUNE (quintiles au sein de la zone ; mêmes ha → même classe).<br>' +
+          esc(ind.label) + ' — ' + (kind ? esc(PLE_COM_LIB[kind]) : 'pas de source communale (repli : niveau département)') + '</div>';
+  if (raison) html += '<div class="muted" style="margin-top:4px;color:#fbbf24">⚠️ ' + esc(raison) + '</div>';
   el.innerHTML = html;
 }
-function pleResultsCom(vals, ind) { // top 15 communes
+function pleResultsCom(vals, ind, raison) { // top 15 communes
   var el = document.getElementById('plResults');
   var arr = [];
   for (var c in vals) arr.push({ code: c, m: vals[c].m, ix: vals[c].ix });
+  if (!arr.length) {
+    el.innerHTML = '<p class="muted" style="margin:4px 0 2px">' + (raison ? '⚠️ ' + esc(raison) : 'Aucune donnée pour cet indicateur.') + '</p>';
+    return;
+  }
   arr.sort(function (a, b) { return b.m - a.m || (a.code < b.code ? -1 : 1); });
   var html = '<p class="muted" style="margin:4px 0 2px">Top 15 communes — ' + esc(ind.label) +
     ' · classement par superficie</p>';
@@ -1627,10 +1653,13 @@ function pleResultsCom(vals, ind) { // top 15 communes
   });
   el.innerHTML = html;
 }
-function pleStatusCom(ind, vals, kind) {
+function pleStatusCom(ind, vals, kind, raison) {
   var n = 0; for (var c in vals) n++;
-  document.getElementById('plStatus').innerHTML = '<b>' + esc(ind.label) + '</b> — exposition relative PAR COMMUNE (1–5, quintiles) · ' +
+  var html;
+  if (raison) html = '<b>' + esc(ind.label) + '</b> — ⚠️ ' + esc(raison) + '.';
+  else html = '<b>' + esc(ind.label) + '</b> — exposition relative PAR COMMUNE (1–5, quintiles, ex æquos groupés) · ' +
     n + ' commune(s) avec données · source : ' + esc(PLE_COM_LIB[kind || 'foret']) + '.';
+  document.getElementById('plStatus').innerHTML = html;
 }
 
 function pleDrawFrance(ind, note) { // carte départements (vue France — niveau d'origine)

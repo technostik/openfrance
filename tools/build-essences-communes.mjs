@@ -35,11 +35,15 @@
 //   data/essences-foret/d<dep>.json   { meta, communes: { "<insee>": { <groupe>: ha, …, _foret: ha } } }
 //   data/essences-rpg/d<dep>.json     { meta, communes: { "<insee>": { cereales: ha, prairies: ha, _rpg: ha } } }
 //
-// Prérequis (Node.js ≥ 18) :
-//   npm install --save-dev shapefile proj4 better-sqlite3
+// Prérequis (Node.js ≥ 22.13 recommandé — node:sqlite natif, AUCUN addon à compiler) :
+//   npm install --save-dev shapefile proj4 better-sqlite3   (better-sqlite3 = repli
+//     uniquement, pour Node < 22.5 — piège n°41(j) : segfaults connus de
+//     better-sqlite3 au premier new Database() selon le couple Node/version)
 //   + un exécutable 7z dans le PATH (paquet p7zip-full / p7zip, brew install
 //     p7zip, ou 7-Zip.org ; les archives IGN sont des .7z, parfois multi-part
 //     .7z.001/.002 — 7z les extrait directement).
+//   Node 22.5–22.12 : node:sqlite existe mais sous flag — le script se relance
+//     automatiquement avec --experimental-sqlite.
 //
 // Usage :
 //   node tools/build-essences-communes.mjs --list            # entrées disponibles
@@ -603,6 +607,34 @@ async function loadCultureGroups(millesime) {
   return map;
 }
 
+// ---------- Backend SQLite pour les GPKG (piège n°41(j)) ----------
+// better-sqlite3 est le SEUL module natif du script et segfault au premier
+// `new Database()` sur plusieurs couples Node/version connus (13.0.x sur
+// Node 20/22 : WiseLibs/better-sqlite3#1514 ; 12.x sur Node ≥ 24.19 lors de la
+// finalisation GC : nodejs/node#65446). node:sqlite est intégré à Node
+// (≥ 22.5, ≥ 22.13 sans flag) : zéro addon natif -> pas de crash possible.
+// Lecture par PAGES de rowid (portable node:sqlite/better-sqlite3 : iterate()
+// n'existe pas sur toutes les versions de StatementSync ; mémoire bornée ;
+// WHERE rowid > ? ORDER BY rowid = parcours d'index, pas de tri).
+let _SQL = null;
+async function sqliteBackend() {
+  if (_SQL) return _SQL;
+  try {
+    const ns = await import('node:sqlite');
+    const probe = new ns.DatabaseSync(':memory:'); // smoke test
+    probe.close();
+    _SQL = { name: 'node:sqlite', open: p => new ns.DatabaseSync(p, { readOnly: true }) };
+    console.log('Backend SQLite : node:sqlite (natif Node ' + process.versions.node + ')');
+    return _SQL;
+  } catch (e) { /* Node < 22.5, ou sous flag --experimental-sqlite (relance auto dans main) */ }
+  const Database = (await import('better-sqlite3')).default;
+  console.warn('⚠ Backend SQLite : better-sqlite3 (node:sqlite indisponible sur Node ' + process.versions.node + ').');
+  console.warn('  En cas d\'« Erreur de segmentation » : npm i -D better-sqlite3@12.11.1,');
+  console.warn('  ou passer à Node ≥ 22.13 (node:sqlite natif, aucun addon à compiler).');
+  _SQL = { name: 'better-sqlite3', open: p => new Database(p, { readonly: true }) };
+  return _SQL;
+}
+
 async function buildRpg(region, deps, entries, opts) {
   const mil = opts.millesime;
   const cands = entries.filter(t => new RegExp('RPG_4-0__GPKG_LAMB93_' + region + '_' + mil + '-01-01$').test(t));
@@ -617,7 +649,7 @@ async function buildRpg(region, deps, entries, opts) {
   const dir = opts.fromDir || await ensureExtracted('RPG', entry, opts.force);
   const gpkgs = findFiles(dir, /\.gpkg$/i);
   if (!gpkgs.length) throw new Error('Aucun .gpkg extrait pour ' + entry);
-  const Database = (await import('better-sqlite3')).default;
+  const sql = await sqliteBackend(); // piège n°41(j)
   const groups = await loadCultureGroups(mil);
   // index communes de tous les départements de la région (en WGS84)
   const communesByDep = {};
@@ -628,19 +660,24 @@ async function buildRpg(region, deps, entries, opts) {
   const acc = {}; deps.forEach(d => acc[d] = {});
   let nRows = 0;
   for (const gp of gpkgs) {
-    const db = new Database(gp, { readonly: true });
+    const db = sql.open(gp); // node:sqlite natif sinon better-sqlite3 (piège n°41(j))
     const contents = db.prepare("SELECT table_name FROM gpkg_contents WHERE data_type='features'").all();
     let table = (contents.map(c => c.table_name).find(t => /parcelle/i.test(t)))
       || (contents.map(c => c.table_name).find(t => /ilot/i.test(t)));
     if (!table) { console.warn('  ⚠ ' + path.basename(gp) + ' : aucune table parcelles/îlots'); db.close(); continue; }
-    const cols = db.prepare('PRAGMA table_info(' + JSON.stringify(table) + ')').all().map(c => c.name);
+    const cols = db.prepare('SELECT name FROM pragma_table_info(?)').all(table).map(c => c.name);
     const colGeom = cols.find(c => /geom/i.test(c));
     const colCode = cols.find(c => /^code_culture$/i.test(c)) || cols.find(c => /culture/i.test(c));
     const colSurf = cols.find(c => /surf/i.test(c)); // surfaces déclarées si présentes
     if (!colGeom || !colCode) { console.warn('  ⚠ colonnes inattendues : ' + cols.join(',')); db.close(); continue; }
-    const sel = 'SELECT "' + colCode + '" AS cc' + (colSurf ? ', "' + colSurf + '" AS surf' : '') + ', "' + colGeom + '" AS geom FROM "' + table + '"';
+    const PAGE = 20000;
+    const sel = 'SELECT rowid AS __rid, "' + colCode + '" AS cc' + (colSurf ? ', "' + colSurf + '" AS surf' : '') +
+                ', "' + colGeom + '" AS geom FROM "' + table + '" WHERE rowid > ? ORDER BY rowid LIMIT ' + PAGE;
     const stmt = db.prepare(sel);
-    for (const row of stmt.iterate()) {
+    let lastRid = 0;
+    for (;;) {
+      const rows = stmt.all(lastRid);
+      for (const row of rows) {
       nRows++;
       const g = groups[String(row.cc).trim()];
       if (!g) continue; // hors céréales/prairies
@@ -660,6 +697,9 @@ async function buildRpg(region, deps, entries, opts) {
       if (!code) continue;
       const o = acc[dep][code] = acc[dep][code] || { cereales: 0, prairies: 0, _rpg: 0 };
       o[g] += areaM2; o._rpg += areaM2;
+      }
+      if (rows.length < PAGE) break;
+      lastRid = rows[rows.length - 1].__rid;
     }
     db.close();
   }
@@ -713,6 +753,20 @@ function parseArgs(argv) {
 
 async function main() {
   const opts = parseArgs(process.argv);
+  // Piège n°41(j) : node:sqlite existe dès Node 22.5 mais sous flag jusqu'à
+  // 22.12 — relancer automatiquement avec --experimental-sqlite plutôt que de
+  // retomber sur better-sqlite3 (segfaults connus selon le couple Node/version).
+  if (!process.env.OF_ESSENCES_REEXEC) {
+    try { await import('node:sqlite'); }
+    catch (e) {
+      if (e && (e.code === 'ERR_SQLITE_EXPERIMENTAL' || /experimental-sqlite/i.test(e.message || ''))) {
+        console.log('node:sqlite nécessite --experimental-sqlite (Node ' + process.versions.node + ') — relance automatique avec le flag…');
+        const r = spawnSync(process.execPath, ['--experimental-sqlite'].concat(process.argv.slice(1)),
+          { stdio: 'inherit', env: Object.assign({}, process.env, { OF_ESSENCES_REEXEC: '1' }) });
+        process.exit(r.status === null ? 1 : r.status);
+      }
+    }
+  }
   if (!opts.foret && !opts.rpg && !opts.list) {
     console.error('Donner --foret, --rpg, --all ou --list (voir en-tête du script).');
     process.exit(1);
