@@ -60,6 +60,13 @@
 //   Options : --millesime 2023 (RPG ; BD Forêt prend toujours le dernier)
 //             --from-dir tools/.cache/essences/…  (déjà téléchargé/extrait)
 //             --force (retélécharger), --clean (supprimer le cache après)
+//             --diag  (RPG : instrumentation complète — entrée, fichiers .shp,
+//                      colonnes DBF de la 1re parcelle, histogramme des
+//                      cultures, entonnoir « où les parcelles se perdent » ;
+//                      n'écrit PAS les JSON dans data/essences-rpg/)
+//             --limite N (avec --diag : lire au plus N parcelles par .shp,
+//                      défaut 200000 — pour un diagnostic rapide sans lire
+//                      les ~10 millions de parcelles d'une grande région)
 //
 // Le portail data.geopf.fr limite en débit (HTTP 429 si on pagine en rafale) :
 // le script espace ses requêtes (~2/s max) et réessaie automatiquement avec
@@ -430,6 +437,21 @@ function findFiles(dir, re) {
   return out;
 }
 
+function dirSize(d) { // octets, récursif (l'équivalent de « du -sb »)
+  let t = 0;
+  const walk = (x) => {
+    let es;
+    try { es = fs.readdirSync(x, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of es) {
+      const p = path.join(x, e.name);
+      if (e.isDirectory()) walk(p);
+      else { try { t += fs.statSync(p).size; } catch (e2) {} }
+    }
+  };
+  walk(d);
+  return t;
+}
+
 // ============================================================
 // BD Forêt V2 : SHP par département -> data/essences-foret/d<dep>.json
 // ============================================================
@@ -583,6 +605,11 @@ async function buildRpg(region, deps, entries, opts) {
     if (!parcelleShps.length) throw new Error('Aucun .shp parcelles dans ' + entry + ' (trouvé : ' + shpFiles.map(p => path.basename(p)).slice(0, 8).join(', ') + ')');
     console.warn('  ⚠ aucun .shp « parcelles » explicite — ' + parcelleShps.length + ' .shp hors îlots retenus');
   }
+  if (opts.diag) {
+    console.log('  [diag] dossier extrait : ' + dir + ' — ' + (dirSize(dir) / 1e6).toFixed(0) + ' Mo');
+    console.log('  [diag] .shp trouvés (' + shpFiles.length + ') : ' + shpFiles.map(p => path.basename(p)).slice(0, 15).join(', ') + (shpFiles.length > 15 ? ', …' : ''));
+    console.log('  [diag] .shp retenus comme parcelles (' + parcelleShps.length + ') : ' + parcelleShps.map(p => path.basename(p)).slice(0, 15).join(', ') + (parcelleShps.length > 15 ? ', …' : ''));
+  }
   const shpMod = await import('shapefile');
   const groups = await loadCultureGroups(year);
   // index communes de tous les départements de la région (en WGS84)
@@ -592,41 +619,97 @@ async function buildRpg(region, deps, entries, opts) {
   const proj4 = (await import('proj4')).default;
   // accumule { dep -> { code -> { cereales, prairies, _rpg } } } en m²
   const acc = {}; deps.forEach(d => acc[d] = {});
+  // --diag : instrumente l'entonnoir complet (où les parcelles se perdent)
+  const D = opts.diag ? {
+    limite: opts.limite > 0 ? opts.limite : 200000,
+    premier: null, featuresLus: 0, sansCle: 0, sansGeom: 0, cultures: {},
+    horsGroupes: 0, aireNulle: 0, affectees: 0, horsContours: 0, exemples: [], perdus: []
+  } : null;
   let nRows = 0;
   for (const sf of parcelleShps) {
     const reader = await shpMod.open(sf);
     // Piège n°41(i) : reader.read() renvoie { done, value } — PAS le Feature
     let res;
+    let lusShp = 0;
     while ((res = await reader.read()) && !res.done) {
       const it = res.value || res;
-      if (!it || !it.geometry) continue;
+      lusShp++;
+      if (D && lusShp > D.limite) { console.log('  [diag] limite ' + D.limite + ' parcelles atteinte dans ' + path.basename(sf)); break; }
+      if (!it || !it.geometry) { if (D) D.sansGeom++; continue; }
       const props = it.properties || {};
-      // colonnes DBF ≤ 10 caractères : CODE_CULTURE peut être tronqué
-      // (CODE_CULTU…) — matcher /culture/i. NB : la surface déclarée SURF_PARC
-      // est en HECTARES (piège d'unité : +100× vs m²) — on l'IGNORE et on
-      // calcule l'aire planaire Lambert-93, comme pour la BD Forêt.
-      const cKey = Object.keys(props).find(k => /culture/i.test(k));
-      if (!cKey) continue;
+      if (D && D.premier === null) {
+        D.premier = true;
+        console.log('  [diag] 1re parcelle de ' + path.basename(sf) + ' — propriétés DBF :');
+        for (const k of Object.keys(props)) console.log('    ' + k + ' = ' + JSON.stringify(props[k]));
+      }
+      // Piège n°41(l) : les noms de colonnes DBF sont tronqués à 10 caractères —
+      // la culture s'appelle donc CODE_CULTU (sans « RE » !) : /culture/i ne
+      // matche PAS et la sortie était « 0 communes » partout, sans erreur.
+      // On matche /code_cult/i d'abord, puis /cult/i en excluant les cultures
+      // dérobées (CULTURE_D1/CULTURE_D2, non retenues comme proxy pollens).
+      // NB : la surface déclarée SURF_PARC est en HECTARES (piège d'unité :
+      // +100× vs m²) — on l'IGNORE et on calcule l'aire planaire Lambert-93,
+      // comme pour la BD Forêt.
+      const pKeys = Object.keys(props);
+      const cKey = pKeys.find(k => /^code_cult/i.test(k))
+        || pKeys.find(k => /cult/i.test(k) && !/(_d\d|derob)/i.test(k));
+      if (!cKey) { if (D) D.sansCle++; continue; }
       nRows++;
-      const g = groups[String(props[cKey]).trim()];
-      if (!g) continue; // hors céréales/prairies
+      const cc = String(props[cKey]).trim();
+      const g = groups[cc];
+      if (D) D.cultures[cc] = (D.cultures[cc] || 0) + 1;
+      if (!g) { if (D) D.horsGroupes++; continue; } // hors céréales/prairies
       const rings = ringsOfGeometry(it.geometry); // coordonnées L93 (m)
-      if (!rings.length) continue;
+      if (!rings.length) { if (D) D.sansGeom++; continue; }
       const areaM2 = polygonAreaM2(rings);
-      if (areaM2 <= 0) continue;
-      let code = null, dep = null;
+      if (areaM2 <= 0) { if (D) D.aireNulle++; continue; }
+      let code = null, dep = null, llEx = null;
       for (const pt of candidatePoints(rings)) {
         const ll = proj4(L93, 'WGS84', pt);
+        llEx = ll;
         for (const d of deps) {
           const c = communeOfPoint(communesByDep[d], ll[0], ll[1]);
           if (c) { code = c; dep = d; break; }
         }
         if (code) break;
       }
-      if (!code) continue;
+      if (!code) {
+        if (D) {
+          D.horsContours++;
+          if (D.perdus.length < 3) D.perdus.push({ culture: cc, aireHa: Math.round(areaM2 / 100) / 100, centre: [+(llEx || [0, 0])[0].toFixed(5), +(llEx || [0, 0])[1].toFixed(5)] });
+        }
+        continue;
+      }
+      if (D) {
+        D.affectees++;
+        if (D.exemples.length < 3) D.exemples.push({ culture: cc, groupe: g, aireHa: Math.round(areaM2 / 100) / 100, commune: code, centre: [+llEx[0].toFixed(5), +llEx[1].toFixed(5)] });
+      }
       const o = acc[dep][code] = acc[dep][code] || { cereales: 0, prairies: 0, _rpg: 0 };
       o[g] += areaM2; o._rpg += areaM2;
     }
+    if (D) D.featuresLus += Math.min(lusShp, D.limite);
+  }
+  if (D) {
+    console.log('\n══════════ DIAGNOSTIC RPG ' + region + ' (' + entry + ') ══════════');
+    console.log('  parcelles lues          : ' + D.featuresLus + (opts.limite > 0 ? ' (limite ' + D.limite + ' par .shp)' : ''));
+    console.log('  sans colonne culture    : ' + D.sansCle);
+    console.log('  géométries vides        : ' + D.sansGeom);
+    console.log('  hors groupes (ni céréales ni prairies) : ' + D.horsGroupes);
+    console.log('  aires nulles            : ' + D.aireNulle);
+    console.log('  affectées à une commune : ' + D.affectees);
+    console.log('  hors contours communaux : ' + D.horsContours);
+    const top = Object.entries(D.cultures).sort((a, b) => b[1] - a[1]).slice(0, 20);
+    console.log('  top cultures : ' + (top.length ? top.map(kv => kv[0] + '(' + (groups[kv[0]] || '?') + ')×' + kv[1]).join(', ') : 'AUCUNE'));
+    D.exemples.forEach(x => console.log('  ✓ ' + x.culture + ' -> ' + x.groupe + ', ' + x.aireHa + ' ha, commune ' + x.commune + ' @ ' + x.centre.join(',')));
+    D.perdus.forEach(x => console.log('  ✗ ' + x.culture + ', ' + x.aireHa + ' ha, AUCUNE commune @ ' + x.centre.join(',')));
+    for (const d of deps) {
+      const c0 = communesByDep[d][0];
+      const ct = c0 ? ringCentroid(c0.outer) : null;
+      const rt = ct ? communeOfPoint(communesByDep[d], ct[0], ct[1]) : null;
+      console.log('  contours ' + d + ' : ' + communesByDep[d].length + ' anneaux ; aller-retour centroïde du 1er anneau -> ' + (rt === c0.code ? 'OK (' + c0.code + ')' : 'ÉCHEC (attendu ' + (c0 && c0.code) + ', trouvé ' + rt + ')'));
+    }
+    console.log('══════════ mode --diag : aucun JSON écrit dans data/essences-rpg/ ══════════');
+    return true;
   }
   await fsp.mkdir(OUT_RPG, { recursive: true });
   for (const d of deps) {
@@ -658,7 +741,7 @@ async function buildRpg(region, deps, entries, opts) {
 // CLI
 // ============================================================
 function parseArgs(argv) {
-  const o = { deps: [], millesime: 2023, force: false, fromDir: null, list: false, foret: false, rpg: false, all: false, clean: false };
+  const o = { deps: [], millesime: 2023, force: false, fromDir: null, list: false, foret: false, rpg: false, all: false, clean: false, diag: false, limite: 0 };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--foret') o.foret = true;
@@ -670,6 +753,8 @@ function parseArgs(argv) {
     else if (a === '--dep') o.deps = (argv[++i] || '').split(',').map(s => s.trim()).filter(Boolean);
     else if (a === '--millesime') o.millesime = +(argv[++i] || 2023);
     else if (a === '--from-dir') o.fromDir = argv[++i];
+    else if (a === '--diag') o.diag = true;
+    else if (a === '--limite') o.limite = +(argv[++i] || 0);
     else { console.error('Option inconnue : ' + a); process.exit(1); }
   }
   if (o.all) { o.foret = true; o.rpg = true; }
@@ -703,6 +788,8 @@ async function main() {
     }
   }
   if (opts.rpg) {
+    if (opts.diag && !opts.deps.length) console.warn('⚠ --diag : préciser un département (ex. --rpg --dep 31 --diag) sinon toute la métropole est instrumentée.');
+    if (opts.limite > 0 && !opts.diag) console.warn('⚠ --limite ignorée sans --diag');
     const entries = await feedEntries('RPG');
     const byR = {};
     for (const d of deps) { const r = DEP_TO_R[d]; if (r) (byR[r] = byR[r] || []).push(d); }
