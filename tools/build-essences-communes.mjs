@@ -60,11 +60,11 @@
 //   Options : --millesime 2023 (RPG ; BD Forêt prend toujours le dernier)
 //             --from-dir tools/.cache/essences/…  (déjà téléchargé/extrait)
 //             --force (retélécharger), --clean (supprimer le cache après)
-//             --diag  (RPG : instrumentation complète — entrée, fichiers .shp,
-//                      colonnes DBF de la 1re parcelle, histogramme des
-//                      cultures, entonnoir « où les parcelles se perdent » ;
-//                      n'écrit PAS les JSON dans data/essences-rpg/)
-//             --limite N (avec --diag : lire au plus N parcelles par .shp,
+//             --diag  (BD Forêt et/ou RPG : instrumentation complète — entrée,
+//                      .shp, encodage DBF, propriétés de la 1re entité,
+//                      histogramme TFV/cultures, entonnoir « où les surfaces
+//                      se perdent » ; n'écrit PAS les JSON dans data/)
+//             --limite N (avec --diag : lire au plus N entités par .shp,
 //                      défaut 200000 — pour un diagnostic rapide sans lire
 //                      les ~10 millions de parcelles d'une grande région)
 //
@@ -176,6 +176,45 @@ function tfvGroup(tfv) {
   if (/melange|galerie/.test(t)) return null; // ambigüe -> non attribuée
   for (const [kw, g] of TFV_MAP) if (t.indexOf(kw) !== -1) return g;
   return null; // « Autre feuillu », « Forêt galerie », etc.
+}
+
+// Piège n°41(m) : le paquet npm shapefile décode le DBF en windows-1252 PAR
+// DÉFAUT (option encoding) — or les DBF de la BD Forêt V2 sont en UTF-8 :
+// « Chênaie pubescente » arrivait en « ChÃªnaie pubescente » et tfvGroup ne
+// matchait plus. Seules les formations SANS accent (Peupleraie, Boulaie,
+// Aulnaie, Pineraie…) étaient attribuées — d'où « seul le peuplier remonte »
+// dans la vue Essences & exposition (Boulaie/Aulnaie quasi absents du 31).
+// Correctif : respecter le sidecar .cpg s'il existe ; sinon renifler les
+// marqueurs de mojibake (« Ãx »/« Âx » = UTF-8 décodé en windows-1252) sur
+// les 500 premières entités puis RELIRE le .dbf en UTF-8.
+async function openShpBest(shpMod, sf) {
+  const dbf = sf.replace(/\.shp$/i, '.dbf');
+  const cpg = sf.replace(/\.shp$/i, '.cpg');
+  if (fs.existsSync(cpg)) {
+    const enc = (await fsp.readFile(cpg, 'utf8')).trim();
+    if (enc) return await shpMod.open(sf, dbf, { encoding: enc });
+  }
+  let reader = await shpMod.open(sf); // décodage par défaut (windows-1252)
+  let suspect = false, n = 0, res;
+  while (n < 500 && (res = await reader.read()) && !res.done) {
+    const it = res.value || res; n++;
+    const props = (it && it.properties) || {};
+    for (const k in props) {
+      const v = props[k];
+      if (typeof v === 'string' && /Ã.|Â./.test(v)) { suspect = true; break; }
+    }
+    if (suspect) break;
+  }
+  if (suspect) {
+    try {
+      const r2 = await shpMod.open(sf, dbf, { encoding: 'utf-8' });
+      console.log('  [encodage] mojibake UTF-8 détecté dans ' + path.basename(dbf) + ' — relecture utf-8 (piège n°41(m))');
+      return r2;
+    } catch (e) {
+      console.warn('  ⚠ mojibake détecté mais relecture utf-8 impossible (' + e.message + ')');
+    }
+  }
+  return await shpMod.open(sf); // reprendre du début (le reniflage a consommé)
 }
 
 function ringArea(ring) { // aire planaire signée (formule du lacet), unités = coordonnées
@@ -472,38 +511,96 @@ async function buildForet(dep, entries, opts) {
   const communes = await loadCommunes(dep);
   const acc = {}; // code -> { essence: m2 }
   let totalForetM2 = 0, nPoly = 0;
+  const groupHa = {}; // clé d'essence -> m² (toutes communes, pour le diag)
+  // --diag : instrumente l'entonnoir (où les surfaces se perdent)
+  const D = opts.diag ? {
+    limite: opts.limite > 0 ? opts.limite : 200000,
+    premier: null, featuresLus: 0, sansTfv: 0, sansGeom: 0, aireNulle: 0,
+    horsContours: 0, affectes: 0, tfvs: {}, exemples: [], perdus: []
+  } : null;
   for (const sf of shpFiles) {
-    const reader = await shpMod.open(sf);
+    const reader = await openShpBest(shpMod, sf); // piège n°41(m) : encodage DBF
     // Piège n°41(i) : l'API du paquet npm « shapefile » renvoie
     // { done: boolean, value: Feature } — PAS le Feature directement.
     // while ((it = await reader.read()) && it.geometry) sortait dès la 1re
     // lecture (it.geometry === undefined) → sorties VIDES sans aucune erreur.
     let res;
+    let lusShp = 0;
     while ((res = await reader.read()) && !res.done) {
       const it = res.value || res;
-      if (!it || !it.geometry) continue;
+      lusShp++;
+      if (D && lusShp > D.limite) { console.log('  [diag] limite ' + D.limite + ' polygones atteinte dans ' + path.basename(sf)); break; }
+      if (!it || !it.geometry) { if (D) D.sansGeom++; continue; }
       const props = it.properties || {};
+      if (D && D.premier === null) {
+        D.premier = true;
+        console.log('  [diag] 1er polygone de ' + path.basename(sf) + ' — propriétés DBF :');
+        for (const k of Object.keys(props)) console.log('    ' + k + ' = ' + JSON.stringify(props[k]));
+      }
       const tfvKey = Object.keys(props).find(k => /^TFV$/i.test(k));
-      if (!tfvKey) continue;
+      if (!tfvKey) { if (D) D.sansTfv++; continue; }
       const rings = ringsOfGeometry(it.geometry); // coordonnées L93 (m)
-      if (!rings.length) continue;
+      if (!rings.length) { if (D) D.sansGeom++; continue; }
       const areaM2 = polygonAreaM2(rings);
-      if (areaM2 <= 0) continue;
+      if (areaM2 <= 0) { if (D) D.aireNulle++; continue; }
       nPoly++; totalForetM2 += areaM2;
-      const code = (() => {
-        for (const pt of candidatePoints(rings)) {
-          const lonlat = proj4(L93, 'WGS84', pt);
-          const c = communeOfPoint(communes, lonlat[0], lonlat[1]);
-          if (c) return c;
+      const tfv = String(props[tfvKey]);
+      const g = tfvGroup(tfv);
+      if (D) D.tfvs[tfv] = (D.tfvs[tfv] || 0) + 1;
+      if (g) groupHa[g] = (groupHa[g] || 0) + areaM2;
+      let code = null, llEx = null;
+      for (const pt of candidatePoints(rings)) {
+        const lonlat = proj4(L93, 'WGS84', pt);
+        llEx = lonlat;
+        const c = communeOfPoint(communes, lonlat[0], lonlat[1]);
+        if (c) { code = c; break; }
+      }
+      if (!code) { // hors des contours (simplifiés) du repo
+        if (D) {
+          D.horsContours++;
+          if (D.perdus.length < 3) D.perdus.push({ tfv: tfv, groupe: g || '?', aireHa: Math.round(areaM2 / 100) / 100, centre: [+llEx[0].toFixed(5), +llEx[1].toFixed(5)] });
         }
-        return null;
-      })();
-      if (!code) continue; // hors des contours (simplifiés) du repo
-      const g = tfvGroup(props[tfvKey]);
+        continue;
+      }
+      if (D) {
+        D.affectes++;
+        if (D.exemples.length < 3) D.exemples.push({ tfv: tfv, groupe: g || '?', aireHa: Math.round(areaM2 / 100) / 100, commune: code, centre: [+llEx[0].toFixed(5), +llEx[1].toFixed(5)] });
+      }
       acc[code] = acc[code] || {};
       acc[code]._foret = (acc[code]._foret || 0) + areaM2;
       if (g) acc[code][g] = (acc[code][g] || 0) + areaM2;
     }
+    if (D) D.featuresLus += Math.min(lusShp, D.limite);
+  }
+  if (D) {
+    console.log('\n══════════ DIAGNOSTIC BD Forêt ' + dep + ' (' + entry + ') ══════════');
+    console.log('  dossier extrait : ' + dir + ' — ' + (dirSize(dir) / 1e6).toFixed(0) + ' Mo ; .shp trouvés : ' + shpFiles.map(p => path.basename(p)).slice(0, 10).join(', '));
+    console.log('  polygones lus           : ' + D.featuresLus + (opts.limite > 0 ? ' (limite ' + D.limite + ' par .shp)' : ''));
+    console.log('  sans colonne TFV        : ' + D.sansTfv);
+    console.log('  géométries vides        : ' + D.sansGeom);
+    console.log('  aires nulles            : ' + D.aireNulle);
+    console.log('  hors contours communaux : ' + D.horsContours);
+    console.log('  affectés à une commune  : ' + D.affectes);
+    const top = Object.entries(D.tfvs).sort((a, b) => b[1] - a[1]).slice(0, 25);
+    console.log('  top TFV (→ groupe attribué) :');
+    top.forEach(kv => console.log('    ' + JSON.stringify(kv[0]) + ' -> ' + (tfvGroup(kv[0]) || '?') + ' ×' + kv[1]));
+    const tot = Object.entries(groupHa).sort((a, b) => b[1] - a[1]);
+    console.log('  ha par clé du JSON : ' + (tot.length ? tot.map(kv => kv[0] + '=' + (Math.round(kv[1] / 100) / 100) + ' ha').join(', ') : 'AUCUNE'));
+    const ATTENDUS = ['chene', 'hetre', 'charme', 'chataignier', 'frene', 'pins', 'sapin', 'epicea', 'douglas', 'bouleau', 'aulne', 'peuplier', 'cedre']; // clés lues par pollens-essences.js
+    const absents = ATTENDUS.filter(k => !groupHa[k]);
+    if (absents.length) console.log('  ⚠ clés attendues par l\'app à 0 ha : ' + absents.join(', '));
+    const attribue = Object.values(groupHa).reduce((a, b) => a + b, 0);
+    if (totalForetM2 > 0 && attribue < totalForetM2 * 0.7) {
+      console.log('  ⚠ ' + Math.round((totalForetM2 - attribue) / 100) / 100 + ' ha (' + Math.round((totalForetM2 - attribue) * 100 / totalForetM2) + ' %) de forêt SANS essence attribuée — libellés TFV non matchés (encodage DBF ? piège n°41(m)) ou formations « mélange » (non attribuées par méthode)');
+    }
+    D.exemples.forEach(x => console.log('  ✓ ' + x.tfv + ' -> ' + x.groupe + ', ' + x.aireHa + ' ha, commune ' + x.commune + ' @ ' + x.centre.join(',')));
+    D.perdus.forEach(x => console.log('  ✗ ' + x.tfv + ' (' + x.groupe + '), ' + x.aireHa + ' ha, AUCUNE commune @ ' + x.centre.join(',')));
+    const c0 = communes[0];
+    const ct = c0 ? ringCentroid(c0.outer) : null;
+    const rt = ct ? communeOfPoint(communes, ct[0], ct[1]) : null;
+    console.log('  contours ' + dep + ' : ' + communes.length + ' anneaux ; aller-retour centroïde du 1er anneau -> ' + (rt === c0.code ? 'OK (' + c0.code + ')' : 'ÉCHEC (attendu ' + (c0 && c0.code) + ', trouvé ' + rt + ')'));
+    console.log('══════════ mode --diag : aucun JSON écrit dans data/essences-foret/ ══════════');
+    return true;
   }
   // conversion m² -> ha (2 décimales) + shape de sortie
   const communesOut = {};
@@ -627,7 +724,7 @@ async function buildRpg(region, deps, entries, opts) {
   } : null;
   let nRows = 0;
   for (const sf of parcelleShps) {
-    const reader = await shpMod.open(sf);
+    const reader = await openShpBest(shpMod, sf); // piège n°41(m) : encodage DBF
     // Piège n°41(i) : reader.read() renvoie { done, value } — PAS le Feature
     let res;
     let lusShp = 0;
@@ -697,7 +794,8 @@ async function buildRpg(region, deps, entries, opts) {
     console.log('  hors groupes (ni céréales ni prairies) : ' + D.horsGroupes);
     console.log('  aires nulles            : ' + D.aireNulle);
     console.log('  affectées à une commune : ' + D.affectees);
-    console.log('  hors contours communaux : ' + D.horsContours);
+    const nbDepsRegion = Object.keys(DEP_TO_R).filter(d => DEP_TO_R[d] === region).length;
+    console.log('  hors contours communaux : ' + D.horsContours + (nbDepsRegion > deps.length ? '  (attendu : le SHP ' + region + ' couvre les ' + nbDepsRegion + ' départements de la région, on ne matche que ' + deps.join(', ') + ')' : ''));
     const top = Object.entries(D.cultures).sort((a, b) => b[1] - a[1]).slice(0, 20);
     console.log('  top cultures : ' + (top.length ? top.map(kv => kv[0] + '(' + (groups[kv[0]] || '?') + ')×' + kv[1]).join(', ') : 'AUCUNE'));
     D.exemples.forEach(x => console.log('  ✓ ' + x.culture + ' -> ' + x.groupe + ', ' + x.aireHa + ' ha, commune ' + x.commune + ' @ ' + x.centre.join(',')));
@@ -788,7 +886,7 @@ async function main() {
     }
   }
   if (opts.rpg) {
-    if (opts.diag && !opts.deps.length) console.warn('⚠ --diag : préciser un département (ex. --rpg --dep 31 --diag) sinon toute la métropole est instrumentée.');
+    if (opts.diag && !opts.deps.length) console.warn('⚠ --diag : préciser un département (ex. --foret --dep 31 --diag ou --rpg --dep 31 --diag) sinon toute la métropole est instrumentée.');
     if (opts.limite > 0 && !opts.diag) console.warn('⚠ --limite ignorée sans --diag');
     const entries = await feedEntries('RPG');
     const byR = {};
