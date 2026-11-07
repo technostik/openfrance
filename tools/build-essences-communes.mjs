@@ -153,7 +153,8 @@ const TFV_MAP = [
   ['meleze', 'meleze'],
   ['cedre', 'cedre'],
   ['pin', 'pins'],           // pin maritime / sylvestre / laricio ou pin noir / autre pin
-  ['peuplier', 'peuplier'],
+  ['peupleraie', 'peuplier'], // « Peupleraie » : le SEUL libellé court RÉEL de la V2 (le keyword « peuplier » ne le matchait PAS — régression du 08/11, « que le peuplier remonte » inversé)
+  ['peuplier', 'peuplier'],  // au cas où un millésime écrit « Forêt … de peuplier pur »
   ['robinier', 'robinier'],
   ['chataignier', 'chataignier'],
   ['hetre', 'hetre'],
@@ -569,7 +570,7 @@ async function buildForet(dep, entries, opts) {
       nPoly++; totalForetM2 += areaM2;
       const tfv = String(props[tfvKey]);
       const g = tfvGroup(tfv);
-      if (D) D.tfvs[tfv] = (D.tfvs[tfv] || 0) + 1;
+      if (D) { const e = D.tfvs[tfv] = D.tfvs[tfv] || { n: 0, m2: 0 }; e.n++; e.m2 += areaM2; } // histogramme : nb + SURFACE par libellé
       if (g) groupHa[g] = (groupHa[g] || 0) + areaM2;
       let code = null, llEx = null;
       for (const pt of candidatePoints(rings)) {
@@ -581,13 +582,13 @@ async function buildForet(dep, entries, opts) {
       if (!code) { // hors des contours (simplifiés) du repo
         if (D) {
           D.horsContours++;
-          if (D.perdus.length < 3) D.perdus.push({ tfv: tfv, groupe: g || '?', aireHa: Math.round(areaM2 / 100) / 100, centre: [+llEx[0].toFixed(5), +llEx[1].toFixed(5)] });
+          if (g && D.perdus.length < 3) D.perdus.push({ tfv: tfv, groupe: g, aireHa: Math.round(areaM2 / 100) / 100, centre: [+llEx[0].toFixed(5), +llEx[1].toFixed(5)] }); // uniquement des ATTRIBUTÉS
         }
         continue;
       }
       if (D) {
         D.affectes++;
-        if (D.exemples.length < 3) D.exemples.push({ tfv: tfv, groupe: g || '?', aireHa: Math.round(areaM2 / 100) / 100, commune: code, centre: [+llEx[0].toFixed(5), +llEx[1].toFixed(5)] });
+        if (g && D.exemples.length < 3) D.exemples.push({ tfv: tfv, groupe: g, aireHa: Math.round(areaM2 / 100) / 100, commune: code, centre: [+llEx[0].toFixed(5), +llEx[1].toFixed(5)] }); // uniquement des ATTRIBUTÉS : exemples parlants
       }
       acc[code] = acc[code] || {};
       acc[code]._foret = (acc[code]._foret || 0) + areaM2;
@@ -596,33 +597,56 @@ async function buildForet(dep, entries, opts) {
     if (D) D.featuresLus += Math.min(lusShp, D.limite);
   }
   if (D) {
-    console.log('\n══════════ DIAGNOSTIC BD Forêt ' + dep + ' (' + entry + ') ══════════');
-    console.log('  dossier extrait : ' + dir + ' — ' + (dirSize(dir) / 1e6).toFixed(0) + ' Mo ; .shp trouvés : ' + shpFiles.map(p => path.basename(p)).slice(0, 10).join(', '));
-    console.log('  polygones lus           : ' + D.featuresLus + (opts.limite > 0 ? ' (limite ' + D.limite + ' par .shp)' : ''));
-    console.log('  sans colonne TFV        : ' + D.sansTfv);
-    console.log('  géométries vides        : ' + D.sansGeom);
-    console.log('  aires nulles            : ' + D.aireNulle);
-    console.log('  hors contours communaux : ' + D.horsContours);
-    console.log('  affectés à une commune  : ' + D.affectes);
-    const top = Object.entries(D.tfvs).sort((a, b) => b[1] - a[1]).slice(0, 25);
-    console.log('  top TFV (→ groupe attribué) :');
-    top.forEach(kv => console.log('    ' + JSON.stringify(kv[0]) + ' -> ' + (tfvGroup(kv[0]) || '?') + ' ×' + kv[1]));
-    const tot = Object.entries(groupHa).sort((a, b) => b[1] - a[1]);
-    console.log('  ha par clé du JSON : ' + (tot.length ? tot.map(kv => kv[0] + '=' + (Math.round(kv[1] / 100) / 100) + ' ha').join(', ') : 'AUCUNE'));
-    const ATTENDUS = ['chene', 'hetre', 'charme', 'chataignier', 'frene', 'pins', 'sapin', 'epicea', 'douglas', 'bouleau', 'aulne', 'peuplier', 'cedre']; // clés lues par pollens-essences.js
-    const absents = ATTENDUS.filter(k => !groupHa[k]);
-    if (absents.length) console.log('  ⚠ clés attendues par l\'app à 0 ha : ' + absents.join(', '));
-    const attribue = Object.values(groupHa).reduce((a, b) => a + b, 0);
-    if (totalForetM2 > 0 && attribue < totalForetM2 * 0.7) {
-      console.log('  ⚠ ' + Math.round((totalForetM2 - attribue) / 100) / 100 + ' ha (' + Math.round((totalForetM2 - attribue) * 100 / totalForetM2) + ' %) de forêt SANS essence attribuée — libellés TFV non matchés (encodage DBF ? piège n°41(m)) ou formations « mélange » (non attribuées par méthode)');
+    const fHa = (m2) => (Math.round(m2 / 100) / 100).toLocaleString('fr-FR');
+    const pTot = (m2) => (totalForetM2 > 0 ? Math.round(m2 * 1000 / totalForetM2) / 10 : 0);
+    // buckets du verdict : [ok] = attribué ; [exclu] = non attribuable PAR
+    // MÉTHODE (mélanges, landes, îlots, « autre feuillu/conifère », « sans
+    // couvert », génériques « de feuillus/conifères »…) ; [⚠ INCONNU] = le
+    // libellé aurait dû matcher -> à corriger dans TFV_MAP.
+    const TFV_NON_ATTR = /melange|galerie|en ilots|lande|herbacee|sans couvert|autre feuillu|autre conifere|de feuillus|de coniferes/;
+    let haExclu = 0, haInconnu = 0;
+    const inconnus = [];
+    for (const tfv in D.tfvs) {
+      if (tfvGroup(tfv)) continue;
+      const m2 = D.tfvs[tfv].m2;
+      if (TFV_NON_ATTR.test(norm(tfv))) haExclu += m2;
+      else { haInconnu += m2; inconnus.push(tfv + ' (' + fHa(m2) + ' ha, ×' + D.tfvs[tfv].n + ')'); }
     }
-    D.exemples.forEach(x => console.log('  ✓ ' + x.tfv + ' -> ' + x.groupe + ', ' + x.aireHa + ' ha, commune ' + x.commune + ' @ ' + x.centre.join(',')));
-    D.perdus.forEach(x => console.log('  ✗ ' + x.tfv + ' (' + x.groupe + '), ' + x.aireHa + ' ha, AUCUNE commune @ ' + x.centre.join(',')));
+    const haAttribue = Object.values(groupHa).reduce((a, b) => a + b, 0);
+    console.log('\n══════════ DIAGNOSTIC BD Forêt ' + dep + ' (' + entry + ') ══════════');
+    console.log('  dossier extrait : ' + dir + ' — ' + (dirSize(dir) / 1e6).toFixed(0) + ' Mo ; .shp : ' + shpFiles.map(p => path.basename(p)).slice(0, 10).join(', '));
+    console.log('  polygones lus : ' + D.featuresLus + (opts.limite > 0 ? ' (limite ' + D.limite + ' par .shp)' : '') + ' ; sans colonne TFV : ' + D.sansTfv + ' ; géométries vides : ' + D.sansGeom + ' ; aires nulles : ' + D.aireNulle);
+    console.log('  affectés à une commune : ' + D.affectes + ' ; hors contours communaux : ' + D.horsContours + ' (bords de département : normal)');
+    console.log('\n  HISTOGRAMME TFV (trié par surface) — [ok] = attribué à une essence, [exclu] = non attribuable PAR MÉTHODE (mélange, lande, îlot, « autre feuillu/conifère », générique…), [⚠ INCONNU] = à corriger dans TFV_MAP :');
+    Object.entries(D.tfvs).sort((a, b) => b[1].m2 - a[1].m2).slice(0, 25).forEach(([tfv, e]) => {
+      const g = tfvGroup(tfv);
+      const tag = g ? '[ok]' : (TFV_NON_ATTR.test(norm(tfv)) ? '[exclu]' : '[⚠ INCONNU]');
+      console.log('    ' + tag + ' ' + JSON.stringify(tfv) + ' -> ' + (g || '—') + ' ×' + e.n + ', ' + fHa(e.m2) + ' ha');
+    });
+    console.log('\n  VERDICT (ce qu\'il faut vérifier, dans l\'ordre) :');
+    console.log('  1. Libellés [⚠ INCONNU] dans l\'histogramme : ' + (inconnus.length ? 'OUI — corriger TFV_MAP -> ' + inconnus.slice(0, 5).join(' ; ') : 'aucun ✓'));
+    console.log('  2. Surface attribuée à une essence : ' + fHa(haAttribue) + ' ha (' + pTot(haAttribue) + ' %) ; non attribuable PAR MÉTHODE (cf. [exclu] : mélanges, landes, îlots… — NORMAL, pas un bug) : ' + fHa(haExclu) + ' ha (' + pTot(haExclu) + ' %) ; INCONNUE (anormale) : ' + fHa(haInconnu) + ' ha (' + pTot(haInconnu) + ' %)');
+    const ATTENDUS = ['chene', 'hetre', 'charme', 'chataignier', 'frene', 'pins', 'sapin', 'epicea', 'douglas', 'bouleau', 'aulne', 'peuplier', 'cedre']; // clés lues par pollens-essences.js
+    const NON_DISTINGUES = { charme: 1, frene: 1, epicea: 1, bouleau: 1, aulne: 1, cedre: 1 }; // non distinguées par la V2 (« autre feuillu/conifère pur » ; épicéa fusionné dans « sapin ou épicéa ») -> l\'app les grise
+    const presents = [], absentsAttendus = [], absentsInattendus = [];
+    ATTENDUS.forEach(k => {
+      if (groupHa[k]) presents.push(k + ' ' + fHa(groupHa[k]) + ' ha');
+      else if (NON_DISTINGUES[k]) absentsAttendus.push(k + (k === 'epicea' ? ' (fusionné dans sapin)' : ''));
+      else absentsInattendus.push(k);
+    });
+    console.log('  3. Clés du JSON lues par l\'app :');
+    console.log('     ✓ présentes : ' + (presents.length ? presents.join(', ') : 'AUCUNE ⚠'));
+    console.log('     – absentes ATTENDUES (la V2 ne les distingue pas ; l\'app les affiche en gris « essence non distinguée ») : ' + (absentsAttendus.length ? absentsAttendus.join(', ') : 'aucune'));
+    console.log('     ' + (absentsInattendus.length ? '⚠ absentes INATTENDUES (un libellé TFV aurait dû matcher) : ' + absentsInattendus.join(', ') : '✓ aucune clé absente inattendue'));
+    console.log('  4. Exemples de polygones ATTRIBUÉS :');
+    if (!D.exemples.length) console.log('     (aucun polygone attribué à une essence — ⚠ problème majeur)');
+    D.exemples.forEach(x => console.log('     ✓ ' + x.tfv + ' -> ' + x.groupe + ', ' + x.aireHa + ' ha, commune ' + x.commune + ' @ ' + x.centre.join(',')));
+    D.perdus.forEach(x => console.log('     ✗ ' + x.tfv + ' (' + x.groupe + '), ' + x.aireHa + ' ha, AUCUNE commune @ ' + x.centre.join(',')));
     const c0 = communes[0];
     const ct = c0 ? ringCentroid(c0.outer) : null;
     const rt = ct ? communeOfPoint(communes, ct[0], ct[1]) : null;
-    console.log('  contours ' + dep + ' : ' + communes.length + ' anneaux ; aller-retour centroïde du 1er anneau -> ' + (rt === c0.code ? 'OK (' + c0.code + ')' : 'ÉCHEC (attendu ' + (c0 && c0.code) + ', trouvé ' + rt + ')'));
-    console.log('══════════ mode --diag : aucun JSON écrit dans data/essences-foret/ ══════════');
+    console.log('  5. Contours ' + dep + ' : ' + communes.length + ' anneaux ; aller-retour centroïde du 1er anneau -> ' + (rt === c0.code ? 'OK (' + c0.code + ') ✓' : 'ÉCHEC (attendu ' + (c0 && c0.code) + ', trouvé ' + rt + ') ⚠'));
+    console.log('\n  mode --diag : AUCUN JSON écrit. Si le verdict est vert (points 1, 3, 5), relancer SANS --diag pour générer data/essences-foret/d' + dep + '.json puis recharger l\'app.');
     return true;
   }
   // conversion m² -> ha (2 décimales) + shape de sortie
@@ -830,6 +854,7 @@ async function buildRpg(region, deps, entries, opts) {
       console.log('  contours ' + d + ' : ' + communesByDep[d].length + ' anneaux ; aller-retour centroïde du 1er anneau -> ' + (rt === c0.code ? 'OK (' + c0.code + ')' : 'ÉCHEC (attendu ' + (c0 && c0.code) + ', trouvé ' + rt + ')'));
     }
     console.log('══════════ mode --diag : aucun JSON écrit dans data/essences-rpg/ ══════════');
+    console.log('Si le verdict est vert (affectées > 0, exemples ✓, contours OK), relancer SANS --diag pour générer les JSON puis recharger l\'app.');
     return true;
   }
   await fsp.mkdir(OUT_RPG, { recursive: true });
