@@ -35,9 +35,13 @@
 // à partir de la BD Forêt V2 et du RPG, licences ouvertes IGN/ASP), la vue
 // dessine les COMMUNES (superficies ha de l'essence, exposition 1–5 par quintiles
 // au sein de la zone) et le critère du Composeur 🌳 VARIE AU SEIN d'un
-// département. Sans ces fichiers (HTTP 404) : communes de la zone en GRISÉ
-// avec la raison (on NE remonte PAS à la carte France tant qu'une zone est
-// sélectionnée) ; la carte par départements reste le défaut quand AUCUN
+// département. Sans données communales (fichiers absents OU essence non
+// distinguée par la source — piège n°41(n), ex. bouleau/aulne/noisetier) :
+// REPLI DÉPARTEMENT — les communes de la zone sont colorées par l'exposition
+// DÉPARTEMENTALE de l'indicateur (constante au sein de chaque département :
+// chorologie/superficies = données de niveau département), raison affichée ;
+// gris « pas de données » seulement si le département lui-même n'est pas
+// couvert. La carte par départements reste le défaut quand AUCUN
 // département n'est sélectionné. Ex æquos : mêmes hectares -> même classe ;
 // tout à 0 -> 1/5 partout (les 0 sont des surfaces réellement nulles) ;
 // clé absente de toutes les communes -> gris « pas de données » (ex. bouleau,
@@ -1601,15 +1605,24 @@ function pleDrawCommunes(ind, deps) {
     }).filter(Boolean));
     var raison = null;
     if (!vals) {
-      // Pas de données communales : communes en GRISÉ — on NE remonte PAS à la
-      // carte France tant qu'une zone est sélectionnée.
-      vals = {};
+      // Pas de données communales (fichiers absents, ou essence non distinguée
+      // par la source — piège n°41(n), ex. bouleau/aulne/noisetier) : REPLI
+      // DÉPARTEMENT au lieu d'une carte tout-gris « plus rien » — les communes
+      // sont colorées par l'exposition DÉPARTEMENTALE de l'indicateur
+      // (constante au sein de chaque département), raison affichée partout.
       raison = kind
         ? (pleComEssenceDistinguee(deps, ind)
             ? 'données communales absentes (' + PLE_COM_LIB[kind] + ') — exécuter tools/build-essences-communes.mjs puis committer data/essences-*/'
-            : 'essence non distinguée par la source (' + PLE_COM_LIB[kind] + ') — exposition disponible au niveau département uniquement')
-        : 'pas de source communale pour cette essence — exposition disponible au niveau département uniquement';
-      setStatus('⚠️ ' + raison.charAt(0).toUpperCase() + raison.slice(1) + '.');
+            : 'essence non distinguée par la source (' + PLE_COM_LIB[kind] + ')')
+        : 'pas de source communale pour cette essence';
+      vals = {};
+      var computed = pleCompute(ind);
+      (geo.features || []).forEach(function (f) {
+        var c = f.properties && f.properties.code;
+        var v = computed[depOfCommune(c)];
+        if (v) vals[c] = { m: v.m, ix: v.ix, disp: v.disp, lines: v.lines, dept: true };
+      });
+      setStatus('⚠️ ' + raison.charAt(0).toUpperCase() + raison.slice(1) + ' — repli : exposition départementale.');
     }
     PLE.vals = vals;
     if (PLE.layer) { map.removeLayer(PLE.layer); PLE.layer = null; }
@@ -1629,7 +1642,12 @@ function pleDrawCommunes(ind, deps) {
           var v = vals[code];
           var html = '<b>' + esc(pleNomCommune(code, f.properties.nom)) + '</b>';
           if (!v) html += '<br><i>Pas de données</i>';
-          else {
+          else if (v.dept) { // repli département : exposition constante du département
+            html += '<br>' + esc(ind.label) + ' — ' + esc(depNom(depOfCommune(code))) + ' : <b style="color:' +
+              PLE_COLORS[v.ix - 1] + '">' + esc(v.disp || '') + '</b>';
+            html += '<br>Exposition DÉPARTEMENTALE : <b>' + v.ix + '/5 — ' + PLE_IX_LABELS[v.ix - 1] + '</b>';
+            (v.lines || []).forEach(function (x) { html += '<br><span class="muted">' + x + '</span>'; });
+          } else {
             html += '<br>' + esc(ind.label) + ' : <b style="color:' + PLE_COLORS[v.ix - 1] + '">' +
               (v.m >= 100 ? Math.round(v.m) + ' ha' : v.m.toFixed(1).replace('.', ',') + ' ha') + '</b>';
             html += '<br>Exposition relative : <b>' + v.ix + '/5 — ' + PLE_IX_LABELS[v.ix - 1] + '</b>';
@@ -1657,17 +1675,38 @@ function pleLegendCom(ind, kind, raison) {
   });
   html += '<div class="legend-row"><span class="legend-color" style="background:' + PLE_GREY + '"></span>' +
           '<span>Pas de données / hors zone</span></div>';
-  html += '<div class="muted" style="margin-top:6px">Exposition relative PAR COMMUNE (quintiles au sein de la zone ; mêmes ha → même classe).<br>' +
-          esc(ind.label) + ' — ' + (kind ? esc(PLE_COM_LIB[kind]) : 'pas de source communale (repli : niveau département)') + '</div>';
-  if (raison) html += '<div class="muted" style="margin-top:4px;color:#fbbf24">⚠️ ' + esc(raison) + '</div>';
+  if (raison) {
+    html += '<div class="muted" style="margin-top:6px">REPLI : exposition DÉPARTEMENTALE — couleur constante au sein de chaque département (données communales indisponibles pour cette essence).<br>' +
+      esc(ind.label) + ' — ' + esc(pleSource(ind)) + '</div>';
+    html += '<div class="muted" style="margin-top:4px;color:#fbbf24">⚠️ ' + esc(raison) + '</div>';
+  } else {
+    html += '<div class="muted" style="margin-top:6px">Exposition relative PAR COMMUNE (quintiles au sein de la zone ; mêmes ha → même classe).<br>' +
+      esc(ind.label) + ' — ' + (kind ? esc(PLE_COM_LIB[kind]) : '') + '</div>';
+  }
   el.innerHTML = html;
 }
-function pleResultsCom(vals, ind, raison) { // top 15 communes
+function pleResultsCom(vals, ind, raison) { // top 15 communes (ou par département en repli)
   var el = document.getElementById('plResults');
-  var arr = [];
-  for (var c in vals) arr.push({ code: c, m: vals[c].m, ix: vals[c].ix });
+  var arr = [], dept = false;
+  for (var c in vals) {
+    if (vals[c] && vals[c].dept) dept = true;
+    arr.push({ code: c, m: vals[c].m, ix: vals[c].ix, disp: vals[c].disp });
+  }
   if (!arr.length) {
     el.innerHTML = '<p class="muted" style="margin:4px 0 2px">' + (raison ? '⚠️ ' + esc(raison) : 'Aucune donnée pour cet indicateur.') + '</p>';
+    return;
+  }
+  if (dept) { // repli département : valeur constante par département, un top communes n'aurait aucun sens
+    var byDep = {}, order = [];
+    arr.forEach(function (a) { var d = depOfCommune(a.code); if (!byDep[d]) { byDep[d] = a; order.push(d); } });
+    var hd = '<p class="muted" style="margin:4px 0 2px">Exposition DÉPARTEMENTALE — ' + esc(ind.label) +
+      (raison ? ' (repli : pas de données communales)' : '') + '</p>';
+    order.forEach(function (d) {
+      var a = byDep[d];
+      hd += '<div class="top-row"><span>' + esc(depNom(d)) + ' (' + d + ')</span>' +
+        '<span style="color:' + PLE_COLORS[a.ix - 1] + '"><b>' + (a.disp !== undefined ? a.disp : a.m.toFixed(0)) + '</b> · ' + a.ix + '/5</span></div>';
+    });
+    el.innerHTML = hd;
     return;
   }
   arr.sort(function (a, b) { return b.m - a.m || (a.code < b.code ? -1 : 1); });
@@ -1680,9 +1719,11 @@ function pleResultsCom(vals, ind, raison) { // top 15 communes
   el.innerHTML = html;
 }
 function pleStatusCom(ind, vals, kind, raison) {
-  var n = 0; for (var c in vals) n++;
+  var n = 0, dept = false;
+  for (var c in vals) { n++; if (vals[c] && vals[c].dept) dept = true; }
   var html;
-  if (raison) html = '<b>' + esc(ind.label) + '</b> — ⚠️ ' + esc(raison) + '.';
+  if (raison) html = '<b>' + esc(ind.label) + '</b> — ⚠️ ' + esc(raison) + '.<br>Repli : exposition DÉPARTEMENTALE (constante au sein de chaque département' +
+    (n ? ' ; ' + n + ' commune(s) affichée(s)' : '') + ') — ' + esc(pleSource(ind)) + '.';
   else html = '<b>' + esc(ind.label) + '</b> — exposition relative PAR COMMUNE (1–5, quintiles, ex æquos groupés) · ' +
     n + ' commune(s) avec données · source : ' + esc(PLE_COM_LIB[kind || 'foret']) + '.';
   document.getElementById('plStatus').innerHTML = html;
