@@ -1402,10 +1402,29 @@ function pleSource(ind) {
       'hectares par essence (90 départements) ; indicateur = part de la superficie du département.';
   }
   if (ind.groupe === 'choro') {
+    if (PLE_CHORO_ES && PLE_CHORO_ES[ind.id]) {
+      return 'IGN dataIFN — flore des placettes IFN (relevé floristique complet) : % des placettes du département où l\'essence est présente (noisetier inclus) ; ' +
+        'EUFORGEN (Caudullo et al. 2017, European Atlas of Forest Tree Species, CC-BY 4.0) : aire de présence pour cyprès/olivier/platane ; ' +
+        'GBIF (api.gbif.org) en repli (indicatif : biais d\'échantillonnage).';
+    }
     return 'GBIF (api.gbif.org) — occurrences agrégées par département (collecte 10/2026) : part des occurrences de l\'essence parmi celles des plantes ' +
       'du département (dénominateur d\'effort). INDICATIF : biais d\'échantillonnage (inventaires, données participatives, effectifs urbains).';
   }
   return 'Agreste — RGA 2020 « SAU par EPCI » (TACCT), agrégé par département via BANATIC : proxy cultures de graminées (hectares).';
+}
+
+function pleSrcTxt(ind, vals) { // libellé de source RÉEL (ce qui est utilisé par département), pas un texte statique
+  if (ind.groupe !== 'choro') return pleSource(ind);
+  var srcs = [];
+  for (var c in vals) if (vals[c] && vals[c].src && srcs.indexOf(vals[c].src) < 0) srcs.push(vals[c].src);
+  if (!srcs.length) return pleSource(ind);
+  var LIB = {
+    'ifn-flore': 'IGN dataIFN — flore des placettes IFN (relevé floristique) : % des placettes du département où l\'essence est présente',
+    'euforgen': 'EUFORGEN — aire de présence (Caudullo et al. 2017, European Atlas of Forest Tree Species, CC-BY 4.0)',
+    'gbif': 'GBIF (api.gbif.org) — occurrences agrégées par département : INDICATIF (biais d\'échantillonnage)'
+  };
+  return ['ifn-flore', 'euforgen', 'gbif'].filter(function (s) { return srcs.indexOf(s) >= 0; })
+    .map(function (s) { return LIB[s]; }).join(' ; ');
 }
 
 // ---------- Calcul : exposition relative 1-5 (quintiles) ----------
@@ -1449,7 +1468,7 @@ function pleCompute(ind) {
   pleChoroEsEnsure();
   var pairs = [], vals = {};
   for (var code in PLE_DEP_AREA) {
-    var m = null, disp = '', lines = [];
+    var m = null, disp = '', lines = [], src = null;
     if (ind.groupe === 'ifn') {
       var rec = PLE_IFN[code];
       if (!rec) continue; // departement non couvert par l'IFN (ex. petites departements urbaines)
@@ -1474,10 +1493,10 @@ function pleCompute(ind) {
         m = rec.pct;
         disp = (Math.round(rec.pct * 10) / 10).toLocaleString('fr-FR') + ' % des placettes (' + rec.n + '/' + rec.np + ')';
         lines.push('part des placettes IFN (relevé floristique) du département où l\'essence est présente');
-        lines.push('source : IGN — Inventaire forestier national, données brutes (dataIFN)');
+        lines.push('source : IGN — Inventaire forestier national, données brutes (dataIFN)'); src = 'ifn-flore';
       } else if (rec && rec.src === 'euforgen' && rec.present) {
         // aire de présence (pas de gradient) : exposition fixe, hors quintiles
-        vals[code] = { m: null, ix: 3, disp: 'dans l\'aire de présence', lines: [
+        vals[code] = { m: null, ix: 3, disp: 'dans l\'aire de présence', src: 'euforgen', lines: [
           'aire de chorologie EUFORGEN (Atlas européen des espèces d\'arbres, Caudullo et al. 2017, CC-BY 4.0)',
           'présence départementale : pas de gradient d\'exposition'
         ] };
@@ -1492,11 +1511,11 @@ function pleCompute(ind) {
         var share = n / den * 100;
         m = share;
         disp = fmt(n) + ' occurrence' + (n > 1 ? 's' : '');
-        lines.push('part relative : ' + share.toFixed(2) + ' % des occurrences de plantes (indicatif)');
+        lines.push('part relative : ' + share.toFixed(2) + ' % des occurrences de plantes (indicatif)'); src = 'gbif';
       }
     }
     pairs.push({ code: code, m: m });
-    vals[code] = { m: m, disp: disp, ix: 1, lines: lines };
+    vals[code] = { m: m, disp: disp, ix: 1, lines: lines, src: src };
   }
   var ixs = pleQuintileIx(pairs);
   for (var c2 in ixs) if (vals[c2]) vals[c2].ix = ixs[c2];
@@ -1661,7 +1680,7 @@ function pleDrawCommunes(ind, deps) {
       (geo.features || []).forEach(function (f) {
         var c = f.properties && f.properties.code;
         var v = computed[depOfCommune(c)];
-        if (v) vals[c] = { m: v.m, ix: v.ix, disp: v.disp, lines: v.lines, dept: true };
+        if (v) vals[c] = { m: v.m, ix: v.ix, disp: v.disp, lines: v.lines, src: v.src, dept: true };
       });
       setStatus('⚠️ ' + raison.charAt(0).toUpperCase() + raison.slice(1) + ' — repli : exposition départementale.');
     }
@@ -1698,7 +1717,7 @@ function pleDrawCommunes(ind, deps) {
       }
     }).addTo(map);
     map.fitBounds(PLE.layer.getBounds(), { padding: [30, 30] });
-    pleLegendCom(ind, kind, raison);
+    pleLegendCom(ind, kind, raison, vals);
     pleResultsCom(vals, ind, raison);
     pleStatusCom(ind, vals, kind, raison);
   }).catch(function (err) {
@@ -1707,7 +1726,7 @@ function pleDrawCommunes(ind, deps) {
     showError('Impossible de charger les contours communaux.', err.message);
   });
 }
-function pleLegendCom(ind, kind, raison) {
+function pleLegendCom(ind, kind, raison, vals) {
   var el = document.getElementById('plLegend');
   var html = '';
   PLE_IX_LABELS.forEach(function (lb, i) {
@@ -1718,7 +1737,7 @@ function pleLegendCom(ind, kind, raison) {
           '<span>Pas de données / hors zone</span></div>';
   if (raison) {
     html += '<div class="muted" style="margin-top:6px">REPLI : exposition DÉPARTEMENTALE — couleur constante au sein de chaque département (données communales indisponibles pour cette essence).<br>' +
-      esc(ind.label) + ' — ' + esc(pleSource(ind)) + '</div>';
+      esc(ind.label) + ' — ' + esc(pleSrcTxt(ind, vals)) + '</div>';
     html += '<div class="muted" style="margin-top:4px;color:#fbbf24">⚠️ ' + esc(raison) + '</div>';
   } else {
     html += '<div class="muted" style="margin-top:6px">Exposition relative PAR COMMUNE (quintiles au sein de la zone ; mêmes ha → même classe).<br>' +
@@ -1764,7 +1783,7 @@ function pleStatusCom(ind, vals, kind, raison) {
   for (var c in vals) { n++; if (vals[c] && vals[c].dept) dept = true; }
   var html;
   if (raison) html = '<b>' + esc(ind.label) + '</b> — ⚠️ ' + esc(raison) + '.<br>Repli : exposition DÉPARTEMENTALE (constante au sein de chaque département' +
-    (n ? ' ; ' + n + ' commune(s) affichée(s)' : '') + ') — ' + esc(pleSource(ind)) + '.';
+    (n ? ' ; ' + n + ' commune(s) affichée(s)' : '') + ') — ' + esc(pleSrcTxt(ind, vals)) + '.';
   else html = '<b>' + esc(ind.label) + '</b> — exposition relative PAR COMMUNE (1–5, quintiles, ex æquos groupés) · ' +
     n + ' commune(s) avec données · source : ' + esc(PLE_COM_LIB[kind || 'foret']) + '.';
   document.getElementById('plStatus').innerHTML = html;
@@ -1851,7 +1870,7 @@ function pleStatus(ind, vals) {
     html += ' Vue structurelle : toute la France est affichée (la zone ' + esc(zoneLabel(state.zone)) +
       ' sert surtout à la vue « Indice quotidien »).';
   }
-  html += '<br><span class="muted">' + pleSource(ind) + '</span>' +
+  html += '<br><span class="muted">' + pleSrcTxt(ind, vals) + '</span>' +
     '<br><span class="muted">Vue « en général » (déménagement) — pour l\'indice du jour, voir la vue « Indice quotidien ». ' +
     'Notation allergénique et calendriers : RNSA / ANSES (indicatif).</span>';
   document.getElementById('plStatus').innerHTML = html;
