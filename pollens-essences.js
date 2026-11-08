@@ -1452,16 +1452,20 @@ function pleQuintileIx(pairs) { // pairs: [{code, m}] -> {code: ix 1..5}
 // aires EUFORGEN). Chargé au vol ; PRIORITÉ sur le GBIF embarqué, qui reste
 // le repli (fichier absent, essence ou département non couverts).
 var PLE_CHORO_ES = null;
-var PLE_CHORO_ES_TRIED = false;
-function pleChoroEsEnsure() {
-  if (PLE_CHORO_ES_TRIED || typeof fetchJSONCached !== 'function') return;
-  PLE_CHORO_ES_TRIED = true;
-  fetchJSONCached('/data/chorologie-essences.json').then(function (j) {
-    if (j && j.essences) {
-      PLE_CHORO_ES = j.essences;
-      if (PLE.active) pleDraw(); // la carte est déjà affichée : redessiner avec la nouvelle source
-    }
-  }).catch(function () { /* fichier absent : repli GBIF embarqué */ });
+var PLE_CHORO_ES_PROM = null; // promesse partagée : UNE tentative par chargement de page
+var PLE_CHORO_ES_DONE = false; // true = JSON chargé, ou définitivement absent (le draw n'attend plus)
+function pleChoroEsEnsure() { // -> Promise ; redessine la carte si elle est déjà affichée
+  if (typeof fetchJSONCached !== 'function') { PLE_CHORO_ES_DONE = true; return Promise.resolve(); }
+  if (!PLE_CHORO_ES_PROM) {
+    PLE_CHORO_ES_PROM = fetchJSONCached('/data/chorologie-essences.json').then(function (j) {
+      if (j && j.essences) {
+        PLE_CHORO_ES = j.essences;
+        if (PLE.active) pleDraw(); // la carte est déjà affichée : redessiner avec la nouvelle source
+      }
+    }).catch(function () { /* fichier absent : repli GBIF embarqué */ })
+    .then(function () { PLE_CHORO_ES_DONE = true; });
+  }
+  return PLE_CHORO_ES_PROM;
 }
 
 function pleCompute(ind) {
@@ -1534,9 +1538,19 @@ function pleDepsGeo() { // contours departements (proxy /data/departements.json,
   return PLE_GEO_PROM;
 }
 
+var PLE_DRAW_SEQ = 0; // anti-course : seul le rendu le plus RÉCENT s'affiche (draws concurrents)
 function pleDraw() {
   if (!PLE.active || !PLE.ind) return;
   var ind = PLE.ind;
+  // Chorologie : attendre data/chorologie-essences.json (une tentative par page)
+  // pour ne jamais afficher un rendu GBIF transitoire remplacé ensuite par le
+  // rendu IFN (libellés de sources mélangés — constaté au premier affichage).
+  if (ind.groupe === 'choro' && !PLE_CHORO_ES_DONE) {
+    pleChoroEsEnsure().then(function () {
+      if (PLE.active && PLE.ind === ind) pleDraw();
+    });
+    return;
+  }
   // Niveau COMMUNE dès qu'un département/zone est actif et que les données du
   // build local (data/essences-*) sont présentes ; sinon carte départements.
   var deps = (typeof plZoneDeps === 'function' && POL.active) ? plZoneDeps() : [];
@@ -1652,8 +1666,9 @@ function pleNomCommune(code, fallback) { // nom via l'index de la zone affichée
 }
 function pleDrawCommunes(ind, deps) {
   var kind = pleComSrc(ind);
+  var seq = ++PLE_DRAW_SEQ;
   Promise.all([mergedZoneGeo(deps.slice())].concat(deps.map(pleComLoad))).then(function (r) {
-    if (!PLE.active) return; // réponse obsolète (changement de vue entre-temps)
+    if (!PLE.active || seq !== PLE_DRAW_SEQ) return; // réponse obsolète (vue changée ou draw plus récent)
     var geo = r[0];
     PLE_COM_NOMS = {}; // index des noms pour tooltips + top communes
     (geo.features || []).forEach(function (f) {
@@ -1790,12 +1805,13 @@ function pleStatusCom(ind, vals, kind, raison) {
 }
 
 function pleDrawFrance(ind, note) { // carte départements (vue France — niveau d'origine)
+  var seq = ++PLE_DRAW_SEQ;
   var vals = pleCompute(ind);
   PLE.vals = vals;
   document.getElementById('backBtn').hidden = true;
   document.getElementById('levelTitle').textContent = 'Pollens — essences & exposition (France)';
   pleDepsGeo().then(function (geo) {
-    if (!PLE.active) return; // reponse obsolète (changement de vue entre-temps)
+    if (!PLE.active || seq !== PLE_DRAW_SEQ) return; // reponse obsolète (changement de vue entre-temps, ou draw plus récent)
     if (PLE.layer) { map.removeLayer(PLE.layer); PLE.layer = null; }
     PLE.layer = L.geoJSON(geo, {
       style: function (f) {
