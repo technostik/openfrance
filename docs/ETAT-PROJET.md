@@ -287,6 +287,9 @@ NB (08/11, 5) — piège n°41(p), layout RÉEL des fichiers dataIFN (constaté 
 
 NB (08/11, 6) - fix(pollens-essences) : statut et légende affichaient encore le texte GBIF statique alors que la carte utilisait déjà dataIFN/EUFORGEN (seul le tooltip était juste). pleCompute marque désormais chaque entrée avec sa source réelle (src: 'ifn-flore' / 'euforgen' / 'gbif'), propagée au repli communal ; pleSrcTxt(ind, vals) compose le libellé réel (pleStatus, pleStatusCom, pleLegendCom) ; pleSource garde le texte GBIF comme repli quand data/chorologie-essences.json est absent. piège n°41(q) : ne jamais coder en dur un libellé de source quand la source varie par enregistrement (statut, légende et tooltip doivent lire la même donnée).
 
+
+NB (08/11, 7) — suite du piège n°41(q), course d'affichage chorologie corrigée : le fetch de data/chorologie-essences.json est ASYNCHRONE — au premier rendu de la vue « Essences & exposition » (groupe choro), la carte pouvait s'afficher en GBIF (PLE_CHORO_ES null) puis être redessinée en IFN : libellés de sources mélangés (constaté en local : valeurs « x % des placettes » avec statut/légende encore « GBIF — occurrences agrégées », le panneau datait d'avant le commit pleSrcTxt). Correctifs : pleChoroEsEnsure() retourne une PROMESSE PARTAGÉE (une seule tentative par page ; PLE_CHORO_ES_DONE = JSON chargé ou définitivement absent) ; pleDraw ATTEND le JSON pour le groupe choro avant de dessiner (plus aucun rendu GBIF transitoire) ; anti-course PLE_DRAW_SEQ : chaque draw (communes/France) prend un numéro, seul le rendu le plus RÉCENT s'applique (draws concurrents, changements de vue). RAPPEL : data/chorologie-essences.json doit être COMMITTÉ (data/ n'est pas dans le repo) puis F5 — sans cela l'app reste sur le repli GBIF embarqué.
+
 ## 🚀 Deploys & workflow
 
 - **`main`** = production Netlify. **CHAQUE push sur `main` déclenche un deploy** (plan gratuit Netlify : ~20 deploys/mois en crédits → les économiser !)
