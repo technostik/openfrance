@@ -24,6 +24,17 @@
 //      Avertissement IGN : coordonnées floutées (maille kilométrique), poids
 //      statistique non communiqué -> PARTS DE PLACETTES = indicateur de
 //      présence, PAS un résultat officiel d'inventaire.
+//      NB piège n°41(p) : les fichiers de l'export ne sont pas tous des CSV
+//      à en-tête. metadonnees.csv est une suite de sections introduites par
+//      des commentaires « // … » (bannière, licence, critères, définitions,
+//      unités) ; les modalités de l'unité CDREF<v> (v = version TAXREF :
+//      CDREF13, CDREF16…) y sont des lignes
+//      « CDREF13;<code>;<libellé>;<définition> », ex.
+//      « CDREF13;92606;Corylus avellana (Noisetier coudrier);Corylus avellana L., 1753; ».
+//      PLACETTE.csv : CAMPAGNE;VISITE;IDP;XL;YL;DEP;… (XL/YL = Lambert-93 du
+//      centre de maille, DEP = indicatif département) ; FLORE.csv :
+//      CAMPAGNE;IDP;CD_REF;ABOND[;INCO_FLOR…]. BOM UTF-8 à strip ; les PDF
+//      de documentation (IGN_DB_doc_*.pdf) sont ignorés.
 //
 //   2. EUFORGEN — cartes de chorologie de l'« European Atlas of Forest Tree
 //      Species » (Caudullo, Welk & San-Miguel-Ayanz 2017, figshare,
@@ -53,12 +64,13 @@
 //             --force (retélécharger), --clean (purger le cache après)
 //
 // Méthode :
-//   - dataIFN : placette -> département (colonne DEP si présente, sinon
-//     coordonnées + point-in-polygon contre departements-version-simplifiee.geojson,
-//     la MÊME source que le proxy /data/departements.json de l'app) ; essence
-//     présente sur une placette si au moins un taxon du genre (TAXREF,
-//     résolu via metadonnees.csv) figure dans FLORE.csv ; % = n/np des
-//     placettes du département (np >= 5 requis).
+//   - dataIFN : placette -> département (colonne DEP de PLACETTE.csv si
+//     présente, sinon XL/YL (Lambert-93) ou GEOM93 (WKT L93) + point-in-polygon
+//     contre departements-version-simplifiee.geojson, la MÊME source que le
+//     proxy /data/departements.json de l'app) ; essence présente sur une
+//     placette si au moins un taxon du genre (CD_REF TAXREF, résolu via les
+//     modalités CDREF<v> de metadonnees.csv) figure dans FLORE.csv ;
+//     % = n/np des placettes du département (np >= 5 requis).
 //   - EUFORGEN : grille de points 0,25° sur la France -> département, puis
 //     test contre les polygones/points de l'aire ; département « présent »
 //     si l'aire le recouvre. Pas de gradient -> l'app affiche une
@@ -176,15 +188,40 @@ function parseCsvLine(line, sep) {
   out.push(cur);
   return out;
 }
-async function* csvRows(file) { // yield { header, cells } ; header fourni à la 1re ligne utile
+// Piège n°41(p) : les fichiers dataIFN ne commencent pas tous par l'en-tête —
+// metadonnees.csv démarre par une bannière de commentaires « // … » (licence,
+// critères) et enchaîne des sections dont les TITRES sont aussi des commentaires.
+// csvLines ne yield que les lignes utiles (BOM stripée, commentaires ignorés).
+async function* csvLines(file) {
   const raw = createReadStream(file, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: raw, crlfDelay: Infinity });
-  let header = null, sep = ';';
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    if (header === null) { sep = detectSep(line); header = parseCsvLine(line, sep).map(h => h.trim()); continue; }
-    yield { header, cells: parseCsvLine(line, sep) };
+  let sep = null;
+  for await (let line of rl) {
+    line = line.replace(/^\uFEFF/, '');
+    const t = line.trim();
+    if (!t || t.startsWith('//')) continue;
+    if (sep === null) sep = detectSep(t);
+    yield { cells: parseCsvLine(t, sep), text: t };
   }
+}
+// yield { header, cells } ; si « required » (RegExp que l'en-tête doit TOUTES
+// satisfaire) est fourni, les lignes qui précèdent l'en-tête valide (bannières,
+// listes de variables…) sont ignorées — jusqu'à 200 lignes, sinon erreur.
+async function* csvRows(file, required) {
+  let header = null, pre = [];
+  for await (const l of csvLines(file)) {
+    if (header === null) {
+      if (required && required.length && !required.every(re => l.cells.some(h => re.test(h.trim())))) {
+        pre.push(l.text.slice(0, 120));
+        if (pre.length >= 200) throw new Error(path.basename(file) + ' : en-tête introuvable (' + required.map(String).join(' & ') + ') après 200 lignes — début : ' + pre.slice(0, 4).join(' / '));
+        continue;
+      }
+      header = l.cells.map(h => h.trim());
+      continue;
+    }
+    yield { header, cells: l.cells };
+  }
+  if (header === null) throw new Error(path.basename(file) + ' : en-tête introuvable (' + (required || []).map(String).join(' & ') + ') — lignes utiles : ' + (pre.slice(0, 4).join(' / ') || 'aucune'));
 }
 function colOf(header, re) {
   for (let i = 0; i < header.length; i++) if (re.test(header[i])) return i;
@@ -277,40 +314,56 @@ async function locate(dir, re) {
   return found;
 }
 
-// Taxons : codes TAXREF -> genre, via metadonnees.csv (libellés scientifiques)
+// Taxons : codes TAXREF -> genre, via metadonnees.csv (piège n°41(p)).
+// Ce fichier n'a PAS d'en-tête exploitable : sections introduites par des
+// commentaires « // … », données ligne à ligne. Les modalités de l'unité
+// CDREF<v> (v = version TAXREF : CDREF13, CDREF16…) sont des lignes
+//   CDREF13;92606;Corylus avellana (Noisetier coudrier);Corylus avellana L., 1753;
+// (le code est le 1er champ numérique ; libellé+définition = nom scientifique).
+// Variantes acceptées par tolérance : « CD_REF;<code>;<nom> » et sections
+// « // … CDREF … » suivies de lignes « <code>;<nom> » (les commentaires
+// récents servent de contexte, le titre de section pouvant être suivi d'un
+// commentaire d'en-tête de colonnes).
 async function taxonGenres(metaFiles) {
-  // { codeTaxon: ['genre1'|…] } — un taxon peut matcher plusieurs essences ? non :
-  // on retourne { code: [essenceId…] } via préfixes de genre.
   const codeToEss = new Map();
-  let rowsSeen = 0, layoutInfo = '';
+  let rowsSeen = 0, lines = 0, comments = 0, sample = '';
+  const matched = { unit: 0, ref: 0, ctx: 0 };
   for (const f of metaFiles) {
-    let varCol = -1, codeCol = -1, libCol = -1, defCol = -1, first = true;
-    for await (const row of csvRows(f)) {
-      if (first) {
-        first = false;
-        layoutInfo = row.header.join(' | ');
-        varCol = colOf(row.header, /^(donnee|variable|code_donnee|item|unite)/i);
-        codeCol = colOf(row.header, /^code$/i);
-        libCol = colOf(row.header, /^(libelle|libelle_court|libellecourt|nom)$/i);
-        defCol = colOf(row.header, /^definition$/i);
-        if (codeCol === -1 || libCol === -1) throw new Error('metadonnees.csv : colonnes code/libellé introuvables — en-tête = ' + layoutInfo + ' (envoyez ce --diag)');
-        continue;
+    const raw = createReadStream(f, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: raw, crlfDelay: Infinity });
+    let sep = null, lastComments = [];
+    for await (let line of rl) {
+      line = line.replace(/^\uFEFF/, '');
+      const t = line.trim();
+      if (!t) continue;
+      if (t.startsWith('//')) { comments++; lastComments.push(t.replace(/^\/+\s*/, '')); if (lastComments.length > 3) lastComments.shift(); continue; }
+      lines++;
+      if (sep === null) sep = detectSep(t);
+      const cells = parseCsvLine(t, sep).map(c => c.trim());
+      let ci = -1, from = -1;
+      const c0 = norm(cells[0]);
+      if (/^cdref\d*$/.test(c0)) { // CDREF13;<code>;<libellé>;<définition>;
+        const k = cells.findIndex((c, i) => i > 0 && /^\d{3,7}$/.test(c));
+        if (k > 0) { ci = k; from = k + 1; matched.unit++; }
+      } else if (/^cd_?ref$/.test(c0) && /^\d{3,7}$/.test(cells[1] || '') && (cells[2] || '') && /^[a-z]/i.test(cells[2])) { // CD_REF;<code>;<nom>
+        ci = 1; from = 2; matched.ref++;
+      } else if (/^\d{3,7}$/.test(c0) && /^[A-Z][a-z]+[ x×]/.test(cells[1] || '') && /cdref|cd_ref|taxon/i.test(lastComments.join(' '))) { // section « // … CDREF … » puis <code>;<nom>
+        ci = 0; from = 1; matched.ctx++;
       }
-      const variable = varCol >= 0 ? norm(row.cells[varCol] || '') : '';
-      if (varCol >= 0 && !/^cd_?ref/i.test(variable)) continue; // seules les modalités de CD_REF
-      const code = (row.cells[codeCol] || '').trim();
-      const libelle = row.cells[libCol] || (defCol >= 0 ? row.cells[defCol] : '') || '';
+      if (ci < 0) continue;
+      const code = cells[ci];
+      if (!sample) sample = t.slice(0, 120);
       rowsSeen++;
-      const n = norm(libelle);
+      const n = norm(cells.slice(from).join(' '));
       for (const ess in ESSENCES) {
         if (ESSENCES[ess].noms.some(g => n.startsWith(g) || n.includes(' ' + g))) {
           if (!codeToEss.has(code)) codeToEss.set(code, []);
-          codeToEss.get(code).push(ess);
+          if (!codeToEss.get(code).includes(ess)) codeToEss.get(code).push(ess);
         }
       }
     }
   }
-  return { codeToEss, rowsSeen, layoutInfo };
+  return { codeToEss, rowsSeen, lines, comments, matched, sample };
 }
 
 async function buildIfn(out, opts, diag) {
@@ -322,30 +375,37 @@ async function buildIfn(out, opts, diag) {
     extract7z(zipPath, dir);
     fs.writeFileSync(marker, String(Date.now()));
   }
-  const placFiles = await locate(dir, /placette/i);
-  const floreFiles = await locate(dir, /flore/i);
-  const metaFiles = await locate(dir, /meta/i);
+  // piège n°41(p) bis : l'archive contient aussi les PDF de documentation
+  // (IGN_DB_doc_placette.pdf, IGN_DB_doc_flore.pdf) qui matchent /placette|flore/
+  // — ne garder que les .csv.
+  const placFiles = (await locate(dir, /placette/i)).filter(f => /\.csv$/i.test(f));
+  const floreFiles = (await locate(dir, /flore/i)).filter(f => /\.csv$/i.test(f));
+  const metaFiles = (await locate(dir, /meta/i)).filter(f => /\.csv$/i.test(f));
   console.log('  placettes : ' + (placFiles.map(f => path.basename(f)).join(', ') || 'AUCUN ✗'));
   console.log('  flore     : ' + (floreFiles.map(f => path.basename(f)).join(', ') || 'AUCUN ✗'));
   console.log('  meta      : ' + (metaFiles.map(f => path.basename(f)).join(', ') || 'AUCUN ✗'));
-  if (!placFiles.length || !floreFiles.length) throw new Error('placettes.csv ou flore.csv introuvables dans ' + dir + ' — vérifiez l\'archive ou utilisez --from-zip');
+  if (!placFiles.length || !floreFiles.length) throw new Error('PLACETTE.csv ou FLORE.csv introuvables dans ' + dir + ' — vérifiez l\'archive ou utilisez --from-zip');
   if (!metaFiles.length) throw new Error('metadonnees.csv introuvable dans ' + dir + ' (résolution des codes TAXREF impossible)');
 
-  // 1. genres : codes TAXREF -> essences
-  const { codeToEss, rowsSeen, layoutInfo } = await taxonGenres(metaFiles);
-  console.log('  metadonnees.csv : ' + rowsSeen + ' modalités CD_REF lues (' + layoutInfo.slice(0, 80) + '…)');
+  // 1. genres : codes TAXREF -> essences (modalités CDREF<v> de metadonnees.csv)
+  const { codeToEss, rowsSeen, lines, comments, matched, sample } = await taxonGenres(metaFiles);
+  console.log('  metadonnees.csv : ' + lines.toLocaleString('fr-FR') + ' lignes utiles + ' + comments + ' commentaires « // » ; ' + rowsSeen.toLocaleString('fr-FR') + ' modalités CDREF' + (matched.unit ? ' (motif CDREF<v>;<code>;… x' + matched.unit + ')' : '') + (matched.ref ? ' (variante CD_REF;<code>;… x' + matched.ref + ')' : '') + (matched.ctx ? ' (section x' + matched.ctx + ')' : '') + (sample ? ' ; ex. ' + sample : ''));
+  if (!rowsSeen) throw new Error('metadonnees.csv : aucune modalité CDREF trouvée (ex. attendu « CDREF13;92606;Corylus avellana… ») — envoyez la sortie de : grep -m5 -i cdref ' + metaFiles[0]);
   const perEss = {};
   for (const ess in ESSENCES) perEss[ess] = [];
   for (const [code, esss] of codeToEss) esss.forEach(e => perEss[e].push(code));
   for (const ess in ESSENCES) {
-    if (!perEss[ess].length) console.log('  ⚠ ' + ess + ' : AUCUN taxon matché (genre « ' + ESSENCES[ess].noms.join(' »/«') + ' » absent des libellés ?) — envoyez le --diag');
-    else if (diag) console.log('  ✓ ' + ess + ' : ' + perEss[ess].length + ' taxons');
+    if (!perEss[ess].length) {
+      if (EUFORGEN_ESSENCES[ess]) console.log('  • ' + ess + ' : aucun taxon IFN (attendu : essence ornementale hors forêt -> couverte par EUFORGEN)');
+      else console.log('  ⚠ ' + ess + ' : AUCUN taxon matché (genre « ' + ESSENCES[ess].noms.join(' »/«') + ' » absent des modalités ?) — envoyez le --diag');
+    }
+    else console.log('  ' + (diag ? '✓ ' : '') + ess + ' : ' + perEss[ess].length + ' taxons' + (diag ? ' [' + perEss[ess].slice(0, 6).join(', ') + ']' : ''));
   }
 
   // 2. départements WGS84
   const index = await depIndex();
 
-  // 3. placettes : idp -> département (colonne DEP si présente, sinon coordonnées)
+  // 3. placettes : idp -> département (DEP si présente, sinon XL/YL ou GEOM93)
   const normDep = (v) => {
     const s = (v || '').trim().replace(/\.0$/, '');
     if (/^\d+$/.test(s)) {
@@ -361,34 +421,43 @@ async function buildIfn(out, opts, diag) {
   const idpToDep = new Map();
   let nPlac = 0, nDep = 0, nCoord = 0, modeDep = '?';
   for (const f of placFiles) {
-    let idpI = -1, xI = -1, yI = -1, depI = -1, isL93 = null, first = true, headerStr = '';
-    for await (const row of csvRows(f)) {
+    let idpI = -1, xI = -1, yI = -1, depI = -1, geomI = -1, first = true, headerStr = '';
+    for await (const row of csvRows(f, [/^idp$/i])) {
       if (first) {
         first = false;
         headerStr = row.header.join(' | ');
         idpI = colOf(row.header, /^idp$/i);
         depI = colOf(row.header, /^(dep|dpt|code_dep|departement)$/i);
-        const lonI = colOf(row.header, /^(lon|long|longitude|lonwgs84|x_wgs84)$/i);
-        const xlI = colOf(row.header, /^(x|xl93|x_l93|xlamb93)$/i);
-        const latI = colOf(row.header, /^(lat|latitude|latwgs84|y_wgs84)$/i);
-        const ylI = colOf(row.header, /^(y|yl93|y_l93|ylamb93)$/i);
-        if (lonI >= 0 && latI >= 0) { xI = lonI; yI = latI; isL93 = false; }
-        else if (xlI >= 0 && ylI >= 0) { xI = xlI; yI = ylI; isL93 = true; }
+        xI = colOf(row.header, /^(x|xl|xl93|x_l93|xlamb93|lon|long|longitude|lonwgs84|x_wgs84)$/i);
+        yI = colOf(row.header, /^(y|yl|yl93|y_l93|ylamb93|lat|latitude|latwgs84|y_wgs84)$/i);
+        geomI = colOf(row.header, /^geom(93)?$/i); // WKT « POINT (x y) » Lambert-93
         if (idpI === -1) throw new Error('placettes : colonne IDP introuvable — en-tête = ' + headerStr + ' (envoyez ce --diag)');
-        modeDep = depI >= 0 ? 'colonne DEP' : (isL93 !== null ? ('coordonnées ' + (isL93 ? 'Lambert-93' : 'WGS84')) : 'AUCUNE ✗');
-        console.log('  placettes « ' + path.basename(f) + ' » : ' + modeDep + ' [' + headerStr.slice(0, 100) + '…]');
+        modeDep = depI >= 0 ? 'colonne DEP' : (xI >= 0 && yI >= 0 ? 'coordonnées X/Y' : (geomI >= 0 ? 'géométrie GEOM93 (WKT L93)' : 'AUCUNE ✗'));
+        console.log('  placettes « ' + path.basename(f) + ' » : ' + modeDep + ' [' + headerStr.slice(0, 120) + '…]');
       }
       const idp = (row.cells[idpI] || '').trim();
       if (!idp) continue;
       nPlac++;
-      let dep = null;
-      if (depI >= 0) dep = normDep(row.cells[depI]);
+      let dep = depI >= 0 ? normDep(row.cells[depI]) : null;
       if (!dep && xI >= 0 && yI >= 0) {
         const x = parseFloat((row.cells[xI] || '').replace(',', '.')), y = parseFloat((row.cells[yI] || '').replace(',', '.'));
         if (Number.isFinite(x) && Number.isFinite(y)) {
-          const [lon, lat] = isL93 ? proj4(L93, 'WGS84', [x, y]) : [x, y];
+          const l93 = Math.abs(x) > 1000; // Lambert-93 : mètres ; WGS84 : degrés
+          const [lon, lat] = l93 ? proj4(L93, 'WGS84', [x, y]) : [x, y];
           dep = depOfPoint(index, lon, lat);
           nCoord++;
+        }
+      }
+      if (!dep && geomI >= 0) {
+        const m = /\(\s*(-?[\d.,]+)\s+(-?[\d.,]+)\s*\)/.exec(row.cells[geomI] || '');
+        if (m) {
+          const x = parseFloat(m[1].replace(',', '.')), y = parseFloat(m[2].replace(',', '.'));
+          if (Number.isFinite(x) && Number.isFinite(y)) {
+            const l93 = Math.abs(x) > 1000;
+            const [lon, lat] = l93 ? proj4(L93, 'WGS84', [x, y]) : [x, y];
+            dep = depOfPoint(index, lon, lat);
+            nCoord++;
+          }
         }
       }
       if (dep) { idpToDep.set(idp, dep); nDep++; }
@@ -397,19 +466,18 @@ async function buildIfn(out, opts, diag) {
   console.log('  placettes lues : ' + nPlac.toLocaleString('fr-FR') + ' ; rattachées à un département : ' + nDep.toLocaleString('fr-FR') + (nCoord ? ' (dont par coordonnées : ' + nCoord.toLocaleString('fr-FR') + ')' : ''));
   if (nDep < 1000) throw new Error('trop peu de placettes rattachées (' + nDep + ') — vérifiez l\'archive ou envoyez le --diag');
 
-  // 4. flore : idp par essence
+  // 4. flore : idp par essence (FLORE.csv : CAMPAGNE;IDP;CD_REF;ABOND[;…])
   const idpsByEss = {};
   for (const ess in ESSENCES) idpsByEss[ess] = new Set();
   let nFlore = 0, nMatch = 0;
   for (const f of floreFiles) {
     let idpI = -1, cdI = -1, first = true;
-    for await (const row of csvRows(f)) {
+    for await (const row of csvRows(f, [/^idp$/i, /^cd_?ref$/i])) {
       if (first) {
         first = false;
         idpI = colOf(row.header, /^idp$/i);
-        cdI = colOf(row.header, /^cd_ref$/i);
-        if (idpI === -1 || cdI === -1) throw new Error('flore « ' + path.basename(f) + ' » : colonnes IDP/CD_REF introuvables — en-tête = ' + row.header.join(' | ') + ' (envoyez ce --diag)');
-        continue;
+        cdI = colOf(row.header, /^cd_?ref$/i);
+        console.log('  flore « ' + path.basename(f) + ' » : colonnes [' + row.header.join(' | ') + ']');
       }
       nFlore++;
       const esss = codeToEss.get((row.cells[cdI] || '').trim());
@@ -573,7 +641,7 @@ async function main() {
       genere: new Date().toISOString().slice(0, 10),
       methode: 'ifn-flore : part des placettes IFN (relevé floristique) du département où l\'essence est présente (np>=5) ; euforgen : département intersecté par l\'aire de présence (Atlas européen)',
       sources: {
-        ifn: 'IGN — Inventaire forestier national français, Données brutes (dataIFN), licence Ouverte Etalab 2.0 — https://inventaire-forestier.ign.fr/dataIFN/',
+        ifn: 'IGN — Inventaire forestier national français, Données brutes, Campagnes annuelles 2005 et suivantes (dataIFN), licence Ouverte Etalab 2.0 — https://inventaire-forestier.ign.fr/dataIFN/',
         euforgen: 'Caudullo G., Welk E., San-Miguel-Ayanz J. (2017), Chorological maps for the main European woody species (European Atlas of Forest Tree Species), figshare, CC-BY 4.0'
       },
       avertissement: 'dataIFN : coordonnées floutées (maille kilométrique), placettes boisées uniquement, parts indicatives ≠ résultats officiels IGN'
