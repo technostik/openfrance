@@ -20,6 +20,12 @@
 //    10/2026. INDICATIF : biais d'échantillonnage (inventaires, données
 //    participatives, effectifs urbains) — piège n°37. Licences des
 //    fournisseurs GBIF (majoritairement CC-BY/CC0).
+//    AMÉLIORATION (11/2026, build local) : si data/chorologie-essences.json
+//    est présent (produit par tools/build-chorologie-essences.mjs : flore des
+//    placettes IFN — % des placettes du département où l'essence est présente,
+//    NOISETIER inclus ; aires EUFORGEN pour cyprès/olivier/platane), il est
+//    chargé au vol et PREND LA PRIORITÉ ; le GBIF embarqué devient le repli
+//    (fichier absent, essence ou département non couverts).
 //  - Graminées cultivées (proxy) : Agreste RGA 2020 « SAU par type de culture
 //    et par EPCI » (TACCT 96fa7529-f87a-4a3e-b5e8-2e84286fb6dc), agrégé EPCI →
 //    département via BANATIC (natures juridiques CC/CA/CU/METRO/MET69/SMF),
@@ -70,7 +76,7 @@ var PLE_MOIS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'aoû
 
 var PLE_GR_LIB = {
   ifn: 'superficie forestière IFN 2024',
-  choro: 'chorologie indicative GBIF',
+  choro: 'chorologie (flore IFN, repli GBIF)',
   agri: 'proxy cultures Agreste RGA 2020'
 };
 
@@ -1422,7 +1428,25 @@ function pleQuintileIx(pairs) { // pairs: [{code, m}] -> {code: ix 1..5}
   return out;
 }
 
+// ---------- Chorologie d'inventaire (build local : data/chorologie-essences.json) ----------
+// Produit par tools/build-chorologie-essences.mjs (flore des placettes IFN +
+// aires EUFORGEN). Chargé au vol ; PRIORITÉ sur le GBIF embarqué, qui reste
+// le repli (fichier absent, essence ou département non couverts).
+var PLE_CHORO_ES = null;
+var PLE_CHORO_ES_TRIED = false;
+function pleChoroEsEnsure() {
+  if (PLE_CHORO_ES_TRIED || typeof fetchJSONCached !== 'function') return;
+  PLE_CHORO_ES_TRIED = true;
+  fetchJSONCached('/data/chorologie-essences.json').then(function (j) {
+    if (j && j.essences) {
+      PLE_CHORO_ES = j.essences;
+      if (PLE.active) pleDraw(); // la carte est déjà affichée : redessiner avec la nouvelle source
+    }
+  }).catch(function () { /* fichier absent : repli GBIF embarqué */ });
+}
+
 function pleCompute(ind) {
+  pleChoroEsEnsure();
   var pairs = [], vals = {};
   for (var code in PLE_DEP_AREA) {
     var m = null, disp = '', lines = [];
@@ -1444,15 +1468,32 @@ function pleCompute(ind) {
       disp = fmt(ha2) + ' ha';
       lines.push('soit ' + dens2.toFixed(1) + ' % de la superficie du departement');
     } else { // choro
-      var ch = PLE_CHORO[code];
-      if (!ch) continue;
-      var n = ch[ind.id] || 0;
-      var den = ch.plantae || 0;
-      if (n < 3 || !den) continue; // occurrences trop rares -> non significatif
-      var share = n / den * 100;
-      m = share;
-      disp = fmt(n) + ' occurrence' + (n > 1 ? 's' : '');
-      lines.push('part relative : ' + share.toFixed(2) + ' % des occurrences de plantes (indicatif)');
+      var rec = PLE_CHORO_ES && PLE_CHORO_ES[ind.id] ? PLE_CHORO_ES[ind.id][code] : null;
+      if (rec && rec.src === 'ifn-flore' && rec.np > 0) {
+        // chorologie d'inventaire : % des placettes IFN (flore) du département
+        m = rec.pct;
+        disp = (Math.round(rec.pct * 10) / 10).toLocaleString('fr-FR') + ' % des placettes (' + rec.n + '/' + rec.np + ')';
+        lines.push('part des placettes IFN (relevé floristique) du département où l\'essence est présente');
+        lines.push('source : IGN — Inventaire forestier national, données brutes (dataIFN)');
+      } else if (rec && rec.src === 'euforgen' && rec.present) {
+        // aire de présence (pas de gradient) : exposition fixe, hors quintiles
+        vals[code] = { m: null, ix: 3, disp: 'dans l\'aire de présence', lines: [
+          'aire de chorologie EUFORGEN (Atlas européen des espèces d\'arbres, Caudullo et al. 2017, CC-BY 4.0)',
+          'présence départementale : pas de gradient d\'exposition'
+        ] };
+        continue;
+      }
+      if (m === null) { // repli GBIF embarqué
+        var ch = PLE_CHORO[code];
+        if (!ch) continue;
+        var n = ch[ind.id] || 0;
+        var den = ch.plantae || 0;
+        if (n < 3 || !den) continue; // occurrences trop rares -> non significatif
+        var share = n / den * 100;
+        m = share;
+        disp = fmt(n) + ' occurrence' + (n > 1 ? 's' : '');
+        lines.push('part relative : ' + share.toFixed(2) + ' % des occurrences de plantes (indicatif)');
+      }
     }
     pairs.push({ code: code, m: m });
     vals[code] = { m: m, disp: disp, ix: 1, lines: lines };
@@ -1964,7 +2005,7 @@ function pleInitUI() {
   var html = '';
   [
     ['ifn', 'Forêts — superficie forestière (IFN 2024)'],
-    ['choro', 'Chorologie indicative (occurrences GBIF)'],
+    ['choro', 'Chorologie des essences (flore IFN / EUFORGEN / GBIF)'],
     ['agri', 'Graminées cultivées (Agreste RGA 2020)']
   ].forEach(function (g) {
     html += '<optgroup label="' + esc(g[1]) + '">';
